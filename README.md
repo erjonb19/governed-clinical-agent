@@ -133,25 +133,38 @@ non-deterministic, and a case that passes 1 of 3 is not passing — scores the
 agent's answer against the reference for **exact match**, classifies failures
 into a taxonomy, and writes a timestamped report for regression tracking.
 
-**Measured results — single-shot vs. self-correcting graph:**
+**Measured results — single-shot vs. self-correcting graph.** Latest full sweep,
+3 runs per case against HEAD on Gemini `gemini-flash-lite-latest`: all four
+suites, 63 cases, 378 runs, **not one incorrect answer and no provider errors**.
 
 | | CMS hospital (35 cases) | FHIR clinical (28 cases) |
 |---|---|---|
-| Single-shot | 33/35 cases · 95% runs | 28/28 cases · 98% runs |
-| Graph (self-correcting) | **35/35 cases · 99% runs** | **28/28 cases · 99% runs** |
+| Single-shot | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
+| Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
 
-The same finding reproduces on both datasets, which makes it a result rather than
-an anecdote: **self-correction eliminates transient tool failures and cannot
-touch plausible-but-wrong SQL.**
+Every tier is at 100% in all four reports. The three hospital/FHIR single-shot
+and hospital graph runs are from 2026-09-05; the FHIR graph run is 2026-09-07,
+delayed two days because the Gemini free tier's 500-requests-per-day-per-model
+cap was exhausted — three attempts returned `provider_unavailable` and are not
+reported as results, since an inconclusive run is not a measurement.
 
-The mechanism is the point. Retry only helps when there is a *failure signal* to
-react to. A guard denial produces one — the reason is fed back into the next
-attempt and the agent revises. A query that is wrong but valid produces none: it
-runs, returns rows, and looks successful. Across both runs, every failure
-self-correction recovered was a transient denial; every failure it could not
-recover was a wrong-but-successful query. That is why the ground-truth suite
-exists alongside the retry loop, and why "100% of cases pass" is reported next to
-"99% of runs" rather than instead of it.
+**What the current sweep does and does not show.** In the August sweeps
+(`eval_single_20260803T030757Z`, 33/35 · 95%; `eval_graph_20260803T033040Z`,
+35/35 · 99%) the graph path beat single-shot, and the whole difference was
+transient tool failures that retry recovered. At HEAD that gap is gone — not
+because self-correction regressed, but because **single-shot no longer produces
+the failures it used to recover**. Both graph runs report zero retries —
+`0/35` and `0/28` cases, avg attempts 1.00: the retry loop was never entered, so
+this sweep is evidence neither for nor against it.
+
+The mechanism is still the point, and it predicts when retry can help at all.
+Retry only helps when there is a *failure signal* to react to. A guard denial
+produces one — the reason is fed back into the next attempt and the agent
+revises. A query that is wrong but valid produces none: it runs, returns rows,
+and looks successful. In the August runs every failure self-correction recovered
+was a transient denial, and every failure it could not recover was a
+wrong-but-successful query. That asymmetry is why the ground-truth suite exists
+alongside the retry loop rather than being replaced by it.
 
 Some cases exist specifically to test clinical correctness, not just SQL
 correctness. A pair of them ask the same question at different grains — how many
@@ -171,13 +184,26 @@ python eval_harness.py --provider groq              # fallback when primary is d
 python validate_fhir_bank.py                        # verify the answer key itself
 ```
 
-Reports for all four runs are committed under `eval_runs/`.
+Every run above is committed under `eval_runs/`:
+`eval_single_hospital_20260905T180442Z.json`,
+`eval_graph_hospital_20260905T181329Z.json`,
+`eval_single_fhir_20260905T182030Z.json`, and
+`eval_graph_fhir_20260907T011508Z.json`.
 
 **Infrastructure failures vs. accuracy regressions.** The harness distinguishes
-the two so a provider outage never looks like the agent getting worse. If most
-runs fail with a provider/infra error — payment (402), rate limit (429), 5xx,
-network, or timeout — the run is reported as **provider unavailable** and exits
-with a distinct code, rather than a false 0% accuracy regression:
+the two so a provider outage never looks like the agent getting worse. A run that
+fails with a provider/infra error — payment (402), rate limit (429), 5xx, network,
+or timeout — never reached the model, so it is excluded from the accuracy
+denominator rather than counted as a wrong answer. Accuracy alone is not enough
+though: a verdict computed from a handful of runs that happened to get through
+would be confident and meaningless. So the gate also requires that at least
+`MIN_COMPLETED_FRACTION` (80%) of planned runs actually completed. Below that, the
+run is reported as **provider unavailable** and exits with a distinct code, rather
+than as a false accuracy regression — or a false pass. A provider that is plainly
+down is also detected early: after `ABORT_AFTER_CONSECUTIVE_PROVIDER_ERRORS` (12)
+consecutive infrastructure failures the remaining runs are recorded without being
+attempted, so a dead provider costs about a minute instead of a full sweep's
+worth of pacing delay:
 
 | exit code | meaning |
 |---|---|

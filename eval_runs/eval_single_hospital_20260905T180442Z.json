@@ -1,0 +1,587 @@
+{
+  "timestamp": "20260905T180442Z",
+  "dataset": "hospital",
+  "path": "single_shot",
+  "backend": "local-duckdb",
+  "provider": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "status": "pass",
+  "runs_per_case": 3,
+  "case_pass_rate": 1.0,
+  "run_accuracy": 1.0,
+  "completed_accuracy": 1.0,
+  "completed_runs": 105,
+  "provider_error_runs": 0,
+  "tier_accuracy": {
+    "1": 1.0,
+    "2": 1.0,
+    "3": 1.0,
+    "4": 1.0,
+    "5": 1.0
+  },
+  "failure_counts": {
+    "correct": 105
+  },
+  "cases": [
+    {
+      "id": "t1_count_all",
+      "tier": 1,
+      "question": "How many hospitals are in the dataset in total?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "748",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_count_5star",
+      "tier": 1,
+      "question": "How many hospitals have an overall star rating of exactly 5?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "71",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_count_rated",
+      "tier": 1,
+      "question": "How many hospitals have a non-null overall star rating?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "534",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_avg_mspb",
+      "tier": 1,
+      "question": "What is the average Medicare spending per beneficiary score across all hospitals that have one? Round to 4 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "0.9988",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_max_psych_ed",
+      "tier": 1,
+      "question": "What is the highest psychiatric ED median wait time in the data?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "1168.0",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_min_hwr",
+      "tier": 1,
+      "question": "What is the lowest hospital-wide readmission rate in the data?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "None",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_avg_star",
+      "tier": 1,
+      "question": "What is the average overall star rating across all rated hospitals? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "3.18",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t1_distinct_states",
+      "tier": 1,
+      "question": "How many distinct states are represented in the dataset?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "12",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_count_hf_data",
+      "tier": 2,
+      "question": "How many hospitals have a non-null heart failure readmission rate?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "540",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_avg_mspb_pa",
+      "tier": 2,
+      "question": "What is the average MSPB score for hospitals in Pennsylvania (PA)? Round to 4 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "0.984",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_count_ny_5star",
+      "tier": 2,
+      "question": "How many hospitals in New York (NY) have a 5-star rating?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "20",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_avg_hwr_ma",
+      "tier": 2,
+      "question": "What is the average hospital-wide readmission rate for Massachusetts (MA) hospitals? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "None",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_count_nj",
+      "tier": 2,
+      "question": "How many hospitals are located in New Jersey (NJ)?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "78",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_count_cheap",
+      "tier": 2,
+      "question": "How many hospitals have an MSPB score below 0.90?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "31",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_avg_psych_ny",
+      "tier": 2,
+      "question": "What is the average psychiatric ED median wait time for New York (NY) hospitals that report it? Round to 1 decimal.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "326.1",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t2_count_highstar",
+      "tier": 2,
+      "question": "How many hospitals have a star rating of 4 or higher?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "216",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_low_hf_top10",
+      "tier": 3,
+      "question": "List the facility_id of the 10 hospitals with the lowest heart failure readmission rate, lowest first. Include facility_id.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "10 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_worst_psych_ed_1",
+      "tier": 3,
+      "question": "Which single hospital has the highest psychiatric ED median wait time? Give its facility_id.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "1 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_highest_mspb_top5",
+      "tier": 3,
+      "question": "List the facility_id of the 5 most expensive hospitals by MSPB score, highest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_fastest_ed_top10",
+      "tier": 3,
+      "question": "List the facility_id of the 10 hospitals with the shortest overall ED median wait time, shortest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "10 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_low_pn_top5",
+      "tier": 3,
+      "question": "List the facility_id of the 5 hospitals with the lowest pneumonia readmission rate, lowest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_worst_lbs_top5",
+      "tier": 3,
+      "question": "List the facility_id of the 5 hospitals with the highest percent of ED patients who left before being seen, highest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t3_cheapest_top10",
+      "tier": 3,
+      "question": "List the facility_id of the 10 cheapest hospitals by MSPB score, cheapest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "10 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_best_value_top10",
+      "tier": 4,
+      "question": "List the facility_id of the 10 best-value hospitals, defined as 4 or 5 stars AND an MSPB score below 1.0, ordered by MSPB ascending (cheapest first).",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "10 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_ny_lowcost_highqual",
+      "tier": 4,
+      "question": "Among New York (NY) hospitals with a star rating of at least 4, list the facility_id of the 5 with the lowest hospital-wide readmission rate, lowest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "0 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_count_lowcost_highqual",
+      "tier": 4,
+      "question": "How many hospitals are both 5-star AND have an MSPB score below 0.95?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "16",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_pa_fast_ed_good",
+      "tier": 4,
+      "question": "Among Pennsylvania (PA) hospitals with an overall ED median wait under 180 minutes, list the facility_id of the 5 with the highest star rating, highest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_lowest_ratio_top5",
+      "tier": 4,
+      "question": "Define value as star_rating divided by mspb_score. Among hospitals that have both a star rating and an MSPB score, list the facility_id of the 5 with the highest value ratio, highest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_multistate_5star_lowhf",
+      "tier": 4,
+      "question": "Among hospitals in NY, NJ, or CT that are 5-star, list the facility_id of the 5 with the lowest heart failure readmission rate, lowest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t4_count_fast_lowlbs",
+      "tier": 4,
+      "question": "How many hospitals have an overall ED median wait under 150 minutes AND a left-before-seen percent under 2?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "65",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t5_clinical_vocab_copd",
+      "tier": 5,
+      "question": "Among facilities reporting it, what is the average 30-day all-cause readmission rate for patients with chronic obstructive pulmonary disease? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "20.1",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t5_boarding_gap",
+      "tier": 5,
+      "question": "Behavioral health boarding gap: among facilities that report BOTH an overall ED median time and a psychiatric ED median time, list the facility_id of the 5 with the largest difference (psychiatric minus overall), largest gap first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t5_cost_efficiency_ratio",
+      "tier": 5,
+      "question": "Cost efficiency: among hospitals with both measures, list the facility_id of the 5 with the lowest ratio of MSPB score to star rating, lowest ratio first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t5_above_avg_count",
+      "tier": 5,
+      "question": "How many hospitals have a hospital-wide readmission rate ABOVE the overall average hospital-wide readmission rate across all facilities that report one?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "0",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "t5_condition_spread",
+      "tier": 5,
+      "question": "Among facilities reporting both, list the facility_id of the 5 hospitals where the heart failure readmission rate exceeds the pneumonia readmission rate by the greatest margin, largest margin first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    }
+  ]
+}

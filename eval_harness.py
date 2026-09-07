@@ -47,35 +47,57 @@ try:
 except ImportError:
     pass
 
-from src.runtime.agent_runtime import AgentRuntime
-from analytics_query_tool import AnalyticsQueryTool
-from nl_to_sql_planner import NLToSQLPlanner, PROVIDERS
-from data_backends import LocalDuckDBBackend, get_backend
 # Two ground-truth banks, one per dataset. EVAL_DATASET selects which, and it
 # MUST match the database the analytics tool is connected to -- a bank is only
 # an answer key for the data it was written against.
 _DATASET = os.environ.get("EVAL_DATASET", "hospital").lower()
 if _DATASET == "fhir":
-    from eval_bank_fhir import CASES, SUBSET_IDS
     _DEFAULT_DB = "medallion/fhir_gold.duckdb"
     _DEFAULT_SCHEMA = "fhir"
 else:
-    from eval_bank import CASES, SUBSET_IDS
     _DEFAULT_DB = "medallion/hospital_gold.duckdb"
     _DEFAULT_SCHEMA = "hospital"
+
+# The dataset OWNS the planner schema, so ASSIGN it (never setdefault) and do it
+# BEFORE importing the planner. nl_to_sql_planner binds SCHEMA_DOC/SYSTEM_PROMPT
+# at IMPORT time, and a local .env commonly pins PLANNER_SCHEMA=hospital, which
+# a later setdefault cannot override. Setting it any later silently planned FHIR
+# questions against the hospital schema: that surfaces as sql_error and reads
+# like an agent regression rather than the config bug it actually is.
+os.environ["PLANNER_SCHEMA"] = _DEFAULT_SCHEMA
+
+from src.runtime.agent_runtime import AgentRuntime            # noqa: E402
+from analytics_query_tool import AnalyticsQueryTool           # noqa: E402
+from nl_to_sql_planner import NLToSQLPlanner, PROVIDERS       # noqa: E402
+from data_backends import LocalDuckDBBackend, get_backend     # noqa: E402
+if _DATASET == "fhir":
+    from eval_bank_fhir import CASES, SUBSET_IDS              # noqa: E402
+else:
+    from eval_bank import CASES, SUBSET_IDS                   # noqa: E402
 
 GOLD_DB = os.environ.get("HOSPITAL_GOLD_DB", _DEFAULT_DB)
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "medicare_policy.yaml")
 CAPABILITY = "analytics.query_aggregate"
 
 DEFAULT_RUNS = 3
-THRESHOLD = 0.80          # eval gate: overall accuracy must meet this
+THRESHOLD = 0.80          # eval gate: accuracy over COMPLETED runs must meet this
 OUT_DIR = "eval_runs"
 
-# When at least this fraction of ALL runs fail with a provider/infrastructure
-# error, the run is inconclusive: the accuracy number is meaningless, so report
-# "provider unavailable" instead of a false accuracy regression.
-PROVIDER_OUTAGE_FRACTION = 0.5
+# A gate verdict is only meaningful if enough runs actually REACHED the provider.
+# Accuracy is scored over completed runs, so without a floor a sweep where most
+# runs 429'd would report a confident number computed from the few that got
+# through -- e.g. 49% provider errors would "pass" on barely half the suite.
+# Below this fraction the run is inconclusive ("provider unavailable") rather
+# than a pass or a false accuracy regression.
+MIN_COMPLETED_FRACTION = 0.80
+
+# Stop calling a provider that is plainly down. After this many CONSECUTIVE
+# provider errors, the remaining runs are recorded as provider errors WITHOUT
+# being attempted. The verdict is already provider_unavailable at that point, so
+# grinding through the rest only burns wall-clock and pacing delay -- four FHIR
+# graph attempts on 2026-09-05 each spent ~7 minutes making 84 doomed calls
+# against an exhausted daily quota to report what the first dozen already showed.
+ABORT_AFTER_CONSECUTIVE_PROVIDER_ERRORS = 12
 
 # Exit codes -- distinct so CI can tell a real regression from an infra outage.
 EXIT_OK = 0
@@ -226,6 +248,27 @@ def run_once_graph(case, agent):
     return fmode, detail, attempts
 
 
+def _gate_status(correct_runs: int, total_runs: int, provider_error_runs: int):
+    """Decide a run's verdict, keeping infrastructure separate from accuracy.
+
+    Returns (status, completed_accuracy, completed_runs) where status is one of
+    "pass", "fail" or "provider_unavailable".
+
+    Accuracy is scored over runs that actually executed -- a 429 says nothing
+    about correctness, so leaving provider errors in the denominator turns a
+    partial outage into a phantom regression. The flip side is that a thin
+    sample must not masquerade as a confident verdict, so a minimum share of
+    the planned runs has to have completed before the gate will rule at all.
+    """
+    completed_runs = total_runs - provider_error_runs
+    completed_accuracy = (correct_runs / completed_runs) if completed_runs else 0.0
+    if total_runs <= 0 or completed_runs < MIN_COMPLETED_FRACTION * total_runs:
+        return "provider_unavailable", completed_accuracy, completed_runs
+    if completed_accuracy >= THRESHOLD:
+        return "pass", completed_accuracy, completed_runs
+    return "fail", completed_accuracy, completed_runs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=DEFAULT_RUNS)
@@ -274,7 +317,6 @@ def main():
         runtime = AgentRuntime()
         runtime.load_policy(POLICY_PATH)
         runtime.register_tool(AnalyticsQueryTool(db_path=GOLD_DB, seed_demo=False))
-    os.environ.setdefault("PLANNER_SCHEMA", _DEFAULT_SCHEMA)
     planner = NLToSQLPlanner(provider=provider) if provider else NLToSQLPlanner()
     ref_backend = LocalDuckDBBackend(GOLD_DB)
 
@@ -293,12 +335,21 @@ def main():
     provider_error_sample = ""
     t_start = time.time()
 
+    consecutive_provider_errors = 0
+    provider_down = False
+
     for case in active_cases:
         outcomes = []
         details = []
         attempts_used = []
         for _ in range(runs):
-            if graph_agent is not None:
+            if provider_down:
+                # Provider already proven unreachable -- record the run without
+                # attempting it, so the totals stay consistent and the report is
+                # still a complete, correctly-shaped provider_unavailable.
+                mode, detail = F_PROVIDER_ERROR, "not attempted: provider unreachable"
+                attempts_used.append(1)
+            elif graph_agent is not None:
                 mode, detail, n_att = run_once_graph(case, graph_agent)
                 attempts_used.append(n_att)
             else:
@@ -312,6 +363,18 @@ def main():
             tier_totals[case["tier"]][1] += 1
             if mode == F_CORRECT:
                 tier_totals[case["tier"]][0] += 1
+            if mode == F_PROVIDER_ERROR:
+                consecutive_provider_errors += 1
+                if (not provider_down and consecutive_provider_errors
+                        >= ABORT_AFTER_CONSECUTIVE_PROVIDER_ERRORS):
+                    provider_down = True
+                    print()
+                    print(f"  [abort] {consecutive_provider_errors} consecutive "
+                          f"provider errors -- the provider is down; skipping the "
+                          f"remaining runs instead of retrying each one.")
+                    print()
+            else:
+                consecutive_provider_errors = 0
         correct = sum(1 for o in outcomes if o == F_CORRECT)
         stability = correct / runs
         # a case "passes" only if it is correct on the majority of runs
@@ -331,22 +394,23 @@ def main():
     total_runs = len(active_cases) * runs
     correct_runs = sum(c["correct_runs"] for c in case_results)
     run_accuracy = correct_runs / total_runs
-    # Accuracy among runs that ACTUALLY EXECUTED. Provider errors (429/5xx/no
-    # credits) say nothing about correctness, so leaving them in the denominator
-    # makes a partial outage look like an accuracy regression. The outage rule
-    # below still catches the case where too few runs completed to conclude
-    # anything.
-    provider_error_runs_ = failure_counts.get(F_PROVIDER_ERROR, 0)
-    completed_runs = total_runs - provider_error_runs_
-    completed_accuracy = (correct_runs / completed_runs) if completed_runs else 0.0
+    # The verdict, decided once here and reused by the report, the banner and the
+    # exit code. Accuracy is scored over runs that ACTUALLY EXECUTED -- provider
+    # errors (429/5xx/no credits) say nothing about correctness, so leaving them
+    # in the denominator makes a partial outage look like a regression -- while
+    # the completed-runs floor inside _gate_status keeps a thin sample from
+    # being reported as a confident pass.
+    provider_error_runs = failure_counts.get(F_PROVIDER_ERROR, 0)
+    status, completed_accuracy, completed_runs = _gate_status(
+        correct_runs, total_runs, provider_error_runs)
     case_pass_rate = n_pass / len(active_cases)
 
     print("\n" + "=" * 60)
     print(f"cases passed (majority-correct): {n_pass}/{len(active_cases)}  ({case_pass_rate:.0%})")
     print(f"run-level accuracy:              {correct_runs}/{total_runs}  ({run_accuracy:.0%})")
-    if provider_error_runs_:
+    if provider_error_runs:
         print(f"accuracy among completed runs:   {correct_runs}/{completed_runs}  "
-              f"({completed_accuracy:.0%})   [{provider_error_runs_} runs never reached the provider]")
+              f"({completed_accuracy:.0%})   [{provider_error_runs} runs never reached the provider]")
     print("per tier (run-level):")
     for tier in sorted(tier_totals):
         c, t = tier_totals[tier]
@@ -367,17 +431,7 @@ def main():
     # write timestamped report for regression tracking
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    # Decide status BEFORE the gate. If the provider was down for most runs, the
-    # accuracy number is meaningless -- treat the run as inconclusive, not failed.
-    provider_error_runs = failure_counts.get(F_PROVIDER_ERROR, 0)
-    provider_outage = (total_runs > 0 and
-                       provider_error_runs >= PROVIDER_OUTAGE_FRACTION * total_runs)
-    if provider_outage:
-        status = "provider_unavailable"
-    elif completed_accuracy >= THRESHOLD:
-        status = "pass"
-    else:
-        status = "fail"
+    provider_outage = status == "provider_unavailable"
 
     report = {
         "timestamp": stamp,
@@ -410,6 +464,8 @@ def main():
         print("PROVIDER UNAVAILABLE -- eval INCONCLUSIVE (not an accuracy regression)")
         print(f"  {provider_error_runs}/{total_runs} runs failed with a provider/infra "
               f"error (402/403-no-credits/429/5xx/network)")
+        print(f"  only {completed_runs}/{total_runs} runs reached the provider; a verdict "
+              f"needs >= {MIN_COMPLETED_FRACTION:.0%}")
         print(f"  provider: {planner.provider} ({planner._model})")
         if provider_error_sample:
             print(f"  sample:   {provider_error_sample[:80]}")
@@ -422,9 +478,9 @@ def main():
         sys.exit(EXIT_PROVIDER_UNAVAILABLE)
 
     # eval gate
-    gate = "PASS" if completed_accuracy >= THRESHOLD else "FAIL"
+    gate = "PASS" if status == "pass" else "FAIL"
     print(f"eval gate (>= {THRESHOLD:.0%} of completed runs): {gate}")
-    sys.exit(EXIT_OK if completed_accuracy >= THRESHOLD else EXIT_REGRESSION)
+    sys.exit(EXIT_OK if status == "pass" else EXIT_REGRESSION)
 
 
 if __name__ == "__main__":

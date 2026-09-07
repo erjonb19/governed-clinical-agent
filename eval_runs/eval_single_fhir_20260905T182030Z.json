@@ -1,0 +1,475 @@
+{
+  "timestamp": "20260905T182030Z",
+  "dataset": "fhir",
+  "path": "single_shot",
+  "backend": "local-duckdb",
+  "provider": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "status": "pass",
+  "runs_per_case": 3,
+  "case_pass_rate": 1.0,
+  "run_accuracy": 1.0,
+  "completed_accuracy": 1.0,
+  "completed_runs": 84,
+  "provider_error_runs": 0,
+  "tier_accuracy": {
+    "1": 1.0,
+    "2": 1.0,
+    "3": 1.0,
+    "4": 1.0,
+    "5": 1.0
+  },
+  "failure_counts": {
+    "correct": 84
+  },
+  "cases": [
+    {
+      "id": "f1_count_patients",
+      "tier": 1,
+      "question": "How many patients are in the dataset in total?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "1180",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f1_count_female",
+      "tier": 1,
+      "question": "How many patients are female?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "613",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f1_avg_age",
+      "tier": 1,
+      "question": "What is the average age of patients in years? Round to 1 decimal.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "48.4",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f1_count_encounters",
+      "tier": 1,
+      "question": "How many encounters are recorded in total?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "46868",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f1_count_active_conditions",
+      "tier": 1,
+      "question": "How many condition records are currently active?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "4168",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f1_max_bmi",
+      "tier": 1,
+      "question": "What is the highest recorded Body Mass Index value?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "53.26083969115019",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_count_hypertension_patients",
+      "tier": 2,
+      "question": "How many distinct patients have an active hypertension diagnosis?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "330",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_count_emergency_encounters",
+      "tier": 2,
+      "question": "How many emergency encounters are there? Emergency encounters have class_code 'EMER'.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "2508",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_avg_glucose",
+      "tier": 2,
+      "question": "What is the average Glucose value across all glucose observations? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "90.55",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_count_prediabetes",
+      "tier": 2,
+      "question": "How many distinct patients have a prediabetes diagnosis?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "388",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_count_dialysis",
+      "tier": 2,
+      "question": "How many distinct patients have had a renal dialysis procedure? The procedure is named 'Renal dialysis (procedure)'.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f2_avg_bmi_female",
+      "tier": 2,
+      "question": "What is the average Body Mass Index among female patients? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "25.82",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f3_top_conditions",
+      "tier": 3,
+      "question": "List the 5 most frequently recorded condition names, most frequent first. Return the condition_name.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f3_top_medications",
+      "tier": 3,
+      "question": "List the 5 most frequently ordered medication names, most frequent first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f3_top_procedures",
+      "tier": 3,
+      "question": "List the 5 most frequently performed procedure names, most frequent first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f3_oldest_patients",
+      "tier": 3,
+      "question": "List the patient_id of the 5 oldest patients by age in years, oldest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f3_top_encounter_types",
+      "tier": 3,
+      "question": "List the 5 most common encounter_type values, most common first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f4_htn_and_obesity",
+      "tier": 4,
+      "question": "How many distinct patients have BOTH an active hypertension diagnosis AND a recorded Body Mass Index above 30?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "122",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f4_patients_most_encounters",
+      "tier": 4,
+      "question": "List the patient_id of the 5 patients with the most encounters, most first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f4_emer_patient_count",
+      "tier": 4,
+      "question": "How many distinct patients have had at least one emergency encounter (class_code 'EMER')?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "809",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f4_avg_glucose_prediabetic",
+      "tier": 4,
+      "question": "Among patients who have a prediabetes diagnosis, what is the average Glucose value? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "85.73",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f4_dialysis_and_epogen",
+      "tier": 4,
+      "question": "How many distinct patients have BOTH a renal dialysis procedure ('Renal dialysis (procedure)') AND an Epogen medication order (medication_name contains 'Epogen')?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_grain_records",
+      "tier": 5,
+      "question": "How many condition RECORDS are there for viral sinusitis? Count every row, not distinct patients. The condition is named 'Viral sinusitis (disorder)'.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "1237",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_grain_patients",
+      "tier": 5,
+      "question": "How many DISTINCT PATIENTS have ever been diagnosed with viral sinusitis? The condition is named 'Viral sinusitis (disorder)'.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "738",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_above_avg_bmi_patients",
+      "tier": 5,
+      "question": "How many distinct patients have at least one Body Mass Index reading above the overall average Body Mass Index across all readings?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "796",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_elderly_active_conditions",
+      "tier": 5,
+      "question": "Among patients aged 65 or older, how many distinct patients have at least one active condition?",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "326",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_condition_burden_top5",
+      "tier": 5,
+      "question": "List the patient_id of the 5 patients with the highest number of DISTINCT active condition names, highest first.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5 rows",
+      "avg_attempts": 1.0
+    },
+    {
+      "id": "f5_emer_rate_by_gender",
+      "tier": 5,
+      "question": "What percent of all encounters are emergency encounters (class_code 'EMER')? Round to 2 decimals.",
+      "correct_runs": 3,
+      "runs": 3,
+      "stability": 1.0,
+      "passed": true,
+      "outcomes": [
+        "correct",
+        "correct",
+        "correct"
+      ],
+      "sample_detail": "5.35",
+      "avg_attempts": 1.0
+    }
+  ]
+}
