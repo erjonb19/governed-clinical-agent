@@ -133,30 +133,29 @@ non-deterministic, and a case that passes 1 of 3 is not passing — scores the
 agent's answer against the reference for **exact match**, classifies failures
 into a taxonomy, and writes a timestamped report for regression tracking.
 
-**Measured results — single-shot vs. self-correcting graph.** Latest full sweep:
-**2026-09-05 against HEAD**, 3 runs per case, Gemini `gemini-flash-lite-latest`.
+**Measured results — single-shot vs. self-correcting graph.** Latest full sweep,
+3 runs per case against HEAD on Gemini `gemini-flash-lite-latest`: all four
+suites, 63 cases, 378 runs, **not one incorrect answer and no provider errors**.
 
 | | CMS hospital (35 cases) | FHIR clinical (28 cases) |
 |---|---|---|
 | Single-shot | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
-| Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 99% runs † |
+| Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
 
-† The only cell not from the 2026-09-05 sweep. It is the last clean measurement,
-`eval_graph_fhir_20260816T204034Z.json` (3 runs, 28/28 cases, 98.81% runs). Two
-2026-09-05 attempts (18:32Z and 19:54Z) both exhausted the Gemini free tier's
-500-requests-per-day-per-model cap and returned `provider_unavailable` — 82/84
-and 84/84 runs respectively failed with HTTP 429 before reaching the model.
-Both are inconclusive by construction, so neither is reported as a result; this
-suite still needs a re-run once the daily quota resets.
+Every tier is at 100% in all four reports. The three hospital/FHIR single-shot
+and hospital graph runs are from 2026-09-05; the FHIR graph run is 2026-09-07,
+delayed two days because the Gemini free tier's 500-requests-per-day-per-model
+cap was exhausted — three attempts returned `provider_unavailable` and are not
+reported as results, since an inconclusive run is not a measurement.
 
 **What the current sweep does and does not show.** In the August sweeps
 (`eval_single_20260803T030757Z`, 33/35 · 95%; `eval_graph_20260803T033040Z`,
 35/35 · 99%) the graph path beat single-shot, and the whole difference was
 transient tool failures that retry recovered. At HEAD that gap is gone — not
 because self-correction regressed, but because **single-shot no longer produces
-the failures it used to recover**. The hospital graph run reports
-`self-correction: 0/35 cases needed a retry (avg attempts 1.00)`: the retry loop
-was never entered, so this sweep is evidence neither for nor against it.
+the failures it used to recover**. Both graph runs report zero retries —
+`0/35` and `0/28` cases, avg attempts 1.00: the retry loop was never entered, so
+this sweep is evidence neither for nor against it.
 
 The mechanism is still the point, and it predicts when retry can help at all.
 Retry only helps when there is a *failure signal* to react to. A guard denial
@@ -189,7 +188,7 @@ Every run above is committed under `eval_runs/`:
 `eval_single_hospital_20260905T180442Z.json`,
 `eval_graph_hospital_20260905T181329Z.json`,
 `eval_single_fhir_20260905T182030Z.json`, and
-`eval_graph_fhir_20260816T204034Z.json`.
+`eval_graph_fhir_20260907T011508Z.json`.
 
 **Infrastructure failures vs. accuracy regressions.** The harness distinguishes
 the two so a provider outage never looks like the agent getting worse. A run that
