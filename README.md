@@ -228,7 +228,7 @@ For rate-limited free/low tiers, pace calls with `--min-interval <seconds>` (or
 
 Four GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **430 tests, no deselects**. No API keys needed; the opt-in `network` marker is skipped, and 3 MCP tests that read a real Gold database skip on a runner that has not built one (427 pass in CI, 430 locally).
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **430 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 35 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
