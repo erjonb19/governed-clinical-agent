@@ -104,6 +104,52 @@ The engineering is in the flattening, not the data. Real bulk FHIR is deeply nes
 - **Varying cardinality** — `name`, `address`, `category` may be absent, empty, or multiple.
 - **Data-quality gates** — deduplication on primary keys before joining, plus a **fan-out gate** asserting no Gold table exceeds its Bronze source. A duplicate ID silently multiplies rows and corrupts every downstream count; this catches it loudly.
 
+### The warehouse remembers
+
+CMS republishes hospital quality measures monthly, and `data-refresh.yml` rebuilds
+the Gold on the 1st. That rebuild used to delete the database first, so every
+refresh discarded the previous reading: the warehouse could say what a hospital's
+readmission rate **is** and never what it **was**, despite having been fed the
+data to answer that.
+
+`gold_hospital_history` is a **Type 2 slowly changing dimension** beside the
+current profile. Nothing is updated in place — a changed row is closed and a new
+version opened:
+
+| facility_id | star_rating | valid_from | valid_to | is_current |
+|---|---|---|---|---|
+| 330101 | 3.0 | 2026-09-01 | 2026-11-01 | false |
+| 330101 | 4.0 | 2026-11-01 | *null* | true |
+
+`valid_to` is **exclusive**, so a version is true for `[valid_from, valid_to)`.
+Consecutive versions share a boundary date without overlapping, and "as of date
+D" is one predicate with no edge case at the changeover:
+
+```sql
+WHERE valid_from <= D AND (valid_to IS NULL OR valid_to > D)
+```
+
+Three details that decide whether this works:
+
+- **Change detection is a row hash, read from the database schema.** A hardcoded
+  column list is the kind of thing that silently stops tracking a new measure,
+  and nobody notices until they ask why the history looks flat.
+- **NULLs are normalised to a sentinel before hashing.** `concat_ws` *skips*
+  null arguments, so `('x', NULL)` and `(NULL, 'x')` would otherwise hash
+  identically — two different rows, one hash, a real change recorded as none.
+- **Out-of-order vintages are refused.** Loading an older snapshot after a newer
+  one opens a version *before* the one it supersedes, and every "as of" query
+  then matches two rows. Better to fail the load than to repair it later.
+
+Every build runs `gold_history.verify()` and fails on violation — duplicate
+current rows, backwards intervals, overlapping versions. A drifted Type 2 table
+still answers queries, it just answers them wrongly, and nothing about the result
+looks suspicious.
+
+**Not yet exposed to the agent.** The table holds one vintage today, so trend
+questions have nothing to compare against; it goes on the guard allowlist and
+into `SCHEMA_DOC` once the next monthly refresh gives it a second one.
+
 ### PHI protection
 
 Only the curated **Gold** views are on the guard's allowlist. The `bronze_*` tables — which carry raw patient names, addresses, and identifiers — are deliberately excluded, even though they sit in the same database. This is the analytics equivalent of querying a de-identified view instead of the source system.

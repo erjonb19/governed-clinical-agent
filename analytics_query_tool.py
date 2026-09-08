@@ -33,7 +33,26 @@ class AnalyticsQueryTool(BaseTool):
         self._db_path = db_path
         self._row_cap = row_cap
         self._ledger = ledger          # optional QueryLedger for groundedness
-        self._con = duckdb.connect(db_path)
+        self._primary_error = None
+        try:
+            self._con = duckdb.connect(db_path)
+        except Exception as e:
+            # The PRIMARY connection failing is what actually takes the API
+            # server down at startup: app.py passes the hospital Gold here, and
+            # a held lock on that file (an eval sweep, a second server) raised
+            # straight out of __init__ before FastAPI ever finished booting.
+            #
+            # Degrade instead. An empty in-memory database means queries fail
+            # with a clear "table does not exist" rather than the process
+            # refusing to start, /health still answers, and the other datasets
+            # -- opened read-only below -- still serve. The reason is kept so
+            # the visibility endpoints can say what happened rather than
+            # presenting a locked warehouse as an empty one.
+            self._primary_error = str(e)
+            print(f"WARNING: primary database {db_path!r} could not be opened "
+                  f"({e}); starting with an empty in-memory database.")
+            self._con = duckdb.connect(":memory:")
+            seed_demo = False
         if seed_demo:
             self._seed_demo_gold()
         # Multi-dataset support: one tool can serve several Gold databases (e.g.
@@ -41,6 +60,10 @@ class AnalyticsQueryTool(BaseTool):
         # default connection above stays the fallback, so existing callers that
         # pass only db_path are unaffected.
         self._cons: Dict[str, Any] = {}
+        # Why a dataset is absent, when it is absent for a reason worth saying.
+        # An empty entry means "never built"; a populated one means "present but
+        # unusable", which is a different problem with a different fix.
+        self._dataset_errors: Dict[str, str] = {}
         _default = os.path.abspath(db_path) if db_path != ":memory:" else None
         for name, path in (db_paths or {}).items():
             if not os.path.exists(path):
@@ -51,7 +74,21 @@ class AnalyticsQueryTool(BaseTool):
             if _default and os.path.abspath(path) == _default:
                 self._cons[name] = self._con
             else:
-                self._cons[name] = duckdb.connect(path, read_only=True)
+                # Existing on disk is not the same as being openable. DuckDB
+                # refuses a connection to a file another process holds, so a
+                # running eval sweep or a second server is enough to raise here
+                # -- and an exception in this loop takes the WHOLE service down
+                # at startup over one busy dataset, while the others were
+                # perfectly serveable. A missing file is already skipped; an
+                # unopenable one is the same situation and gets the same
+                # treatment. /datasets then reports it unavailable, exactly as
+                # it does for one that was never built.
+                try:
+                    self._cons[name] = duckdb.connect(path, read_only=True)
+                except Exception as e:      # locked, corrupt, wrong version
+                    self._dataset_errors[name] = str(e)
+                    print(f"WARNING: dataset {name!r} at {path} could not be "
+                          f"opened ({e}); serving without it.")
         # Per-request backend selection. DuckDB (self._con) is always available;
         # Databricks is built when its creds are present (or DATA_BACKEND=databricks).
         # Both run the SAME guard-approved safe_sql -- the guard runs FIRST either
@@ -78,6 +115,10 @@ class AnalyticsQueryTool(BaseTool):
         """Dataset names this tool can serve (for the UI's dataset switcher)."""
         return sorted(self._cons)
 
+    def dataset_errors(self) -> Dict[str, str]:
+        """Datasets that exist on disk but could not be opened, and why."""
+        return dict(self._dataset_errors)
+
     def backends(self) -> Dict[str, Any]:
         """Which data backends this tool can serve -- for visibility endpoints."""
         return {
@@ -86,6 +127,7 @@ class AnalyticsQueryTool(BaseTool):
             "local_db": self._db_path,
             "databricks_configured": self._databricks is not None,
             "databricks_error": self._databricks_error,
+            "local_db_error": self._primary_error,
         }
 
     def execute(self, params: Dict[str, Any]) -> ToolResult:

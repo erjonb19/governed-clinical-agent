@@ -15,6 +15,7 @@ Repo: github.com/erjonb19/Security-Constrained-Agent-Runtime
 - **Data layer:** backend-agnostic — LocalDuckDBBackend and DatabricksBackend. The query path (`AnalyticsQueryTool`) now routes execution through the selected backend (`DATA_BACKEND=databricks` switches to Delta); the guard still validates SQL first. The Databricks path is **VERIFIED** against a real workspace (Free Edition serverless SQL): gold published to `workspace.gold` Delta, agent queries served with the guard intact (a catalog query is still DENIED on that path), and the 6-case eval subset passed 100% for backend parity.
 - **Web UI:** `web/index.html` served at `/ui` (root `/` redirects there) — a self-contained page calling `/query` and `/raw-sql` with `X-API-Key`. Six views: Ask, **Review** (the approval queue), Data, Guide, Trust, Usage. The Review view drives `/propose`, `/approvals`, and `/approvals/{id}`, and is the human-in-the-loop surface — it is the only place the four decision types (approve / reject / escalate / approve_with_edits) are exercised outside tests.
 - **Data:** CMS hospital-quality lakehouse in DuckDB (~750 hospitals, 12 states; the exact count moves with each monthly CMS refresh -- do not hardcode it) + FHIR lakehouse from 1,180 Synthea R4 bundles, medallion architecture
+- **History:** `gold_hospital_history` is a Type 2 SCD beside `gold_hospital_profile` (`gold_history.py`). `build_hospital_gold.py` NO LONGER deletes the database on each run -- that is what made the monthly refresh amnesiac -- so history accumulates; the profile is still fully rebuilt via CREATE OR REPLACE. `valid_to` is EXCLUSIVE. Pass `--vintage YYYY-MM-DD`; `--rebuild` deletes the DB and DISCARDS history. Every build runs `gold_history.verify()` and fails on violation. The table is deliberately NOT on the guard allowlist or in SCHEMA_DOC yet: it holds one vintage, so trend questions have nothing to compare against until the next monthly refresh.
 - **Human-in-the-loop:** approval checkpoint with SQLite persistence. Escalation REASSIGNS rather than resolving: the item stays `pending` with an `assigned_to` owner and the graph thread stays parked at the interrupt, so the new owner's approval still executes. Only approve / approve_with_edits / reject are `TERMINAL`; the decision chain lives in `approval_events`, which is also where escalation rate is counted from.
 - **Cost/latency tracking:** per-call and aggregate
 
@@ -47,6 +48,7 @@ Repo: github.com/erjonb19/Security-Constrained-Agent-Runtime
 1. Reframe demo questions as provider workflows
 2. Measure graph vs single-shot performance using the eval suite
 3. RAG + vector retrieval over FHIR data
+3b. Expose `gold_hospital_history` to the agent once a second vintage exists (allowlist + SCHEMA_DOC + eval cases, all in one commit per rule 6)
 4. MCP server: Streamable HTTP transport + OAuth 2.1 (currently stdio, Milestone 1). Milestone 2 (the capability *mapping* layer, so tools stop hardcoding their capability) is the next unblocked step and needs no external decisions.
 5. Expanded README
 
