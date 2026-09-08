@@ -139,3 +139,27 @@ def test_proposal_block_sets_its_own_colour(text):
     assert "background" in body and "color:" in body, (
         ".prop overrides the background, so it must also set an explicit color"
     )
+
+
+def test_escalation_copy_matches_escalation_behaviour(text):
+    """The Review view used to tell reviewers that escalating CLOSED the item,
+    which was true of the code at the time. Now escalate re-queues to a new
+    owner and leaves the agent paused, so the copy has to move with it -- a
+    governance control that describes itself wrongly is worse than one that
+    says nothing."""
+    assert "Escalating closes this item" not in text, (
+        "stale copy: escalation re-queues, it no longer closes the item"
+    )
+    assert "not built yet" not in text, (
+        "stale copy: re-queueing escalated items to their new owner is built"
+    )
+
+
+def test_escalation_does_not_remove_the_card(text):
+    """An escalated item is still pending. Removing its card claims the
+    reviewer cleared work that is in fact still in the queue."""
+    m = re.search(r'if\(decision==="escalate"\)\{(.+?)\n    \}', text, re.S)
+    assert m, "the decide() escalate branch is missing"
+    assert "card?.remove()" not in m.group(1), (
+        "the escalate branch must not remove the card -- the item is still pending"
+    )

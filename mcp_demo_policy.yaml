@@ -1,7 +1,9 @@
-# Milestone 1 demo policy for the guarded MCP server.
+# Policy for the guarded MCP server.
 # Same schema as examples/policies/Policy.yaml. Default-deny.
-# This gives a clean allow path (demo.echo) and two deny paths
-# (http.fetch via approval, git.push via allowed:false).
+# Two deny paths (http.fetch via approval, git.push via allowed:false), a demo
+# allow path (demo.echo), and the real product capability
+# (analytics.query_aggregate), which is allowed by policy and then still has to
+# get past sql_guard on every single call.
 
 version: "1.0"
 default_policy: deny
@@ -19,3 +21,13 @@ capabilities:
 
   - name: git.push
     allowed: false
+
+  # The real product capability, exposed over MCP as query_analytics.
+  # Reads are the safe tier, so this runs autonomously -- but "allowed" here
+  # only clears the POLICY layer. Every query still has to satisfy
+  # sql_guard.validate_query (SELECT-only, Gold allowlist, no catalog, row cap)
+  # before a row is returned. Two layers, and this one is the weaker of them.
+  - name: analytics.query_aggregate
+    allowed: true
+    constraints:
+      require_approval: false

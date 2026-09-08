@@ -534,16 +534,24 @@ def get_approval(request: Request, approval_id: str) -> dict:
     item = store.get(approval_id)
     if item is None:
         raise HTTPException(status_code=404, detail=f"no approval {approval_id}")
-    return item
+    # The columns hold only the FINAL verdict. An item escalated twice before it
+    # was approved has one row and three decisions, so the chain has to come
+    # with it or the audit trail is only reachable from Python.
+    return {**item, "history": store.history(approval_id)}
 
 
 @app.post("/approvals/{approval_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def decide_approval(request: Request, approval_id: str, req: DecisionRequest) -> dict:
-    """Submit a decision and RESUME the paused graph.
+    """Submit a decision.
 
-    approve / approve_with_edits -> the action executes
-    reject / escalate            -> it does not
+    approve / approve_with_edits -> resumes the graph; the action executes
+    reject                       -> resumes the graph; the action does not run
+    escalate                     -> does NOT resume. The item is reassigned to
+                                    `escalated_to`, stays pending, and stays in
+                                    the queue with the thread still paused, so
+                                    the new owner can still approve it and have
+                                    the action actually run.
     """
     agent = _STATE.get("approval_agent")
     store = _STATE.get("approval_store") or ApprovalStore()

@@ -715,6 +715,7 @@ function reviewCard(it){
     <div class="trust warn">
       <span class="pill warn">Awaiting decision</span>
       <small>waiting ${esc(waited(it.proposed_at))}</small>
+      ${it.assigned_to?`<small>escalated to <b>${esc(it.assigned_to)}</b></small>`:""}
       <small style="margin-left:auto">capability <code>${esc(it.capability||"—")}</code> &middot; id <code>${id}</code></small>
     </div>
     <div class="pad">
@@ -747,7 +748,7 @@ function reviewCard(it){
       <div class="subform" id="esc-${id}" hidden>
         <label class="f" for="escto-${id}">Escalate to &mdash; who takes this decision instead</label>
         <input id="escto-${id}" type="text" placeholder="e.g. on-call clinician, compliance" style="width:100%" />
-        <p class="small muted" style="margin:8px 0 0"><b>Escalating closes this item.</b> The action does not run, the name you enter is recorded on the audit record, and the item leaves this queue &mdash; there is no separate queue for the person you name, so tell them directly. Re-queueing escalated items to their new owner is not built yet.</p>
+        <p class="small muted" style="margin:8px 0 0"><b>Escalating hands this item over; it does not decide it.</b> The item stays in this queue, now marked as owned by the name you enter, and the agent stays paused exactly where it is &mdash; so whoever picks it up can still approve it and have the action run. Every hop is kept on the audit record.</p>
         <div class="acts" style="margin-top:10px">
           <button class="try ok" data-act="escalate" data-id="${id}">Escalate</button>
           <button class="try" data-act="esc-close" data-id="${id}">Cancel</button>
@@ -870,8 +871,14 @@ async function propose(){
   finally{ btn.disabled=false; btn.textContent="Draft & pause"; }
 }
 
-/* Submitting a decision RESUMES the paused graph on the server. approve and
-   approve_with_edits let the action execute; reject and escalate do not. */
+/* approve / approve_with_edits / reject RESUME the paused graph on the server
+   and resolve the item; only the first two let the action execute.
+
+   Escalate is not a verdict -- it reassigns. The item stays pending and stays
+   in the queue under a new owner, so the card must NOT be removed the way a
+   resolved one is. Removing it would tell the reviewer they had cleared work
+   that is in fact still sitting there, and it would vanish until the next full
+   reload. */
 async function decide(id,decision){
   const msg=$("msg-"+id);
   const who=($("reviewer")?.value||"").trim();
@@ -890,7 +897,7 @@ async function decide(id,decision){
   }
   const card=document.querySelector(`[data-card="${id}"]`);
   card?.querySelectorAll("button").forEach(b=>b.disabled=true);
-  msg.textContent="Resuming the paused agent…";
+  msg.textContent=(decision==="escalate")?"Handing this over…":"Resuming the paused agent…";
   try{
     const r=await fetch("/approvals/"+encodeURIComponent(id),
       {method:"POST",headers:authHdrs(),body:JSON.stringify(payload)});
@@ -898,6 +905,15 @@ async function decide(id,decision){
     if(!r.ok){
       msg.innerHTML=`<span style="color:var(--red)">${esc(j.detail||("HTTP "+r.status))}</span>`;
       card?.querySelectorAll("button").forEach(b=>b.disabled=false); return;
+    }
+    if(decision==="escalate"){
+      const to=j.assigned_to||payload.escalated_to;
+      msg.innerHTML=`<span style="color:var(--green)">✓ Handed to <b>${esc(to)}</b>. `+
+        `It stays in this queue, still awaiting a decision.</span>`;
+      // Reload so the card comes back showing its new owner rather than a
+      // stale one whose buttons are all disabled.
+      setTimeout(loadReview, 900);
+      return;
     }
     const ran=(decision==="approve"||decision==="approve_with_edits");
     msg.innerHTML=`<span style="color:var(--green)">✓ Recorded as <b>${esc(decision)}</b>. `+
