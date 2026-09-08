@@ -56,7 +56,6 @@ from typing import Annotated, Any, Optional
 # make `from src...` imports work when run from the repo root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import duckdb
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
@@ -111,39 +110,19 @@ register_default_tools(runtime)      # git, http.fetch, package_manager.query
 runtime.register_tool(EchoTool())    # demo.echo
 
 
-def _openable(path: str) -> bool:
-    """Can this Gold actually be opened right now?
-
-    Existing on disk is not the same as being readable. DuckDB refuses a second
-    connection to a file another process holds, so a running eval sweep or a
-    local API server is enough to make an open raise. AnalyticsQueryTool skips a
-    MISSING file but lets that IOException out, which would take the whole MCP
-    server down at import over one temporarily busy dataset -- while the other
-    one was perfectly serveable.
-
-    So probe first and pass on only what opens. A dataset excluded here is
-    reported as unavailable per call, exactly like a missing one.
-    """
-    if not os.path.exists(path):
-        return False
-    try:
-        duckdb.connect(path, read_only=True).close()
-        return True
-    except Exception as e:                       # locked, corrupt, wrong version
-        print(f"note: dataset at {path} is not openable ({e}); "
-              f"serving without it", file=sys.stderr)
-        return False
-
-
-_USABLE = {k: v["db"] for k, v in DATASETS.items() if _openable(v["db"])}
-
 # The real product capability. Registered with the same multi-dataset wiring the
 # API uses; seed_demo=False because the Gold is the point -- if it is missing we
 # say so per call rather than quietly serving toy rows that look real.
+#
+# Unopenable databases are AnalyticsQueryTool's problem, not this file's: it
+# skips a dataset it cannot connect to and records why, so a Gold held by
+# another process (an eval sweep, a second server) costs us that one dataset
+# instead of the whole server. Keeping that logic in one place means the API and
+# MCP front doors degrade identically.
 _analytics = AnalyticsQueryTool(
-    db_path=_USABLE.get(DEFAULT_DATASET, ":memory:"),
+    db_path=DATASETS[DEFAULT_DATASET]["db"],
     seed_demo=False,
-    db_paths=_USABLE,
+    db_paths={k: v["db"] for k, v in DATASETS.items()},
 )
 runtime.register_tool(_analytics)
 

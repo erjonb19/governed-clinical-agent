@@ -5,5 +5,7 @@
   "method": "data-refresh.yml -> fetch_cms + build_hospital_gold",
   "cadence": "monthly",
   "scheduler": ".github/workflows/data-refresh.yml (1st of month, 06:00 UTC)",
-  "row_count": 748
+  "row_count": 748,
+  "history_vintages": 1,
+  "history_since": "2026-09-01"
 }

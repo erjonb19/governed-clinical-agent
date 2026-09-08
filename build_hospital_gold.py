@@ -7,17 +7,33 @@ joins everything on Facility ID, and writes a provider-profile Gold.
 
 Run from the repo root (after fetching the five CSVs into data\\) with venv311:
     python build_hospital_gold.py
+    python build_hospital_gold.py --vintage 2026-10-01   # date this snapshot is
+    python build_hospital_gold.py --rebuild              # start over, LOSES history
 
 Output:
-    medallion\\hospital_gold.duckdb   table: gold_hospital_profile
+    medallion\\hospital_gold.duckdb
+        gold_hospital_profile   the current snapshot, fully rebuilt each run
+        gold_hospital_history   Type 2 history, ACCUMULATED across runs
+
+THE DATABASE IS NOT DELETED ON EACH RUN
+It used to be, and that is what made the monthly refresh amnesiac: CMS
+republishes these measures every month, the values move, and each rebuild threw
+the previous reading away. The profile table is still a full rebuild -- it is
+only ever "now" -- but the history table beside it keeps what the profile
+forgets, so the warehouse can answer "how has this changed?" and not only "what
+is it?". See gold_history.py for the merge and its invariants.
 
 State filter: edit STATES below. Empty list = all states.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+
 import duckdb
+
+import gold_history
 
 DATA = "data"
 OUT_DIR = "medallion"
@@ -61,16 +77,23 @@ def _pivot_select(measures: dict) -> str:
     return ",\n        ".join(parts)
 
 
-def main():
+def main(vintage: str | None = None, rebuild: bool = False):
     os.makedirs(OUT_DIR, exist_ok=True)
-    if os.path.exists(GOLD_DB):
+    # The database is NO LONGER deleted on every run. It used to be, which is
+    # what made the monthly refresh amnesiac: gold_hospital_history lives in
+    # this file, so removing it threw away every prior reading before the new
+    # one was even built. The profile table is still fully rebuilt below --
+    # CREATE OR REPLACE -- so the snapshot is as fresh as it ever was; only the
+    # history survives now.
+    if rebuild and os.path.exists(GOLD_DB):
+        print(f"--rebuild: deleting {GOLD_DB}, INCLUDING its history")
         os.remove(GOLD_DB)
     con = duckdb.connect(GOLD_DB)
     con.execute("SET preserve_insertion_order=false")
 
     # --- spine: hospital general info ---
     con.execute(f"""
-        CREATE TABLE spine AS
+        CREATE OR REPLACE TABLE spine AS
         SELECT
             "Facility ID"   AS facility_id,
             "Facility Name" AS facility_name,
@@ -83,21 +106,21 @@ def main():
 
     # --- MSPB: one cost number per hospital ---
     con.execute(f"""
-        CREATE TABLE mspb AS
+        CREATE OR REPLACE TABLE mspb AS
         SELECT "Facility ID" AS facility_id, {NUM('Score')} AS mspb_score
         FROM read_csv_auto('{DATA}/mspb.csv', all_varchar=true)
     """)
 
     # --- pivot the long files to chosen measures ---
     con.execute(f"""
-        CREATE TABLE readmissions AS
+        CREATE OR REPLACE TABLE readmissions AS
         SELECT "Facility ID" AS facility_id,
             {_pivot_select(UNPLANNED_MEASURES)}
         FROM read_csv_auto('{DATA}/unplanned_visits.csv', all_varchar=true)
         GROUP BY "Facility ID"
     """)
     con.execute(f"""
-        CREATE TABLE ed AS
+        CREATE OR REPLACE TABLE ed AS
         SELECT "Facility ID" AS facility_id,
             {_pivot_select(TIMELY_MEASURES)}
         FROM read_csv_auto('{DATA}/timely_effective_care.csv', all_varchar=true)
@@ -106,7 +129,7 @@ def main():
 
     # --- join into the profile, filter to states ---
     con.execute(f"""
-        CREATE TABLE gold_hospital_profile AS
+        CREATE OR REPLACE TABLE gold_hospital_profile AS
         SELECT s.*,
                m.mspb_score,
                r.readmit_hwr, r.readmit_hf, r.readmit_pn, r.readmit_ami, r.readmit_copd,
@@ -118,7 +141,7 @@ def main():
         {_state_clause('s.state')}
     """)
     for t in ("spine", "mspb", "readmissions", "ed"):
-        con.execute(f"DROP TABLE {t}")
+        con.execute(f"DROP TABLE IF EXISTS {t}")
 
     n = con.execute("SELECT count(*) FROM gold_hospital_profile").fetchone()[0]
     rated = con.execute("SELECT count(*) FROM gold_hospital_profile WHERE star_rating IS NOT NULL").fetchone()[0]
@@ -127,9 +150,38 @@ def main():
     print(f"gold_hospital_profile: {n} hospitals ({scope})")
     print(f"  with star rating: {rated}")
     print(f"  with HWR readmission: {hwr}")
+
+    # Fold this snapshot into the Type 2 history BEFORE the connection closes.
+    # The profile table above is a full rebuild -- it is only ever "now" -- so
+    # without this step every monthly refresh discards the previous reading and
+    # the warehouse can never answer a question about change. See gold_history.
+    outcome = gold_history.historize(con, vintage=vintage)
+    problems = gold_history.verify(con)
+    if problems:
+        # A drifted Type 2 table still answers queries, it just answers them
+        # wrongly, and nothing about the result looks suspicious. Fail the build
+        # rather than publish a history that quietly double-counts.
+        con.close()
+        raise SystemExit("history verification FAILED:\n  " + "\n  ".join(problems))
+
+    if outcome["seeded"]:
+        print(f"{gold_history.HISTORY_TABLE}: seeded {outcome['seeded']} rows "
+              f"at vintage {outcome['vintage']}")
+        print("  (history starts here -- trend questions need a second refresh)")
+    else:
+        print(f"{gold_history.HISTORY_TABLE}: vintage {outcome['vintage']} -- "
+              f"{outcome['opened']} opened, {outcome['closed']} closed, "
+              f"{outcome['unchanged']} unchanged")
     print(f"-> {GOLD_DB}")
     con.close()
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[3])
+    ap.add_argument("--vintage", default=None,
+                    help="date this snapshot represents (YYYY-MM-DD); "
+                         "defaults to today UTC")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="delete the database first, DISCARDING all history")
+    a = ap.parse_args()
+    main(vintage=a.vintage, rebuild=a.rebuild)

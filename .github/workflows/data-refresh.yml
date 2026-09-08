@@ -50,7 +50,15 @@ jobs:
               print(f"fetching {name} ({ident})")
               subprocess.run([sys.executable, "fetch_cms.py", ident, name], check=True)
           PY
-          python build_hospital_gold.py
+          # --vintage stamps the snapshot with the date it represents, so the
+          # Type 2 history in gold_hospital_history records WHEN each reading was
+          # true. Without it the vintage defaults to "today", which is nearly
+          # right but drifts if a run is retried on a later day.
+          #
+          # Note there is no --rebuild: the database is opened, not deleted, so
+          # the accumulated history survives this refresh. Passing --rebuild here
+          # would throw away every prior reading.
+          python build_hospital_gold.py --vintage "$(date -u +%Y-%m-%d)"
 
       - name: Validate refreshed Gold (hospital eval gate)
         env:
@@ -78,6 +86,13 @@ jobs:
           import json, datetime, duckdb
           con = duckdb.connect("medallion/hospital_gold.duckdb", read_only=True)
           n = con.execute("SELECT count(*) FROM gold_hospital_profile").fetchone()[0]
+          # How far back the history now reaches. This is the number that says
+          # whether trend questions are answerable yet: one vintage means the
+          # history exists but has nothing to compare against.
+          vintages = con.execute(
+              "SELECT count(DISTINCT valid_from) FROM gold_hospital_history").fetchone()[0]
+          earliest = con.execute(
+              "SELECT min(valid_from) FROM gold_hospital_history").fetchone()[0]
           json.dump({
               "dataset": "hospital",
               "last_refreshed": datetime.date.today().isoformat(),
@@ -86,8 +101,11 @@ jobs:
               "cadence": "monthly",
               "scheduler": ".github/workflows/data-refresh.yml (1st of month, 06:00 UTC)",
               "row_count": n,
+              "history_vintages": vintages,
+              "history_since": earliest.isoformat() if earliest else None,
           }, open("medallion/REFRESH.json", "w"), indent=2)
-          print("stamped REFRESH.json:", n, "hospitals")
+          print(f"stamped REFRESH.json: {n} hospitals, "
+                f"{vintages} vintage(s) since {earliest}")
           PY
 
       - name: Commit refreshed Gold
