@@ -273,10 +273,7 @@ Columns:
   ed_median_min            DOUBLE median minutes all patients spend in the ED (lower is better)
   ed_psych_median_min      DOUBLE median minutes psychiatric/mental-health patients spend in the ED (lower is better)
   ed_left_before_seen_pct  DOUBLE percent of ED patients who left before being seen (lower is better)
-  ed_volume                TEXT   ED size bucket, one of: 'very high', 'high', 'medium', 'low'
-                                  (NULL when CMS does not report it). It is a CATEGORY, not a
-                                  number -- filter with = or IN, never with > or <, and order it
-                                  explicitly (e.g. CASE) rather than alphabetically.
+  ed_volume                TEXT   ED size category: 'very high', 'high', 'medium', 'low' (may be NULL)
 """
 
 # Which schema the planner describes. Set PLANNER_SCHEMA=fhir to point the agent
@@ -304,6 +301,9 @@ Rules:
   guarantees the same rows come back in the same order every run, even when several
   hospitals share the same value.
 - Lower is better for readmission rates and ED times; higher is better for star_rating.
+- ed_volume is a CATEGORY, not a number. Match it with = or IN against the exact
+  lowercase values ('very high', 'high', 'medium', 'low') -- never with > or <.
+  Write the column name as one token, ed_volume, with no space in it.
 - If the question CANNOT be answered from the schema above (it asks about data this
   dataset does not contain), do not invent columns and do not dress the refusal up
   as a result. Return exactly one statement of this shape, and nothing else:

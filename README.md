@@ -228,16 +228,11 @@ suites, 63 cases, 378 runs, **not one incorrect answer and no provider errors**.
 | Single-shot | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
 | Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
 
-> **The hospital suite has since moved to 38 cases and its Gold was corrected**
-> (`ed_volume` was an empty DOUBLE and is now the text bucket CMS actually
-> publishes; the stale `readmit_hwr` column is populated again). All 38 cases
-> pass at HEAD, but not in one sweep: Gemini's daily free-tier quota was
-> exhausted 19 cases in, and the remaining 19 were run on Groq
-> (`eval_single_hospital_20260908T015550Z`, `...T020020Z`) — 38/38 cases,
-> 111/114 runs, the 3 misses being guard denials on the Groq model only. A
-> single-provider full sweep is owed once the quota resets, and the table above
-> stays as the last one measured end to end rather than being edited to a
-> number no single run produced.
+> **The hospital suite is now 38 cases on a corrected Gold** (`ed_volume` was an
+> empty DOUBLE and is now the text bucket CMS actually publishes; the stale
+> `readmit_hwr` column is populated again). Re-measured end to end on Gemini,
+> 3 runs per case: **38/38 cases, 114/114 runs, 100%**, every tier at 100%
+> (`eval_single_hospital_20260908T145421Z`).
 
 Every tier is at 100% in all four reports. The three hospital/FHIR single-shot
 and hospital graph runs are from 2026-09-05; the FHIR graph run is 2026-09-07,
