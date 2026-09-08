@@ -273,7 +273,10 @@ Columns:
   ed_median_min            DOUBLE median minutes all patients spend in the ED (lower is better)
   ed_psych_median_min      DOUBLE median minutes psychiatric/mental-health patients spend in the ED (lower is better)
   ed_left_before_seen_pct  DOUBLE percent of ED patients who left before being seen (lower is better)
-  ed_volume                DOUBLE often NULL (source is a text bucket)
+  ed_volume                TEXT   ED size bucket, one of: 'very high', 'high', 'medium', 'low'
+                                  (NULL when CMS does not report it). It is a CATEGORY, not a
+                                  number -- filter with = or IN, never with > or <, and order it
+                                  explicitly (e.g. CASE) rather than alphabetically.
 """
 
 # Which schema the planner describes. Set PLANNER_SCHEMA=fhir to point the agent

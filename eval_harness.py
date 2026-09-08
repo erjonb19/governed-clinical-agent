@@ -301,6 +301,18 @@ def main():
     active_cases = CASES
     if os.environ.get('EVAL_SUBSET') == '1':
         active_cases = [c for c in CASES if c['id'] in SUBSET_IDS]
+    # EVAL_CASES=id1,id2 runs exactly those cases. For validating NEW cases
+    # without spending a full sweep's worth of provider quota on the ones that
+    # already passed -- which matters on a rate-limited free tier, where a
+    # 114-run sweep to check three new cases is how you end up unable to check
+    # them at all.
+    only = os.environ.get('EVAL_CASES', '').strip()
+    if only:
+        wanted = {c.strip() for c in only.split(',') if c.strip()}
+        active_cases = [c for c in CASES if c['id'] in wanted]
+        unknown = wanted - {c['id'] for c in CASES}
+        if unknown:
+            sys.exit(f"unknown case id(s) in EVAL_CASES: {', '.join(sorted(unknown))}")
 
     if not os.path.exists(GOLD_DB):
         sys.exit(f"missing {GOLD_DB} -- build the hospital Gold first")

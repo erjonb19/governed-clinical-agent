@@ -300,4 +300,40 @@ CASES = [
                           "ORDER BY (readmit_hf - readmit_pn) DESC, facility_id ASC LIMIT 5"),
         "mode": "keyed", "key_columns": ["facility_id"],
     },
+    # --- ed_volume: a CATEGORY, not a number ------------------------------
+    # This column was DOUBLE and entirely NULL until the build was corrected to
+    # keep CMS's text bucket. These cases exist so it cannot quietly go back to
+    # being empty: with no data behind it, every one of them returns nothing and
+    # fails, instead of passing by comparing NULL against NULL the way a scalar
+    # case over an empty column does.
+    {
+        "id": "t2_count_very_high_ed", "tier": 2,
+        "question": "How many hospitals have a very high emergency department volume?",
+        "reference_sql": ("SELECT count(*) AS n FROM gold_hospital_profile "
+                          "WHERE ed_volume = 'very high'"),
+        "mode": "scalar",
+    },
+    {
+        "id": "t3_ed_volume_breakdown", "tier": 3,
+        # The column is named explicitly, as it is in every other keyed case
+        # ("list the facility_id of..."). Asking for "the category names" let a
+        # correct answer come back aliased as `category`, which the keyed
+        # comparison scored as a miss -- an artefact of the question, not a
+        # fault in the SQL.
+        "question": ("Break down the hospitals by emergency department volume, returning the "
+                     "ed_volume column, with the most common volume category first."),
+        "reference_sql": ("SELECT ed_volume FROM gold_hospital_profile "
+                          "WHERE ed_volume IS NOT NULL GROUP BY ed_volume "
+                          "ORDER BY count(*) DESC, ed_volume ASC"),
+        "mode": "keyed", "key_columns": ["ed_volume"],
+    },
+    {
+        "id": "t4_high_volume_worst_wait", "tier": 4,
+        "question": ("Among hospitals whose emergency department volume is high or very high, list the "
+                     "facility_id of the 5 with the longest median ED wait, longest first."),
+        "reference_sql": ("SELECT facility_id FROM gold_hospital_profile "
+                          "WHERE ed_volume IN ('high','very high') AND ed_median_min IS NOT NULL "
+                          "ORDER BY ed_median_min DESC, facility_id ASC LIMIT 5"),
+        "mode": "keyed", "key_columns": ["facility_id"],
+    },
 ]
