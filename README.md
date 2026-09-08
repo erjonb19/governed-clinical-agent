@@ -228,7 +228,7 @@ For rate-limited free/low tiers, pace calls with `--min-interval <seconds>` (or
 
 Four GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **376 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **430 tests, no deselects**. No API keys needed; the opt-in `network` marker is skipped, and 3 MCP tests that read a real Gold database skip on a runner that has not built one (427 pass in CI, 430 locally).
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 35 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
@@ -318,6 +318,13 @@ A working reference implementation, described plainly:
 
 - Human-in-the-loop approval queue as a first-class graph node — LangGraph
   `interrupt` + SQLite checkpointer, four decision types, **and a review UI**.
+  Escalation is a real handoff: the item stays queued under its new owner and
+  the agent stays paused, so whoever inherits it can still approve it and have
+  the action run. Every hop is kept in an `approval_events` chain.
+- The analytics capability is exposed over MCP — `query_analytics` and
+  `analytics_schema` in `mcp_server.py`, mediated by the same policy engine and
+  the same `sql_guard`. The client's model writes the SQL; this server is the
+  part that cannot be talked out of its rules.
 - Cloud lift for Databricks SQL — Gold published to Delta, eval subset passes
   100% on both backends (parity proven). ADLS Gen2 + Databricks Workflows
   orchestration is still future work.
@@ -329,7 +336,7 @@ A working reference implementation, described plainly:
 **Next**
 
 - RAG over CMS measure definitions, so the agent can answer *what a measure means*, not only what its value is
-- MCP server Milestone 2+: a general capability-mapping layer, then Streamable HTTP and OAuth 2.1 (currently stdio, Milestone 1)
+- MCP server Milestone 2+: a general capability-mapping layer, then Streamable HTTP and OAuth 2.1 (currently stdio)
 - Measure the self-correcting graph against single-shot on the full suite
 
 ## License

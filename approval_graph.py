@@ -49,7 +49,7 @@ from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
 import schema_check
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
-                      APPROVE_WITH_EDITS, EXECUTES)
+                      APPROVE_WITH_EDITS, EXECUTES, TERMINAL)
 
 GOLD_DB = os.environ.get("HOSPITAL_GOLD_DB", "medallion/hospital_gold.duckdb")
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "medicare_policy.yaml")
@@ -256,13 +256,32 @@ class GovernedApprovalAgent:
     def resume(self, thread_id: str, decision: str, decided_by: str,
                reason: str | None = None, edited_proposal: str | None = None,
                escalated_to: str | None = None) -> dict:
-        """Record the decision and RESUME the paused graph from where it stopped."""
+        """Record the decision and, if it is terminal, RESUME the paused graph.
+
+        ESCALATION DOES NOT RESUME. Resuming consumes the interrupt: the graph
+        runs on to `commit`, sees a verdict that is not in EXECUTES, finishes as
+        not-committed, and the thread is spent. There is then nothing left for
+        the person the item was escalated TO to approve -- their approval would
+        have no execution to authorise.
+
+        So an escalation records the handoff and returns with the thread still
+        parked at the interrupt, exactly as it was. The item stays pending, now
+        owned by someone else, and their eventual approve/reject resumes it.
+        """
         approval_id = self.store.find_by_thread(thread_id, status="pending")
         if not approval_id:
             raise KeyError(f"no pending approval for thread {thread_id}")
         record = self.store.decide(approval_id, decision, decided_by,
                                    reason=reason, edited_proposal=edited_proposal,
                                    escalated_to=escalated_to)
+
+        if decision not in TERMINAL:
+            return {"status": "reassigned", "approval_record": record,
+                    "committed": False, "assigned_to": record.get("assigned_to"),
+                    "still_pending": True,
+                    "proposal": record.get("proposal"),
+                    "trajectory": []}
+
         cfg = {"configurable": {"thread_id": thread_id}}
         state = self.graph.invoke(Command(resume={
             "decision": decision, "decided_by": decided_by, "reason": reason,
@@ -270,6 +289,7 @@ class GovernedApprovalAgent:
         }), cfg)
         return {"status": "resumed", "approval_record": record,
                 "committed": state.get("committed"),
+                "still_pending": False,
                 "proposal": state.get("proposal"),
                 "trajectory": state.get("trajectory", [])}
 
@@ -321,7 +341,29 @@ def _demo():
 
     print()
     print("=" * 72)
-    print("5. APPROVAL METRICS")
+    print("5. ESCALATION PATH -- a HANDOFF, not a verdict")
+    s3 = agent.start("Which hospitals have the worst sepsis mortality?")
+    out3 = agent.resume(s3["thread_id"], ESCALATE, "nurse.a",
+                        reason="above my level", escalated_to="dr.b")
+    print(f"   status:    {out3['status']}  (committed: {out3['committed']})")
+    print(f"   owned by:  {out3['assigned_to']}")
+    print("   still in the queue:")
+    for p in agent.store.pending():
+        print(f"     [{p['approval_id']}] assigned to {p['assigned_to']} -- {p['question'][:44]}")
+
+    print()
+    print("   ...and the new owner can still make it happen:")
+    out4 = agent.resume(s3["thread_id"], APPROVE, "dr.b", reason="reviewed, proceed")
+    print(f"   committed: {out4['committed']}")
+    aid = agent.store.find_by_thread(s3["thread_id"])
+    print("   decision chain:")
+    for e in agent.store.history(aid):
+        arrow = f" -> {e['escalated_to']}" if e["escalated_to"] else ""
+        print(f"     {e['decision']:10} by {e['decided_by']}{arrow}")
+
+    print()
+    print("=" * 72)
+    print("6. APPROVAL METRICS")
     import json
     print(json.dumps(agent.store.metrics(), indent=2))
 
