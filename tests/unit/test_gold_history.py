@@ -374,7 +374,10 @@ def test_the_build_tables_are_re_runnable(build_source):
     assert "\n        CREATE TABLE " not in build_source, (
         "use CREATE OR REPLACE TABLE -- the database is no longer deleted first"
     )
-    assert build_source.count("CREATE OR REPLACE TABLE ") == 5
+    # Counting exactly is brittle -- adding a staging table is a legitimate
+    # change that should not fail this. What matters is that every build table
+    # is re-runnable, not how many there are.
+    assert build_source.count("CREATE OR REPLACE TABLE ") >= 5
 
 
 def test_the_build_historizes_and_verifies(build_source):
@@ -382,3 +385,58 @@ def test_the_build_historizes_and_verifies(build_source):
     drifts: it keeps answering, just wrongly."""
     assert "gold_history.historize(" in build_source
     assert "gold_history.verify(" in build_source
+
+
+# --------------------------------------------------------------------------
+# Schema drift
+# --------------------------------------------------------------------------
+
+def test_a_retyped_column_is_named_not_thrown(con):
+    """The real case: ed_volume was mapped as DOUBLE while CMS publishes a text
+    bucket, so the column was silently empty. Correcting it to VARCHAR made the
+    snapshot disagree with the history's existing DOUBLE column, and the insert
+    died with `Could not convert string 'very high' to DOUBLE` from inside a
+    generated INSERT -- a message that tells an operator nothing about what to
+    do next."""
+    con.execute(f"CREATE TABLE {H.SOURCE_TABLE} AS "
+                f"SELECT '330101' AS facility_id, CAST(1.0 AS DOUBLE) AS ed_volume")
+    H.historize(con, "2026-09-01")
+
+    con.execute(f"DROP TABLE {H.SOURCE_TABLE}")
+    con.execute(f"CREATE TABLE {H.SOURCE_TABLE} AS "
+                f"SELECT '330101' AS facility_id, 'very high' AS ed_volume")
+
+    with pytest.raises(H.VintageError) as e:
+        H.historize(con, "2026-10-01")
+    msg = str(e.value)
+    assert "ed_volume" in msg
+    assert "DOUBLE" in msg and "VARCHAR" in msg
+    assert "--rebuild" in msg, "the message has to say what to do about it"
+
+
+def test_a_new_column_is_reported(con):
+    con.execute(f"CREATE TABLE {H.SOURCE_TABLE} AS SELECT '330101' AS facility_id")
+    H.historize(con, "2026-09-01")
+    con.execute(f"ALTER TABLE {H.SOURCE_TABLE} ADD COLUMN sepsis_rate DOUBLE")
+
+    with pytest.raises(H.VintageError, match="sepsis_rate"):
+        H.historize(con, "2026-10-01")
+
+
+def test_a_dropped_column_is_reported(con):
+    con.execute(f"CREATE TABLE {H.SOURCE_TABLE} AS "
+                f"SELECT '330101' AS facility_id, 1.0 AS star_rating")
+    H.historize(con, "2026-09-01")
+    con.execute(f"ALTER TABLE {H.SOURCE_TABLE} DROP COLUMN star_rating")
+
+    with pytest.raises(H.VintageError, match="star_rating"):
+        H.historize(con, "2026-10-01")
+
+
+def test_the_scd_columns_are_not_mistaken_for_drift(con):
+    """valid_from/valid_to/is_current/row_hash exist only in the history and
+    must not be reported as columns the snapshot has lost."""
+    snapshot(con, [A])
+    H.historize(con, "2026-09-01")
+    snapshot(con, [A])
+    H.historize(con, "2026-10-01")   # must not raise

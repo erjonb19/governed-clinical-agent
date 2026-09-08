@@ -117,6 +117,56 @@ def latest_vintage(con) -> Optional[str]:
     return row[0].isoformat() if row and row[0] else None
 
 
+def _column_types(con, table: str) -> dict[str, str]:
+    return {r[1]: r[2] for r in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+
+
+def _assert_compatible(con, source: str, cols: list[str]) -> None:
+    """The source must still match the shape the history was built with.
+
+    Schema drift is the failure this catches. `ed_volume` was mapped as DOUBLE
+    while CMS publishes it as a text bucket ("low", "high", ...), so the column
+    was silently empty; correcting it to VARCHAR made the incoming snapshot
+    disagree with the history table's existing DOUBLE column, and the INSERT
+    failed with a raw
+
+        ConversionException: Could not convert string 'very high' to DOUBLE
+
+    from somewhere deep in a generated INSERT. That message tells an operator
+    nothing about what to do. A history table cannot re-type a column it has
+    already recorded values under, so the honest answer is to name the drift and
+    stop -- the fix is a decision (rebuild the history, or revert the type), not
+    something to guess at mid-load.
+    """
+    history_types = _column_types(con, HISTORY_TABLE)
+    source_types = _column_types(con, source)
+
+    added = [c for c in cols if c not in history_types]
+    dropped = [c for c in history_types if c not in source_types
+               and c not in SCD_COLUMNS]
+    retyped = [(c, history_types[c], source_types[c]) for c in cols
+               if c in history_types and history_types[c] != source_types[c]]
+
+    if not (added or dropped or retyped):
+        return
+
+    lines = [f"{source} no longer matches {HISTORY_TABLE}:"]
+    for c, was, now in retyped:
+        lines.append(f"  - {c}: history holds {was}, snapshot is {now}")
+    for c in added:
+        lines.append(f"  - {c}: new column, absent from history")
+    for c in dropped:
+        lines.append(f"  - {c}: in history, missing from the snapshot")
+    lines.append("")
+    lines.append("  A Type 2 table cannot re-type a column it has already "
+                 "recorded values under.")
+    lines.append("  Rebuild the history (build_hospital_gold.py --rebuild) if "
+                 "the new shape is correct,")
+    lines.append("  or restore the previous mapping if it is not. Deciding that "
+                 "is not this function's job.")
+    raise VintageError("\n".join(lines))
+
+
 def historize(con, vintage: str | None = None, source: str = SOURCE_TABLE) -> dict:
     """Merge the current snapshot of `source` into the Type 2 history.
 
@@ -159,6 +209,8 @@ def historize(con, vintage: str | None = None, source: str = SOURCE_TABLE) -> di
         n = con.execute(f"SELECT count(*) FROM {HISTORY_TABLE}").fetchone()[0]
         return {"vintage": vintage, "seeded": n, "opened": 0,
                 "closed": 0, "unchanged": 0, "reopened": 0}
+
+    _assert_compatible(con, source, cols)
 
     # A staging table of the incoming snapshot with its hashes, so the three
     # comparisons below all read from the same computed values.

@@ -150,6 +150,46 @@ looks suspicious.
 questions have nothing to compare against; it goes on the guard allowlist and
 into `SCHEMA_DOC` once the next monthly refresh gives it a second one.
 
+### Gates that stop bad data shipping
+
+The FHIR build checked its work — dedup before joins, a fan-out gate. The
+hospital build checked nothing: it printed three counts and trusted them.
+
+That gap shipped two dead columns. `readmit_hwr` and `ed_volume` were **100%
+NULL** in the published Gold — both in the schema the agent is handed, both
+described here, both queried by eval cases. **The eval cases passed.** Ground
+truth is `reference_sql` run against the same database, so "what is the lowest
+readmission rate?" compared `NULL` to `NULL` and scored a point. An eval suite
+validates the *agent*; nothing was validating the *data*.
+
+`data_quality.py` now runs on every hospital build, on a **write–audit–publish**
+pattern: the snapshot lands in a staging table, the gates run against staging,
+and only then does it replace the published one. (The first version of this
+checked *after* `CREATE OR REPLACE` — so a failed gate left the broken snapshot
+live and merely declined to record it in history. Caught by watching it happen.)
+
+| gate | severity | catches |
+|---|---|---|
+| `unique_key` | ERROR | a repeated `facility_id` fanning out every join |
+| `no_fanout` | ERROR | more rows out than in, against the *state-filtered* parent |
+| `column_has_data` | ERROR | a mapped column that is entirely NULL |
+| `not_empty` / `values_in_set` | ERROR | an empty table; the state filter silently lapsing |
+| `column_coverage` | WARN | a source file that arrived truncated |
+| `row_count_drift` | WARN | the Gold halving between refreshes |
+
+The line between the two severities is deliberate. Partial coverage moves month
+to month and a row count legitimately jumps when the state filter is edited —
+those are loud, not fatal. A column you *chose to map* is never legitimately
+empty: it means the source changed shape and the mapping is stale.
+
+`row_count_drift` is only possible because the Type 2 history exists. Before it,
+there was nothing to compare this month against.
+
+**Both dead columns are fixed.** `ed_volume` is now the text bucket CMS actually
+publishes (`very high` / `high` / `medium` / `low`) rather than a `DOUBLE` that
+`TRY_CAST` emptied on every row, and it has three eval cases of its own — so if
+it ever goes empty again, they fail outright instead of passing on `NULL` = `NULL`.
+
 ### PHI protection
 
 Only the curated **Gold** views are on the guard's allowlist. The `bronze_*` tables — which carry raw patient names, addresses, and identifiers — are deliberately excluded, even though they sit in the same database. This is the analytics equivalent of querying a de-identified view instead of the source system.
@@ -170,7 +210,7 @@ A guard that only checked the first table reference would let that through. This
 The correctness claim is measured against ground truth, not asserted.
 
 **63 questions across two datasets**, each paired with hand-written reference SQL:
-`eval_bank.py` (35 cases, CMS hospital quality) and `eval_bank_fhir.py` (28 cases,
+`eval_bank.py` (38 cases, CMS hospital quality) and `eval_bank_fhir.py` (28 cases,
 FHIR clinical). Both span five difficulty tiers, from simple aggregates to
 cross-table clinical reasoning.
 
@@ -187,6 +227,17 @@ suites, 63 cases, 378 runs, **not one incorrect answer and no provider errors**.
 |---|---|---|
 | Single-shot | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
 | Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
+
+> **The hospital suite has since moved to 38 cases and its Gold was corrected**
+> (`ed_volume` was an empty DOUBLE and is now the text bucket CMS actually
+> publishes; the stale `readmit_hwr` column is populated again). All 38 cases
+> pass at HEAD, but not in one sweep: Gemini's daily free-tier quota was
+> exhausted 19 cases in, and the remaining 19 were run on Groq
+> (`eval_single_hospital_20260908T015550Z`, `...T020020Z`) — 38/38 cases,
+> 111/114 runs, the 3 misses being guard denials on the Groq model only. A
+> single-provider full sweep is owed once the quota resets, and the table above
+> stays as the last one measured end to end rather than being edited to a
+> number no single run produced.
 
 Every tier is at 100% in all four reports. The three hospital/FHIR single-shot
 and hospital graph runs are from 2026-09-05; the FHIR graph run is 2026-09-07,
@@ -274,7 +325,7 @@ For rate-limited free/low tiers, pace calls with `--min-interval <seconds>` (or
 
 Four GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **430 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **481 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 35 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
@@ -320,7 +371,7 @@ Other entry points:
 
 ```bash
 python agent_graph.py              # self-correcting agent demo, with trajectory
-python eval_harness.py             # the 35-case ground-truth suite
+python eval_harness.py             # the 38-case ground-truth suite
 python sql_guard.py                # adversarial guard harness (instant, no API calls)
 streamlit run aiops_panel.py       # observability dashboard
 ```
