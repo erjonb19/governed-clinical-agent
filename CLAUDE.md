@@ -1,4 +1,4 @@
-# CLAUDE.md — Security-Constrained-Agent-Runtime
+# CLAUDE.md — governed-clinical-agent
 
 ## What this project is
 A governed agentic AI runtime: a FastAPI NL-to-SQL service with a security guard layer, plus a Guarded MCP server (FastMCP) built on top. The planner is a LangGraph state graph — `plan` and `execute` nodes plus a `finish` node, with a conditional route edge out of `execute` (`_route` → back to `plan` or on to `finish`) that drives bounded self-correction: guard denials feed back into retries, with a retry cap.
@@ -6,7 +6,9 @@ A governed agentic AI runtime: a FastAPI NL-to-SQL service with a security guard
 > MCP server status: `mcp_server.py` is FastMCP over **stdio**, mediating every tool call through the real policy engine (`execute_tool`). It now exposes the product capability, not only the Milestone-1 demos: `query_analytics` (guarded SQL over the Gold allowlist) and `analytics_schema` (what may be queried). There is deliberately no planner inside it — over MCP the client's model writes the SQL and this server rules on it, so it needs no LLM key. Streamable HTTP + OAuth 2.1 are planned (docs/plan.md, docs/DESIGN.md), **not yet implemented** — do not claim they work.
 
 Deployed at: https://governed-clinical-agent.onrender.com (API-key auth).
-Repo: github.com/erjonb19/Security-Constrained-Agent-Runtime
+Repo: github.com/erjonb19/governed-clinical-agent  (renamed 2026-09-08 from
+Security-Constrained-Agent-Runtime, which is also the name of the separate
+upstream repo at Medtia/. The local folder still uses the old name.)
 
 ## Architecture
 - **API layer:** FastAPI service, API-key auth
