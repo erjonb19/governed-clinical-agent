@@ -7,7 +7,7 @@ Extends the self-correcting graph (agent_graph.py) with a fifth node: after the
 agent queries the data and drafts a consequential action, execution STOPS and
 waits for a human.
 
-    plan -> execute -> route --(success)--> propose -> [INTERRUPT] -> commit
+    plan -> critic -> execute -> route --(success)--> propose -> [INTERRUPT] -> commit
      ^                   |                                              |
      +---(retry w/ reason)                                        approve? execute
                                                                   reject?  stop
@@ -45,6 +45,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+import critic
 import tracing
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
@@ -72,6 +73,7 @@ class ApprovalState(TypedDict, total=False):
     sql: Optional[str]
     attempts: int
     last_error: Optional[str]
+    critic_verdict: Optional[str]  # approve | revise | unavailable (critic.py)
     allowed: bool
     decided_by: Optional[str]
     reason: Optional[str]
@@ -100,6 +102,8 @@ class GovernedApprovalAgent:
         (running this file directly) still constructs its own.
         """
         self.capability = capability
+        self.critic_on = critic.enabled()
+        self.critic_routes = critic.routing()
         if runtime is not None:
             self.runtime = runtime
             tool = None
@@ -145,9 +149,37 @@ class GovernedApprovalAgent:
                    completion_tokens=getattr(m, "completion_tokens", None),
                    est_cost_usd=getattr(m, "est_cost_usd", None),
                    latency_ms=getattr(m, "latency_ms", None))
-        return {"sql": sql, "attempts": attempt,
+        return {"sql": sql, "attempts": attempt, "critic_verdict": None,
                 "trajectory": state.get("trajectory", []) + [
                     {"step": "plan", "attempt": attempt, "sql": sql[:120]}]}
+
+    def _critic(self, state: ApprovalState) -> dict:
+        """Review the proposed SQL (critic.py). Never touches the guard."""
+        sql = state.get("sql") or ""
+        with self._traced(state), self.tracer.span(
+                "critic", attempt=state.get("attempts"), sql_sha256=tracing.sql_sha256(sql),
+                routing=self.critic_routes) as sp:
+            v = critic.review(self.planner, state["question"], sql)
+            m = v.get("metrics") or {}
+            sp.set(verdict=v["verdict"], reason=v["reason"][:500], issues=v["issues"],
+                   model=m.get("model"), est_cost_usd=m.get("est_cost_usd"),
+                   latency_ms=m.get("latency_ms"))
+        critic.audit(self.runtime, CAPABILITY, v, tracing.sql_sha256(sql))
+        out = {"critic_verdict": v["verdict"],
+               "trajectory": state.get("trajectory", []) + [
+                   {"step": "critic", "attempt": state.get("attempts"),
+                    "verdict": v["verdict"], "reason": v["reason"][:120]}]}
+        if v["verdict"] == critic.REVISE and self.critic_routes:
+            reason = f"critic: {v['reason'] or 'the SQL does not answer the question'}"
+            out.update(allowed=False, reason=reason, last_error=reason)
+        return out
+
+    def _route_critic(self, state: ApprovalState) -> str:
+        """revise re-plans (costing an attempt) or ends when they are spent;
+        approve and unavailable go on to execute, where the guard decides."""
+        if state.get("critic_verdict") == critic.REVISE and self.critic_routes:
+            return "plan" if state.get("attempts", 0) < MAX_ATTEMPTS else "end"
+        return "execute"
 
     def _execute(self, state: ApprovalState) -> dict:
         sql = state.get("sql") or ""
@@ -272,7 +304,13 @@ class GovernedApprovalAgent:
         g.add_node("propose", self._propose)
         g.add_node("commit", self._commit)
         g.add_edge(START, "plan")
-        g.add_edge("plan", "execute")
+        if self.critic_on:
+            g.add_node("critic", self._critic)
+            g.add_edge("plan", "critic")
+            g.add_conditional_edges("critic", self._route_critic,
+                                    {"execute": "execute", "plan": "plan", "end": END})
+        else:
+            g.add_edge("plan", "execute")
         g.add_conditional_edges("execute", self._route,
                                 {"plan": "plan", "propose": "propose", "end": END})
         g.add_edge("propose", "commit")

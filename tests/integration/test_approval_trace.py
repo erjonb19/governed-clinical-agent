@@ -70,10 +70,14 @@ def test_propose_escalate_approve_is_one_trace(agent):
     t = agent.tracer.get_trace(thread)
     assert t["status"] == "pending_approval"
     assert t["attrs"]["approval_id"] == started["approval_id"]
-    assert [s["name"] for s in t["spans"]] == ["plan", "guard", "execute", "approval.propose"]
+    # the critic (PLAN v2 item 4) runs between plan and guard; this stub planner
+    # has no critique(), so it fails open (D4) and the run carries on
+    assert [s["name"] for s in t["spans"]] == ["plan", "critic", "guard", "execute",
+                                               "approval.propose"]
+    assert t["spans"][1]["attrs"]["verdict"] == "unavailable"
     assert agent.state(thread) == {
         "thread_id": thread, "exists": True, "finished": False, "next": ["propose"],
-        "attempts": 1, "last_error": None, "approval_id": None, "committed": False, "steps": 2,
+        "attempts": 1, "last_error": None, "approval_id": None, "committed": False, "steps": 3,
     }
 
     # Escalation is recorded on the same trace and leaves it pending.

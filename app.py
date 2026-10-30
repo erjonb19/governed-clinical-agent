@@ -142,6 +142,13 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 # actually maps to a quota, and IPs are shared behind NAT and proxies.
 # storage_uri defaults to in-memory; point it at Redis for multi-instance.
 RATE_LIMIT_QUERY = os.environ.get("RATE_LIMIT_QUERY", "20/minute")   # LLM-backed
+
+# /query's path (PLAN v2 D2). "graph" (default): the self-correcting planner graph
+# with the critic -- several model calls per question, every run checkpointed.
+# "single": one plan, one guard decision, as before.
+QUERY_MODE = os.environ.get("QUERY_MODE", "graph").strip().lower()
+if QUERY_MODE not in {"graph", "single"}:
+    raise SystemExit(f"QUERY_MODE must be graph or single, not {QUERY_MODE!r}")
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
@@ -222,6 +229,19 @@ async def lifespan(app: FastAPI):
     except BaseException as e:  # SystemExit if no API key
         _STATE["planner"] = None
         _STATE["planner_error"] = str(e)
+    # The planner graph behind /query (PLAN v2 D2): plan -> critic -> guard ->
+    # execute, with bounded self-correction, every run checkpointed under its
+    # trace id. Same runtime, same guard, same lock as /raw-sql. Optional: if it
+    # cannot be built, /query falls back to single-shot and /health says why.
+    _STATE["graph_agent"] = None
+    if QUERY_MODE == "graph" and _STATE.get("planner") is not None:
+        try:
+            from agent_graph import GovernedAgentGraph
+            _STATE["graph_agent"] = GovernedAgentGraph(
+                runtime=runtime, planner=_STATE["planner"], lock=_LOCK,
+                schema_docs={k: v["schema_doc"] for k, v in DATASETS.items()})
+        except BaseException as e:
+            _STATE["graph_error"] = str(e)
     # Approval agent is optional: /query and /raw-sql work without it. It needs
     # the planner (to draft) and the checkpointer (to persist the pause).
     try:
@@ -309,7 +329,7 @@ class DecisionRequest(BaseModel):
 
 class GovernedResponse(BaseModel):
     allowed: bool
-    decided_by: str                      # "policy" | "guard" | "executed"
+    decided_by: str                      # "policy" | "guard" | "executed" | "critic" | "exhausted" | "sql_error"
     reason: Optional[str] = None
     sql: Optional[str] = None            # the SQL that was evaluated
     safe_sql: Optional[str] = None       # what the guard actually ran
@@ -322,6 +342,10 @@ class GovernedResponse(BaseModel):
     unanswerable: Optional[str] = None       # set when the dataset cannot answer
     suggest_dataset: Optional[str] = None    # a dataset that might answer instead
     trace_id: Optional[str] = None           # look the run up at /traces/{trace_id}
+    # QUERY_MODE=graph only (PLAN v2 D2); absent in single mode
+    attempts: Optional[int] = None           # plan->(critic)->execute cycles used
+    critic: Optional[str] = None             # the last critic verdict
+    trajectory: Optional[list] = None        # every step, in order (no rows)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +441,8 @@ def health() -> dict:
         "auth_enabled": bool(API_KEY),
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ},
+        "query_mode": "graph" if _STATE.get("graph_agent") is not None else "single",
+        "graph_error": _STATE.get("graph_error"),
         "approvals_enabled": _STATE.get("approval_agent") is not None,
         "approval_error": _STATE.get("approval_error"),
         "backends": _STATE["analytics_tool"].backends() if _STATE.get("analytics_tool") else None,
@@ -522,9 +548,10 @@ def query(request: Request, req: QueryRequest) -> dict:
             "reason": f"planner not configured: {_STATE.get('planner_error')}",
         }
     ds = _dataset(req.dataset)
+    if _STATE.get("graph_agent") is not None:
+        return _query_graph(req, ds)
     tracer = tracing.get_tracer()
-    # /query is single-shot (one plan, one guard decision); PLAN v2 D2 moves it
-    # onto the checkpointed graph. Either way the run is a trace.
+    # QUERY_MODE=single (or no graph): one plan, one guard decision. Still a trace.
     with tracer.trace("run", mode="single", question=req.question, dataset=ds) as tid:
         try:
             with tracer.span("plan", attempt=1) as sp:
@@ -555,6 +582,58 @@ def query(request: Request, req: QueryRequest) -> dict:
         tracer.end_trace(tid, decided_by=out.get("decided_by"), row_count=out.get("row_count"),
                          est_cost_usd=metrics.est_cost_usd, total_tokens=metrics.total_tokens)
     out["trace_id"] = tid
+    return out
+
+
+def _query_graph(req: QueryRequest, ds: str) -> dict:
+    """/query through the planner graph (PLAN v2 D2). Same response shape as the
+    single-shot path, plus `attempts`, `critic` and the run's `trajectory`."""
+    agent = _STATE["graph_agent"]
+    tid = tracing.new_id()
+    try:
+        state = agent.run(req.question, trace_id=tid, dataset=ds, backend=req.backend)
+    except Exception as e:
+        # the graph closed the trace as an error before re-raising
+        return {"allowed": False, "decided_by": "policy",
+                "reason": f"planner error: {e}", "trace_id": tid}
+    calls = [st["metrics"] for st in state.get("trajectory") or []
+             if st.get("step") in ("plan", "critic") and st.get("metrics")]
+    for m in calls:
+        cost_tracker.record(m, question=req.question)
+    allowed = bool(state.get("allowed"))
+    out: dict[str, Any] = {
+        "allowed": allowed,
+        "decided_by": state.get("decided_by"),
+        "reason": state.get("reason"),
+        "sql": state.get("sql"),
+        "dataset": ds,
+        "attempts": state.get("attempts"),
+        "critic": state.get("critic_verdict"),
+        "trajectory": [{k: v for k, v in st.items() if k != "metrics"}
+                       for st in state.get("trajectory") or []],
+        "planner_metrics": {
+            "calls": len(calls),
+            "latency_ms": sum(m.get("latency_ms") or 0 for m in calls),
+            "prompt_tokens": sum(m.get("prompt_tokens") or 0 for m in calls),
+            "completion_tokens": sum(m.get("completion_tokens") or 0 for m in calls),
+            "total_tokens": sum(m.get("total_tokens") or 0 for m in calls),
+            "est_cost_usd": round(sum(m.get("est_cost_usd") or 0.0 for m in calls), 6),
+            "model": calls[0].get("model") if calls else None,
+            "provider": calls[0].get("provider") if calls else None,
+        },
+        "trace_id": tid,
+    }
+    if allowed:
+        out.update(safe_sql=state.get("safe_sql"), row_count=state.get("row_count"),
+                   columns=state.get("columns"), rows=state.get("rows"),
+                   backend=state.get("backend_used"))
+        note = _unanswerable(out)
+        if note:
+            out["unanswerable"] = note
+            other = next((k for k in DATASETS
+                          if k != ds and os.path.exists(DATASETS[k]["db"])), None)
+            out["suggest_dataset"] = other
+            out["rows"], out["columns"], out["row_count"] = [], [], 0
     return out
 
 

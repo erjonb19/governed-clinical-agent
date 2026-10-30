@@ -10,10 +10,16 @@ again within bounds.
 
 The graph:
 
-    plan ---> execute ---> route --(success)--> finish
-     ^                       |
-     |                       |
-     +----(retry w/ reason)--+   (bounded; gives up gracefully when exhausted)
+    plan ---> critic ---> execute ---> route --(success)--> finish
+     ^          |                        |
+     |          +--(revise, w/ reason)---+
+     +------------(retry w/ reason)------+   (bounded; gives up gracefully when exhausted)
+
+  The critic (critic.py, PLAN v2 item 4) reviews each proposed SQL before it
+  runs. "revise" re-plans with its reason and costs an attempt; "approve" and
+  "unavailable" go on to execute, where the guard decides as it always has. The
+  critic can only make the agent stricter -- it never informs or skips the guard.
+  CRITIC_ENABLED=0 removes the node; CRITIC_ROUTING=0 keeps it as a recorder.
 
 Design decisions worth defending:
 
@@ -64,6 +70,7 @@ except ImportError:
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+import critic
 import tracing
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
@@ -78,15 +85,30 @@ CAPABILITY = "analytics.query_aggregate"
 MAX_ATTEMPTS = 3          # bounded retries: cost/latency runaway is a real failure mode
 
 
+_METRIC_FIELDS = ("latency_ms", "prompt_tokens", "completion_tokens", "total_tokens",
+                  "est_cost_usd", "model", "provider")
+
+
+def _metrics_dict(m: Any) -> dict:
+    """CallMetrics.as_dict(), or the same fields read off any metrics-like object."""
+    if hasattr(m, "as_dict"):
+        return m.as_dict()
+    return {k: getattr(m, k, None) for k in _METRIC_FIELDS}
+
+
 class AgentState(TypedDict, total=False):
     """State carried through the graph. Every node reads and updates this."""
     question: str
     trace_id: str                   # names the trace AND the checkpoint thread
+    dataset: Optional[str]          # which Gold to plan and run against (the API's datasets)
+    backend: Optional[str]          # local | databricks (the API's backend selector)
+    backend_used: Optional[str]     # the backend that actually ran the query
+    critic_verdict: Optional[str]   # approve | revise | unavailable, for the latest plan
     sql: Optional[str]              # the SQL from the latest plan step
     attempts: int                   # how many plan->execute cycles so far
     last_error: Optional[str]       # why the previous attempt failed (fed back into plan)
     allowed: bool
-    decided_by: Optional[str]       # "executed" | "guard" | "policy" | "exhausted"
+    decided_by: Optional[str]       # "executed" | "guard" | "policy" | "critic" | "exhausted"
     reason: Optional[str]
     safe_sql: Optional[str]
     row_count: Optional[int]
@@ -104,8 +126,17 @@ class GovernedAgentGraph:
     def __init__(self, db_path: str = GOLD_DB, max_attempts: int = MAX_ATTEMPTS,
                  provider: Optional[str] = None, runtime: Optional[AgentRuntime] = None,
                  planner: Any = None, checkpoint_db: Optional[str] = None,
-                 tracer: Optional[tracing.Tracer] = None):
+                 tracer: Optional[tracing.Tracer] = None,
+                 schema_docs: Optional[dict] = None, lock: Any = None):
+        """`schema_docs` maps a run's `dataset` to the schema the planner and
+        critic see (the API serves several datasets from one graph); without it
+        the planner's default schema is used. `lock` serialises execute_tool
+        with the caller's other users of the same runtime (the API's _LOCK)."""
         self.max_attempts = max_attempts
+        self.schema_docs = schema_docs or {}
+        self._lock = lock
+        self.critic_on = critic.enabled()
+        self.critic_routes = critic.routing()
         if runtime is not None:
             # injected (tests, the API): the caller owns the tool registration
             self.runtime = runtime
@@ -167,9 +198,11 @@ class GovernedAgentGraph:
                 f"allowed table and columns from the schema."
             )
 
+        schema_doc = self.schema_docs.get(state.get("dataset"))
+        kw = {"schema_doc": schema_doc} if schema_doc else {}
         with self._traced(state), self.tracer.span(
                 "plan", attempt=attempt, retry_context=bool(last_error)) as sp:
-            sql, metrics = self.planner.generate_sql_with_metrics(prompt)
+            sql, metrics = self.planner.generate_sql_with_metrics(prompt, **kw)
             sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
                    provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                    completion_tokens=metrics.completion_tokens,
@@ -182,9 +215,11 @@ class GovernedAgentGraph:
             "latency_ms": metrics.latency_ms,
             "tokens": metrics.total_tokens,
             "est_cost_usd": metrics.est_cost_usd,
+            "metrics": _metrics_dict(metrics),
         }
         return {
             "sql": sql,
+            "critic_verdict": None,
             "attempts": attempt,
             "trajectory": state.get("trajectory", []) + [step],
             "total_latency_ms": state.get("total_latency_ms", 0) + metrics.latency_ms,
@@ -192,12 +227,47 @@ class GovernedAgentGraph:
             "total_cost_usd": round(state.get("total_cost_usd", 0.0) + metrics.est_cost_usd, 6),
         }
 
+    def _critic(self, state: AgentState) -> dict:
+        """Review the proposed SQL. Records the verdict; never touches the guard."""
+        sql = state.get("sql") or ""
+        attempt = state.get("attempts")
+        with self._traced(state), self.tracer.span(
+                "critic", attempt=attempt, sql_sha256=tracing.sql_sha256(sql),
+                routing=self.critic_routes) as sp:
+            v = critic.review(self.planner, state["question"], sql,
+                              schema_doc=self.schema_docs.get(state.get("dataset")))
+            m = v.get("metrics") or {}
+            sp.set(verdict=v["verdict"], reason=v["reason"][:500], issues=v["issues"],
+                   model=m.get("model"), provider=m.get("provider"),
+                   prompt_tokens=m.get("prompt_tokens"), completion_tokens=m.get("completion_tokens"),
+                   est_cost_usd=m.get("est_cost_usd"), latency_ms=m.get("latency_ms"))
+        critic.audit(self.runtime, CAPABILITY, v, tracing.sql_sha256(sql))
+        step = {"step": "critic", "attempt": attempt, "verdict": v["verdict"],
+                "reason": v["reason"][:200], "tokens": m.get("total_tokens", 0),
+                "est_cost_usd": m.get("est_cost_usd", 0.0), "metrics": m or None}
+        out = {
+            "critic_verdict": v["verdict"],
+            "trajectory": state.get("trajectory", []) + [step],
+            "total_latency_ms": state.get("total_latency_ms", 0) + m.get("latency_ms", 0),
+            "total_tokens": state.get("total_tokens", 0) + m.get("total_tokens", 0),
+            "total_cost_usd": round(state.get("total_cost_usd", 0.0) + m.get("est_cost_usd", 0.0), 6),
+        }
+        if v["verdict"] == critic.REVISE and self.critic_routes:
+            reason = f"critic: {v['reason'] or 'the SQL does not answer the question'}"
+            out.update(allowed=False, decided_by="critic", reason=reason, last_error=reason)
+        return out
+
     def _execute(self, state: AgentState) -> dict:
         """Run the SQL through the SAME governed runtime. Guard is unchanged."""
         sql = state.get("sql") or ""
+        params: dict = {"sql": sql}
+        for k in ("dataset", "backend"):
+            if state.get(k):
+                params[k] = state[k]
         with self._traced(state), self.tracer.span(
                 "guard", attempt=state.get("attempts"), sql_sha256=tracing.sql_sha256(sql)) as g:
-            result = self.runtime.execute_tool(CAPABILITY, {"sql": sql})
+            with (self._lock or contextlib.nullcontext()):
+                result = self.runtime.execute_tool(CAPABILITY, params)
 
             # policy-level denial
             if not getattr(result, "allowed", False):
@@ -235,7 +305,7 @@ class GovernedAgentGraph:
         return {
             "allowed": True, "decided_by": "executed", "reason": None, "last_error": None,
             "safe_sql": out.get("safe_sql"), "row_count": out.get("row_count"),
-            "columns": out.get("columns"),
+            "columns": out.get("columns"), "backend_used": out.get("backend"),
             "trajectory": state.get("trajectory", []) + [step],
         }
 
@@ -271,6 +341,18 @@ class GovernedAgentGraph:
             return "plan"          # self-correct: loop back with last_error in state
         return "finish"            # bounded: give up gracefully
 
+    def _route_critic(self, state: AgentState) -> str:
+        """approve / unavailable -> execute. revise -> plan, or finish if the
+        attempts are spent (a revise consumes one, so the cap still bounds cost)."""
+        if state.get("critic_verdict") == critic.REVISE and self.critic_routes:
+            if state.get("attempts", 0) < self.max_attempts:
+                with self._traced(state):
+                    self.tracer.event("retry", attempt=state.get("attempts"), by="critic",
+                                      reason=(state.get("last_error") or "")[:500])
+                return "plan"
+            return "finish"
+        return "execute"
+
     # ---------------- graph ----------------
 
     def _build(self):
@@ -279,7 +361,13 @@ class GovernedAgentGraph:
         g.add_node("execute", self._execute)
         g.add_node("finish", self._finish)
         g.add_edge(START, "plan")
-        g.add_edge("plan", "execute")
+        if self.critic_on:
+            g.add_node("critic", self._critic)
+            g.add_edge("plan", "critic")
+            g.add_conditional_edges("critic", self._route_critic,
+                                    {"execute": "execute", "plan": "plan", "finish": "finish"})
+        else:
+            g.add_edge("plan", "execute")
         g.add_conditional_edges("execute", self._route, {"plan": "plan", "finish": "finish"})
         g.add_edge("finish", END)
         return g.compile(checkpointer=self.checkpointer)
@@ -300,12 +388,14 @@ class GovernedAgentGraph:
             "steps": len(values.get("trajectory") or []),
         }
 
-    def run(self, question: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:
+    def run(self, question: Optional[str] = None, trace_id: Optional[str] = None,
+            dataset: Optional[str] = None, backend: Optional[str] = None) -> AgentState:
         """See _run. The caller's current trace is left as it was."""
         with self.tracer.preserved():
-            return self._run(question, trace_id)
+            return self._run(question, trace_id, dataset, backend)
 
-    def _run(self, question: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:
+    def _run(self, question: Optional[str] = None, trace_id: Optional[str] = None,
+             dataset: Optional[str] = None, backend: Optional[str] = None) -> AgentState:
         """Run a question through the graph, or resume a run by its trace id.
 
         A new run gets a fresh trace id, which is also the checkpoint thread id.
@@ -333,8 +423,8 @@ class GovernedAgentGraph:
             if question is None:
                 raise ValueError("a new run needs a question")
             ctx = self.tracer.attach(self.tracer.start_trace(
-                "run", trace_id=tid, question=question, mode="graph",
-                max_attempts=self.max_attempts))
+                "run", trace_id=tid, question=question, mode="graph", dataset=dataset,
+                max_attempts=self.max_attempts, critic=self.critic_on))
         with ctx:
             if resume:
                 self.tracer.event("resume", from_node=existing.get("next"),
@@ -343,6 +433,7 @@ class GovernedAgentGraph:
             else:
                 payload: Any = {
                     "question": question, "trace_id": tid, "attempts": 0, "trajectory": [],
+                    "dataset": dataset, "backend": backend,
                     "total_latency_ms": 0, "total_tokens": 0, "total_cost_usd": 0.0,
                 }
             try:

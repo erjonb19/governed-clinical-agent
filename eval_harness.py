@@ -112,6 +112,7 @@ F_GUARD_DENIED = "guard_denied"       # guard rejected the SQL
 F_SQL_ERROR = "sql_error"             # SQL ran but errored (bad column, etc.)
 F_MODEL_ERROR = "model_error"         # planner/model call failed (genuine logic error)
 F_PROVIDER_ERROR = "provider_error"   # infra: 402/429/5xx, network, timeout -- NOT a regression
+F_CRITIC_REJECTED = "critic_rejected" # graph only: the critic asked for a rewrite on every attempt
 
 # Infrastructure/transport failures. A planner call that dies for one of these
 # reasons tells us nothing about agent accuracy, so it must be scored apart from
@@ -242,6 +243,10 @@ def run_once_graph(case, agent):
     attempts = state.get("attempts", 1)
     if not state.get("allowed"):
         reason = str(state.get("reason") or "denied")
+        if "critic:" in reason:
+            # the SQL may well have been right; the critic never let it run.
+            # Its own mode, so a critic that costs accuracy is visible as one.
+            return F_CRITIC_REJECTED, reason[:120], attempts
         mode = F_GUARD_DENIED if "guard" in reason.lower() else F_SQL_ERROR
         return mode, reason[:120], attempts
     fmode, detail = score_one(case, state.get("rows") or [])
