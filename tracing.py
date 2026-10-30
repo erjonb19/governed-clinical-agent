@@ -258,6 +258,20 @@ class Tracer:
             _current_span.set(prev_s)
 
     @contextlib.contextmanager
+    def preserved(self) -> Iterator[None]:
+        """Restore the caller's current trace and span on exit.
+
+        start_trace() makes the new trace current, which is right inside a run
+        and wrong after it: later spans on the same thread would join it.
+        """
+        prev_t, prev_s = _current_trace.get(), _current_span.get()
+        try:
+            yield
+        finally:
+            _current_trace.set(prev_t)
+            _current_span.set(prev_s)
+
+    @contextlib.contextmanager
     def attach(self, trace_id: str) -> Iterator[str]:
         """Append spans to an existing trace (an approval decided hours later)."""
         prev_t, prev_s = _current_trace.get(), _current_span.get()

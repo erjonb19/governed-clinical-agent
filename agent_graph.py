@@ -301,6 +301,11 @@ class GovernedAgentGraph:
         }
 
     def run(self, question: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:
+        """See _run. The caller's current trace is left as it was."""
+        with self.tracer.preserved():
+            return self._run(question, trace_id)
+
+    def _run(self, question: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:
         """Run a question through the graph, or resume a run by its trace id.
 
         A new run gets a fresh trace id, which is also the checkpoint thread id.
@@ -308,6 +313,8 @@ class GovernedAgentGraph:
         from the last checkpoint without repeating the steps that completed. The
         id of a finished run returns its saved state without running anything;
         that state has `rows: None`, because result rows are never checkpointed.
+        For the same reason a run resumed AFTER `execute` succeeded comes back
+        with `rows: None` and `rows_unavailable: True` -- never as an empty result.
         """
         tid = trace_id or tracing.new_id()
         cfg = {"configurable": {"thread_id": tid}}
@@ -344,6 +351,8 @@ class GovernedAgentGraph:
             finally:
                 rows = self._rows.pop(tid, None)
             final["rows"] = rows
+            if final.get("allowed") and rows is None:
+                final["rows_unavailable"] = True
             self.tracer.end_trace(
                 tid, status="ok", decided_by=final.get("decided_by"),
                 attempts=final.get("attempts"), total_tokens=final.get("total_tokens"),

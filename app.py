@@ -185,11 +185,13 @@ class _ServiceAuditLogger(AuditLogger):
     verbatim. Drop them here; row_count and columns stay.
     """
 
-    def log_tool_execution(self, *args, result=None, **kwargs):
+    def log_tool_execution(self, capability, parameters, success, execution_time_ms,
+                           result=None, error=None, resource_usage=None):
         out = result.get("output") if isinstance(result, dict) else None
         if isinstance(out, dict) and "rows" in out:
             result = {**result, "output": {k: v for k, v in out.items() if k != "rows"}}
-        return super().log_tool_execution(*args, result=result, **kwargs)
+        return super().log_tool_execution(capability, parameters, success, execution_time_ms,
+                                          result, error, resource_usage)
 
 
 @asynccontextmanager

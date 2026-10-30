@@ -116,10 +116,11 @@ def test_the_audit_log_never_holds_result_rows(client, tmp_path):
 
     r = client.post("/raw-sql", json={"sql": "SELECT 1 AS n"}, headers=H)
     assert r.json().get("rows"), "the caller still gets the rows"
-    for f in (tmp_path / "audit").glob("audit_api_*.jsonl"):
-        for line in f.read_text().splitlines():
-            if line.strip():
-                assert "rows" not in set(_keys(json.loads(line)))
+    lines = [line for f in (tmp_path / "audit").glob("audit_api_*.jsonl")
+             for line in f.read_text().splitlines() if line.strip()]
+    assert lines, "the query was audited"
+    for line in lines:
+        assert "rows" not in set(_keys(json.loads(line)))
 
 
 def test_traces_list_does_not_expose_the_server_path(client):

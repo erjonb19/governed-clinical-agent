@@ -171,6 +171,34 @@ def test_no_result_rows_are_ever_written_to_the_checkpoint(make_agent, tmp_path)
     assert not any(b"Mercy General" in b for b in blobs)
 
 
+def test_a_run_leaves_the_callers_trace_context_alone(make_agent):
+    make, _ = make_agent
+    assert tracing.current_trace_id() is None
+    make(StubPlanner(["SELECT 1 AS n"])).run("q")
+    assert tracing.current_trace_id() is None
+
+
+def test_a_run_resumed_after_execute_says_its_rows_are_gone(make_agent):
+    # rows are never checkpointed, so a run that died after execute cannot get
+    # them back; it must not look like an empty answer
+    make, tracer = make_agent
+    agent = make(StubPlanner(["SELECT 1 AS n"]))
+    real_event, failed = tracer.event, []
+
+    def flaky_event(name, **attrs):
+        if name == "answer" and not failed:
+            failed.append(1)
+            raise RuntimeError("died in finish")
+        return real_event(name, **attrs)
+
+    tracer.event = flaky_event
+    with pytest.raises(RuntimeError):
+        agent.run("q", trace_id="after-execute")
+    state = agent.run(trace_id="after-execute")
+    assert state["allowed"] and state["row_count"] == 1
+    assert state["rows"] is None and state["rows_unavailable"] is True
+
+
 def test_a_failed_run_resumes_from_its_checkpoint(make_agent):
     make, tracer = make_agent
     planner = StubPlanner([RuntimeError("provider down"), "SELECT 1 AS n"])

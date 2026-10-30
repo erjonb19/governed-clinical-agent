@@ -58,6 +58,11 @@ POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "medicare
 CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "logs/checkpoints.sqlite")
 CAPABILITY = "analytics.query_aggregate"
 MAX_ATTEMPTS = 3
+# Rows the reviewer sees as evidence. Only these are kept in the checkpointed
+# state: _propose re-runs on resume (possibly hours later, in another process)
+# and needs them, and the approval record stores the same rows anyway. The rest
+# of the result never reaches the checkpoint DB, which nothing prunes.
+EVIDENCE_ROWS = 3
 
 
 class ApprovalState(TypedDict, total=False):
@@ -167,7 +172,8 @@ class GovernedApprovalAgent:
             self.tracer.event("execute", attempt=state.get("attempts"),
                               row_count=out.get("row_count"), backend=out.get("backend"))
         return {"allowed": True, "reason": None, "last_error": None,
-                "safe_sql": out.get("safe_sql"), "rows": out.get("rows"),
+                "safe_sql": out.get("safe_sql"),
+                "rows": (out.get("rows") or [])[:EVIDENCE_ROWS],
                 "row_count": out.get("row_count"),
                 "trajectory": state.get("trajectory", []) + [
                     {"step": "execute", "outcome": "success",
@@ -204,7 +210,7 @@ class GovernedApprovalAgent:
                 capability=self.capability,
                 question=state["question"],
                 proposal=proposal,
-                evidence=str(rows[:3]),
+                evidence=str(rows[:EVIDENCE_ROWS]),
             )
             with self._traced(state):
                 # recorded once, when the record is minted; the re-execution on
@@ -218,7 +224,7 @@ class GovernedApprovalAgent:
             "approval_id": approval_id,
             "capability": self.capability,
             "proposal": proposal,
-            "evidence_rows": rows[:3],
+            "evidence_rows": rows[:EVIDENCE_ROWS],
         })
 
         # --- everything below runs only AFTER a decision resumes the graph ---
