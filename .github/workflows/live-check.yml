@@ -24,7 +24,7 @@ concurrency:
 jobs:
   live-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20       # 3 x (90s + 90s) + pauses + apt; a cancelled job files no issue
     steps:
       - uses: actions/checkout@v5
 

@@ -428,12 +428,14 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
   } else if(localStorage.getItem(KEY)){ $("key").value=localStorage.getItem(KEY); }
   // No key yet: there is nothing to test, and an empty-key /auth-check only puts
   // a 401 in the console on every first visit (the nightly live check fails on it).
-  let ok=$("key").value.trim()?await testKey(true):false;
+  const haveKey=!!$("key").value.trim();
+  let ok=haveKey?await testKey(true):false;
   // A saved key that no longer works is worse than none: clear it.
   if(!ok && !cfg.prefill_key && localStorage.getItem(KEY)){
     localStorage.removeItem(KEY); $("key").value="";
   }
-  if(!ok){ setConn("bad","Key needed"); $("connectCard").style.display="block"; } else { refreshBadge(); }
+  // testKey already set the badge (rejected / Offline / Error) if it ran.
+  if(!ok){ if(!haveKey) setConn("bad","Key needed"); $("connectCard").style.display="block"; } else { refreshBadge(); }
 })();
 
 /* ---------- nav ---------- */

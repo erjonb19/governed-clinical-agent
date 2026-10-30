@@ -66,36 +66,61 @@ def problems(health_status: Optional[int], health_body: Optional[dict],
     return out
 
 
-def check_once(url: str, timeout_s: int, screenshot: Optional[str] = None) -> list[str]:
-    """One attempt against a live server. Returns its problems."""
-    import httpx
-    from playwright.sync_api import sync_playwright
-
-    health_status, health_body = None, None
+def read_health(response) -> tuple[Optional[int], Optional[dict]]:
+    """(status, body) of a /health response; a 200 that is not JSON (a holding
+    page) has no body, so problems() reports it as not ok rather than as
+    unreachable."""
+    if response.status_code != 200:
+        return response.status_code, None
     try:
-        r = httpx.get(f"{url}/health", timeout=timeout_s)
-        health_status = r.status_code
-        health_body = r.json() if r.status_code == 200 else None
+        body = response.json()
+    except ValueError:
+        return response.status_code, None
+    return response.status_code, body if isinstance(body, dict) else None
+
+
+def check_once(url: str, timeout_s: int, screenshot: Optional[str] = None,
+               playwright_factory: Optional[Callable] = None) -> list[str]:
+    """One attempt against a live server. Returns its problems.
+
+    A screenshot is taken whenever the page got far enough to have one --
+    including when the load itself failed, which is when it is most useful.
+    """
+    import httpx
+
+    try:
+        health_status, health_body = read_health(httpx.get(f"{url}/health", timeout=timeout_s))
     except Exception as e:
         return [f"/health unreachable: {type(e).__name__}: {e}"[:300]]
 
+    if playwright_factory is None:
+        from playwright.sync_api import sync_playwright as playwright_factory
     console: list[str] = []
     ui_status, title, shell_ok = None, "", False
+    load_error = None
     try:
-        with sync_playwright() as p:
+        with playwright_factory() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.on("console", lambda m: console.append(m.text) if m.type == "error" else None)
             page.on("pageerror", lambda e: console.append(f"uncaught: {e}"))
-            resp = page.goto(f"{url}/ui", timeout=timeout_s * 1000, wait_until="networkidle")
-            ui_status = resp.status if resp else None
-            title = page.title()
-            shell_ok = page.locator("#nav").count() == 1 and page.locator("main").count() == 1
+            try:
+                resp = page.goto(f"{url}/ui", timeout=timeout_s * 1000, wait_until="networkidle")
+                ui_status = resp.status if resp else None
+                title = page.title()
+                shell_ok = page.locator("#nav").count() == 1 and page.locator("main").count() == 1
+            except Exception as e:
+                load_error = f"/ui did not load: {type(e).__name__}: {e}"[:300]
             if screenshot:
-                page.screenshot(path=screenshot, full_page=True)
+                try:
+                    page.screenshot(path=screenshot, full_page=True)
+                except Exception:
+                    pass
             browser.close()
     except Exception as e:
-        return [f"/ui did not load: {type(e).__name__}: {e}"[:300]]
+        return [f"browser failed: {type(e).__name__}: {e}"[:300]]
+    if load_error:
+        return [load_error] + [f"console error: {c[:200]}" for c in console]
     return problems(health_status, health_body, ui_status, title, shell_ok, console)
 
 

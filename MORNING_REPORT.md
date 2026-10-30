@@ -27,7 +27,7 @@ this build session against the $3.00 cap.
 - **A real defect it found:** the UI called `/auth-check` with an empty key on
   every first visit, which logged a 401 console error. The UI now only tests a
   key it has. The live check will fail until Render redeploys this commit.
-- **Tests:** 570 passed, 1 skipped (`pytest`).
+- **Tests:** 572 passed, 1 skipped (`pytest`). Review: MERGE WITH NITS; fixed the failure-path screenshot, a non-JSON `/health`, the job timeout (now 20 min) and an "Offline" badge being overwritten.
 - **Evals:** none needed (no planner change).
 - **Anthropic spend so far:** $0.00.
 - **You need to:** nothing for this PR.

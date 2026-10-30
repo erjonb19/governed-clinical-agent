@@ -91,5 +91,73 @@ def test_the_ui_does_not_probe_auth_without_a_key():
               encoding="utf-8") as f:
         html = f.read()
     startup = html[html.index('if(!cfg.auth_required)'):html.index("/* ---------- nav")]
-    assert '$("key").value.trim()?await testKey(true):false' in startup
+    assert 'let ok=haveKey?await testKey(true):false' in startup
     assert startup.count("testKey(") == 1
+    # and an unreachable service keeps its "Offline" badge: only an untested
+    # (missing) key is labelled "Key needed"
+    assert 'if(!haveKey) setConn("bad","Key needed")' in startup
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+def test_a_non_json_health_page_is_not_ok_rather_than_unreachable():
+    assert lc.read_health(_Resp(200, ValueError("not json"))) == (200, None)
+    assert lc.problems(**{**GOOD, "health_body": None}) == ["/health status is None, not 'ok'"]
+    assert lc.read_health(_Resp(200, {"status": "ok"})) == (200, {"status": "ok"})
+    assert lc.read_health(_Resp(503, None)) == (503, None)
+
+
+class _FakePage:
+    def __init__(self):
+        self.handlers, self.shots = {}, []
+
+    def on(self, event, fn):
+        self.handlers[event] = fn
+
+    def goto(self, *a, **k):
+        msg = type("M", (), {"type": "error", "text": "Failed to load resource: 502"})()
+        self.handlers["console"](msg)
+        raise TimeoutError("networkidle not reached")
+
+    def screenshot(self, path, full_page):
+        self.shots.append(path)
+
+
+class _FakePlaywright:
+    def __init__(self, page):
+        self.chromium = self
+        self._page = page
+
+    def launch(self):
+        return self
+
+    def new_page(self):
+        return self._page
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_a_failed_load_still_screenshots_and_keeps_the_console(monkeypatch):
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(200, {"status": "ok"}))
+    page = _FakePage()
+    found = lc.check_once("http://x", 1, "shot.png",
+                          playwright_factory=lambda: _FakePlaywright(page))
+    assert page.shots == ["shot.png"]
+    assert found[0].startswith("/ui did not load: TimeoutError")
+    assert "console error: Failed to load resource: 502" in found
