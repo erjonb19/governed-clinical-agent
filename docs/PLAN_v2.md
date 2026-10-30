@@ -1,6 +1,7 @@
 # PLAN v2 — governed-clinical-agent
 
-Status: **DRAFT, awaiting approval.** No code has been written.
+Status: **APPROVED 2026-10-30**, D1 to D9 as recommended (§0.2), and the three
+§6 findings as proposed. Built so far: PR 1 (#26), PR 3 (#27), PR 2 (7d).
 Date: 2026-10-17. Baseline: `myfork/main` @ `044c80c` (see §0.1).
 
 ---
