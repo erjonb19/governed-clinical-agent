@@ -380,12 +380,13 @@ that names it.
 
 ## CI
 
-Five GitHub Actions workflows:
+Six GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **562 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **572 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
+- **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
 Fast feedback on every change, complete coverage every night. Reports are uploaded as artifacts.
