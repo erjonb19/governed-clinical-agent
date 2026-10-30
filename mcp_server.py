@@ -1,6 +1,6 @@
 """
-Guarded MCP Server (stdio)
-==========================
+Guarded MCP Server (stdio and Streamable HTTP)
+==============================================
 Exposes your Security-Constrained Agent Runtime as an MCP server.
 Every MCP tool call is routed through your REAL policy engine
 (AgentRuntime.execute_tool) before anything runs.
@@ -10,7 +10,19 @@ and run it from there.
 
 Run:
     pip install "mcp[cli]"
-    python mcp_server.py            # starts the server on stdio
+    python mcp_server.py                          # stdio (the default)
+    python mcp_server.py --transport http         # Streamable HTTP on 127.0.0.1:8765/mcp
+    python mcp_server.py --transport http --host 0.0.0.0 --port 8765
+
+The FastAPI service also serves the same tools at /mcp (app.py, PLAN v2 D5).
+
+HTTP AUTH (PLAN v2 item 5). Every HTTP request needs the key, as `X-API-Key: <key>`
+or `Authorization: Bearer <key>`, compared in constant time. The key is
+MCP_API_KEY, falling back to API_KEY (D6). Without either the HTTP transport
+refuses to start, unless ALLOW_OPEN_ACCESS=true (local dev only) -- the same rule
+as app.py. A request carrying a browser Origin must come from an allowed origin
+(localhost, or MCP_ALLOWED_ORIGINS), the MCP spec's guard against DNS rebinding.
+This is API-key auth. It is NOT OAuth 2.1, which stays on the roadmap.
 
 Test (either one):
     npx @modelcontextprotocol/inspector python mcp_server.py
@@ -57,11 +69,12 @@ from typing import Annotated, Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
 from src.runtime.agent_runtime import AgentRuntime
 from src.runtime.bootstrap import register_default_tools
-from src.tools.base import BaseTool, ToolResult
+from src.tools.base import BaseTool, ToolResult, get_tool
 
 from analytics_query_tool import AnalyticsQueryTool
 from sql_guard import ALLOWED_TABLES, validate_query
@@ -104,10 +117,22 @@ class EchoTool(BaseTool):
 # ---------------------------------------------------------------------------
 POLICY_PATH = os.path.join(HERE, "mcp_demo_policy.yaml")
 
+def _ensure_registered(rt: AgentRuntime, tool: BaseTool) -> None:
+    """Register `tool` unless its capability already has one.
+
+    The tool registry is process-global. When app.py serves these tools at /mcp,
+    it has already registered analytics.query_aggregate for /query, with the same
+    Gold paths; a second registration would raise. Reusing the existing one keeps
+    a single implementation per capability, and the policy here still rules on it.
+    """
+    if get_tool(tool.name) is None:
+        rt.register_tool(tool)
+
+
 runtime = AgentRuntime()
 runtime.load_policy(POLICY_PATH)
 register_default_tools(runtime)      # git, http.fetch, package_manager.query
-runtime.register_tool(EchoTool())    # demo.echo
+_ensure_registered(runtime, EchoTool())    # demo.echo
 
 
 # The real product capability. Registered with the same multi-dataset wiring the
@@ -124,7 +149,7 @@ _analytics = AnalyticsQueryTool(
     seed_demo=False,
     db_paths={k: v["db"] for k, v in DATASETS.items()},
 )
-runtime.register_tool(_analytics)
+_ensure_registered(runtime, _analytics)
 
 
 def available_datasets() -> list[str]:
@@ -230,7 +255,16 @@ def _refusal(error: str, findings, dataset: str) -> str:
 # (Claude Desktop, VS Code, the Inspector) can call. Each one maps to a
 # capability and is mediated by your policy engine.
 # ---------------------------------------------------------------------------
-mcp = FastMCP("guarded-runtime")
+# Stateless JSON responses: every tool here is a single request/response, so no
+# session state or SSE stream is needed, and any instance can answer any call.
+# FastMCP's own Host-header check is off because it only admits localhost and
+# would reject the deployed hostname; the Origin check in MCPAuth replaces it.
+mcp = FastMCP(
+    "guarded-runtime",
+    stateless_http=True,
+    json_response=True,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 @mcp.tool()
@@ -362,6 +396,147 @@ def git_push(
     return guarded("git.push", {"remote": remote, "branch": branch})
 
 
+# ---------------------------------------------------------------------------
+# Streamable HTTP: API-key auth and an Origin check in front of the MCP app.
+# ---------------------------------------------------------------------------
+LOCAL_ORIGINS = ("http://127.0.0.1", "http://localhost", "http://[::1]")
+
+
+def mcp_key() -> Optional[str]:
+    """MCP_API_KEY, else API_KEY (D6): rotate the MCP key on its own if you like."""
+    return os.environ.get("MCP_API_KEY") or os.environ.get("API_KEY") or None
+
+
+def allowed_origins() -> list[str]:
+    extra = [o.strip().rstrip("/") for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",")
+             if o.strip()]
+    return extra
+
+
+def origin_allowed(origin: Optional[str], extra: list[str]) -> bool:
+    """No Origin (a non-browser client) is fine; a browser Origin must be local
+    (any port) or listed in MCP_ALLOWED_ORIGINS."""
+    if not origin:
+        return True
+    origin = origin.rstrip("/")
+    for base in LOCAL_ORIGINS:
+        if origin == base or origin.startswith(base + ":"):
+            return True
+    return origin in extra
+
+
+def presented_key(headers: dict) -> Optional[str]:
+    if headers.get("x-api-key"):
+        return headers["x-api-key"]
+    auth = headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip() or None
+    return None
+
+
+class MCPAuth:
+    """ASGI middleware: Origin check, then the API key. Anything else is refused
+    before the MCP app sees the request. `key=None` means open access, which the
+    callers only allow under ALLOW_OPEN_ACCESS."""
+
+    def __init__(self, app, key: Optional[str], origins: Optional[list[str]] = None):
+        self.app, self.key = app, key
+        self.origins = allowed_origins() if origins is None else origins
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        import hmac
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        if not origin_allowed(headers.get("origin"), self.origins):
+            return await _json(send, 403, {"detail": "origin not allowed"})
+        if self.key is not None:
+            given = presented_key(headers)
+            if given is None or not hmac.compare_digest(given.encode(), self.key.encode()):
+                return await _json(send, 401, {"detail": "missing or invalid API key"},
+                                   [(b"www-authenticate", b"Bearer")])
+        return await self.app(scope, receive, send)
+
+
+async def _json(send, status: int, body: dict, extra_headers=None) -> None:
+    data = json.dumps(body).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(data)).encode())] + (extra_headers or [])})
+    await send({"type": "http.response.body", "body": data})
+
+
+def resolve_http_key() -> Optional[str]:
+    """The key the HTTP transport will require, or None for explicit open access.
+    Refuses to start without one, mirroring app.py's REFUSING TO START."""
+    key = mcp_key()
+    if key:
+        return key
+    if os.environ.get("ALLOW_OPEN_ACCESS", "").lower() in {"1", "true", "yes"}:
+        print("WARNING: MCP over HTTP is OPEN (ALLOW_OPEN_ACCESS). Local dev only.",
+              file=sys.stderr)
+        return None
+    raise SystemExit(
+        "\nREFUSING TO START: no MCP_API_KEY or API_KEY set for the HTTP transport.\n"
+        "  Set MCP_API_KEY=<secret> (or API_KEY), or ALLOW_OPEN_ACCESS=true for local dev.\n")
+
+
+def build_http_handler(key: Optional[str]):
+    """A fresh (session manager, ASGI handler) pair for Streamable HTTP.
+
+    Fresh each time because a session manager can only run once; the FastAPI
+    app builds one per lifespan, and its tests restart the app. The handler is
+    the MCP endpoint itself, behind MCPAuth.
+    """
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+    manager = StreamableHTTPSessionManager(
+        app=mcp._mcp_server,
+        json_response=mcp.settings.json_response,
+        stateless=mcp.settings.stateless_http,
+        security_settings=mcp.settings.transport_security,
+    )
+    return manager, MCPAuth(StreamableHTTPASGIApp(manager), key)
+
+
+def build_standalone_app(key: Optional[str]):
+    """The standalone HTTP server: the MCP endpoint at /mcp, plus /health."""
+    import contextlib
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    manager, handler = build_http_handler(key)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with manager.run():
+            yield
+
+    async def health(request):
+        return JSONResponse({"status": "ok", "transport": "streamable-http",
+                             "auth": "api-key" if key else "open"})
+
+    return Starlette(routes=[Route("/mcp", endpoint=handler, methods=["GET", "POST", "DELETE"]),
+                             Route("/health", endpoint=health)],
+                     lifespan=lifespan)
+
+
+def main(argv=None) -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Guarded MCP server")
+    ap.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8765)
+    args = ap.parse_args(argv)
+    if args.transport == "stdio":
+        mcp.run()
+        return
+    import uvicorn
+    app = build_standalone_app(resolve_http_key())
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
 if __name__ == "__main__":
-    # stdio transport for local dev. Milestone 3 switches to Streamable HTTP.
-    mcp.run()
+    main()

@@ -232,6 +232,7 @@ After Phase 1, the runtime can: load policy, evaluate capabilities, enforce path
   with an owner is the obvious follow-up.
 - **Step-up authentication** (§8.2) — **NOT STARTED.** Ties into the MCP server's
   Milestone 4 (OAuth 2.1), see [../README_MCP_Milestone1.md](../README_MCP_Milestone1.md).
+  The MCP server's HTTP transport (PLAN v2 PR 7) uses API-key auth, not OAuth.
 
 ---
 

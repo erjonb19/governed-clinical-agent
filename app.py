@@ -28,7 +28,7 @@ import sys
 import hmac
 import json
 import threading
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -233,7 +233,21 @@ async def lifespan(app: FastAPI):
         _STATE["approval_agent"] = None
         _STATE["approval_store"] = ApprovalStore()   # queue is still readable
         _STATE["approval_error"] = str(e)
-    yield
+    # The MCP server's tools over Streamable HTTP at /mcp (PLAN v2 item 5, D5),
+    # behind MCP_API_KEY (falling back to API_KEY, D6). Optional: without the
+    # mcp package /mcp answers 503 and /health says why. app.py already refused
+    # to start without API_KEY unless ALLOW_OPEN_ACCESS, so a missing key here
+    # means explicit open access, as for the rest of the API.
+    async with AsyncExitStack() as stack:
+        try:
+            import mcp_server
+            manager, handler = mcp_server.build_http_handler(mcp_server.mcp_key())
+            await stack.enter_async_context(manager.run())
+            _STATE["mcp_http"] = handler
+        except Exception as e:
+            _STATE["mcp_http"] = None
+            _STATE["mcp_error"] = f"{type(e).__name__}: {e}"[:300]
+        yield
     _STATE.clear()
 
 
@@ -248,6 +262,36 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+
+class _MCPEndpoint:
+    """/mcp: hands the request to the MCP handler built in the lifespan, or 503s.
+
+    A plain ASGI route rather than app.mount("/mcp"), so the URL is exactly /mcp
+    (a mount would only answer /mcp/...). Auth is the handler's own (MCPAuth), so
+    the MCP key can differ from the API key.
+    """
+
+    # slowapi's middleware names every route's endpoint; an ASGI-callable
+    # instance has no __name__ of its own and would 500 every /mcp request.
+    __name__ = "mcp_endpoint"
+
+    async def __call__(self, scope, receive, send):
+        handler = _STATE.get("mcp_http")
+        if handler is None:
+            body = json.dumps({"detail": "MCP over HTTP is not available",
+                               "error": _STATE.get("mcp_error")}).encode()
+            await send({"type": "http.response.start", "status": 503,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await handler(scope, receive, send)
+
+
+from starlette.routing import Route  # noqa: E402
+
+app.router.routes.append(Route("/mcp", endpoint=_MCPEndpoint(),
+                               methods=["GET", "POST", "DELETE"], include_in_schema=False))
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +461,8 @@ def health() -> dict:
         "auth_enabled": bool(API_KEY),
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ},
+        "mcp_http": _STATE.get("mcp_http") is not None,
+        "mcp_error": _STATE.get("mcp_error"),
         "approvals_enabled": _STATE.get("approval_agent") is not None,
         "approval_error": _STATE.get("approval_error"),
         "backends": _STATE["analytics_tool"].backends() if _STATE.get("analytics_tool") else None,

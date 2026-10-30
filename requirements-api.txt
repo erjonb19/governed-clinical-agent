@@ -27,3 +27,6 @@ python-dotenv==1.2.2
 # "not configured" message if the credentials are absent, so installing it is
 # safe even on deploys that never use it.
 databricks-sql-connector==4.4.0
+
+# MCP over Streamable HTTP, mounted in the API at /mcp (PLAN v2 item 5, D5).
+mcp==1.28.0
