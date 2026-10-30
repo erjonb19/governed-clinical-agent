@@ -211,8 +211,8 @@ A guard that only checked the first table reference would let that through. This
 
 The correctness claim is measured against ground truth, not asserted.
 
-**63 questions across two datasets**, each paired with hand-written reference SQL:
-`eval_bank.py` (38 cases, CMS hospital quality) and `eval_bank_fhir.py` (28 cases,
+**70 questions across two datasets**, each paired with hand-written reference SQL:
+`eval_bank.py` (42 cases, CMS hospital quality) and `eval_bank_fhir.py` (28 cases,
 FHIR clinical). Both span five difficulty tiers, from simple aggregates to
 cross-table clinical reasoning.
 
@@ -368,7 +368,7 @@ Other entry points:
 
 ```bash
 python agent_graph.py              # self-correcting agent demo, with trajectory
-python eval_harness.py             # the 38-case ground-truth suite
+python eval_harness.py             # the 42-case ground-truth suite
 python sql_guard.py                # adversarial guard harness (instant, no API calls)
 streamlit run aiops_panel.py       # observability dashboard
 ```
