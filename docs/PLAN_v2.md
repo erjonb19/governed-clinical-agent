@@ -71,6 +71,39 @@ want literally `.env`-only (refuse a key exported in the shell), say so and
 I'll add `dotenv_values()`. Note that this would need CI to write a `.env`
 file from the secret.
 
+### 0.3 Measured: full graph sweeps on Gemini (overnight 2026-10-29/30)
+
+Both banks run through the self-correcting graph (`eval_harness.py --graph`,
+3 runs per case, `gemini-flash-lite-latest`, local DuckDB, Gold as of the
+2026-10-04 hospital refresh):
+
+| Bank | Cases (majority-correct) | Runs | Cases needing a retry | Avg attempts | Elapsed | Report |
+|---|---|---|---|---|---|---|
+| Hospital | **38/38** (100%) | **114/114** | **0** | 1.00 | 617 s | `eval_graph_hospital_20261030T035035Z.json` |
+| FHIR | **28/28** (100%) | **84/84** | **0** | 1.00 | 426 s | `eval_graph_fhir_20261030T033654Z.json` |
+
+Logs: `eval_runs/overnight_hospital_graph.log`, `eval_runs/overnight_fhir_graph.log`
+(`eval_runs/` is gitignored, so they are local only). Every tier is 100% in
+both banks.
+
+What it means for this plan:
+- The graph path matches the single-shot sweeps on the same Gold
+  (`eval_single_hospital_20261018T042457Z` 114/114,
+  `eval_single_fhir_20261018T043155Z` 84/84). **Both paths are at the
+  ceiling**, so these banks cannot tell them apart. For Gemini, roadmap item 2
+  ("graph vs single-shot") is measured but not answered.
+- **On Gemini, zero retries means the existing banks never exercise
+  self-correction.** That is a property of the model as well as the bank. The
+  Aug 3 graph sweep on gpt-oss-120b (`eval_graph_20260803T033040Z`, 35-case
+  hospital bank) retried 5 cases: t2_count_ny_5star, t2_avg_hwr_ma,
+  t2_count_cheap, t4_count_fast_lowlbs and t5_clinical_vocab_copd. Item 3's
+  10 adversarial cases are what exercise the retry edge, and later the critic
+  (item 4), on any model. On Gemini the trajectory `retries` dimension will be
+  trivially satisfied on the 66 existing cases. That is not guaranteed on
+  Haiku 5.5 (7c).
+- The baseline for 7c is now 100% on both banks on the graph path. A
+  Haiku 5.5 run below that is a model difference, not a graph regression.
+
 ---
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
