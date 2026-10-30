@@ -21,9 +21,12 @@ pip install "mcp[cli]"
 
 ## Run
 ```bash
-python mcp_server.py
+python mcp_server.py                                    # stdio (the local dev transport)
+MCP_API_KEY=<secret> python mcp_server.py --transport http   # Streamable HTTP, 127.0.0.1:8765/mcp
 ```
-That starts the server on the **stdio** transport (the local dev transport).
+The API serves the same tools at `/mcp` too. Over HTTP every request needs the
+key, as `X-API-Key: <key>` or `Authorization: Bearer <key>` (`MCP_API_KEY`, else
+`API_KEY`). That is **API-key auth, not OAuth 2.1**; OAuth stays on the roadmap.
 
 ## Test it
 Easiest is the MCP Inspector, which gives you a UI to call the tools:
@@ -58,9 +61,9 @@ next phase. Now it's built.)
   capability. Build a general mapping: MCP tool name → capability, MCP args →
   validated parameters, taint on untrusted args. Return structured MCP tool
   errors on denial instead of a string.
-- **Milestone 3 — the guarded server proper.** Switch `mcp.run()` to Streamable
-  HTTP with sessions, expose several tools across risk tiers, wire the
-  approval flow (high-risk → human approves → executes).
+- **Milestone 3 — the guarded server proper.** Streamable HTTP is DONE (PLAN v2
+  PR 7, stateless, API-key auth, standalone and at `/mcp`). Still to do: tools
+  across risk tiers and the approval flow (high-risk → human approves → executes).
 - **Milestone 4 — auth + ops + the real application.** OAuth 2.1 / bearer auth,
   Docker, and replace `EchoTool` with **your Medicare agent's tools**
   (query the Gold table, detect anomalies, generate a brief) so the guarded

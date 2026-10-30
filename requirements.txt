@@ -16,7 +16,6 @@ requests==2.34.2
 
 # gitpython>=3.1.0  # not used: src/tools/git_ops.py shells out to git directly
 
-# MCP front door (mcp_server.py). Not a deployment dependency -- the Render
-# service installs requirements-api.txt only -- but the test suite exercises the
-# guarded MCP surface, so CI needs it.
+# MCP front door (mcp_server.py). Also pinned in requirements-api.txt now that the
+# API serves it at /mcp; keep the two pins equal.
 mcp==1.28.0
