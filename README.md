@@ -380,12 +380,13 @@ that names it.
 
 ## CI
 
-Six GitHub Actions workflows:
+Seven GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **615 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **635 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
+- **MCP end to end on every push** (`mcp-e2e.yml`) — a real MCP client connects over stdio, standalone Streamable HTTP and `/mcp` in the API; on each it lists tools, runs one allowed and one blocked query, and over HTTP checks the 401 and both key headers. No LLM, $0.
 - **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
@@ -481,6 +482,11 @@ A working reference implementation, described plainly:
   Escalation is a real handoff: the item stays queued under its new owner and
   the agent stays paused, so whoever inherits it can still approve it and have
   the action run. Every hop is kept in an `approval_events` chain.
+- MCP over Streamable HTTP — `python mcp_server.py --transport http` standalone,
+  and mounted in the API at `/mcp`. API-key auth (`MCP_API_KEY`, falling back to
+  `API_KEY`; `X-API-Key` or `Authorization: Bearer`), an Origin check against DNS
+  rebinding, and it refuses to start without a key. Not OAuth 2.1. An E2E job
+  connects over stdio, standalone HTTP and `/mcp` on every push.
 - The analytics capability is exposed over MCP — `query_analytics` and
   `analytics_schema` in `mcp_server.py`, mediated by the same policy engine and
   the same `sql_guard`. The client's model writes the SQL; this server is the
@@ -502,7 +508,7 @@ A working reference implementation, described plainly:
 **Next**
 
 - RAG over CMS measure definitions, so the agent can answer *what a measure means*, not only what its value is
-- MCP server Milestone 2+: a general capability-mapping layer, then Streamable HTTP and OAuth 2.1 (currently stdio)
+- MCP server Milestone 2+: a general capability-mapping layer, then OAuth 2.1 (today: stdio, and Streamable HTTP with API-key auth at `/mcp`)
 - Adversarial cases built to fail first, so the retry loop (and a critic) have
   something to correct; on the existing banks both paths are at the ceiling
 

@@ -70,6 +70,8 @@ def make_client(tmp_path, monkeypatch):
         import tracing
         tracing.set_tracer(None)
         importlib.reload(tracing)
+        import cost_tracker          # reads PLANNER_METRICS_LOG at import
+        importlib.reload(cost_tracker)
         import app as app_module
         importlib.reload(app_module)
         monkeypatch.setattr(app_module, "NLToSQLPlanner", _planner_class(script))

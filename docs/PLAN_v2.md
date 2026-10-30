@@ -1,7 +1,10 @@
 # PLAN v2 — governed-clinical-agent
 
 Status: **APPROVED 2026-10-30**, D1 to D9 as recommended (§0.2), and the three
-§6 findings as proposed. Built so far: PR 1 (#26), PR 3 (#27), PR 2 (7d, #31), PR 4 (critic + D2).
+§6 findings as proposed. Built so far: PR 1 (#26), PR 3 (#27), PR 2 (7d, #31), PR 7 (MCP HTTP + 7b, #33), PR 4 (critic + D2).
+D5 as built: `/mcp` is a plain ASGI route in the FastAPI app (not a mount, so
+the URL is exactly `/mcp`), and the MCP session manager is entered in the
+app's lifespan; stateless JSON responses. D6 as built: `MCP_API_KEY`, else `API_KEY`.
 Date: 2026-10-17. Baseline: `myfork/main` @ `044c80c` (see §0.1).
 
 ---
