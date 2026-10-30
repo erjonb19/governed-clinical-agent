@@ -239,6 +239,7 @@ async def lifespan(app: FastAPI):
             from agent_graph import GovernedAgentGraph
             _STATE["graph_agent"] = GovernedAgentGraph(
                 runtime=runtime, planner=_STATE["planner"], lock=_LOCK,
+                checkpoint_db=os.environ.get("CHECKPOINT_DB"),   # read now, not at import
                 schema_docs={k: v["schema_doc"] for k, v in DATASETS.items()})
         except BaseException as e:
             _STATE["graph_error"] = str(e)
@@ -593,9 +594,17 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
     try:
         state = agent.run(req.question, trace_id=tid, dataset=ds, backend=req.backend)
     except Exception as e:
-        # the graph closed the trace as an error before re-raising
+        # The graph closed the trace as an error before re-raising. The calls it
+        # made before failing were paid for: take them from the checkpoint.
+        try:
+            done = agent.graph.get_state({"configurable": {"thread_id": tid}}).values or {}
+            for st in done.get("trajectory") or []:
+                if st.get("step") in ("plan", "critic") and st.get("metrics"):
+                    cost_tracker.record(st["metrics"], question=req.question)
+        except Exception:
+            pass
         return {"allowed": False, "decided_by": "policy",
-                "reason": f"planner error: {e}", "trace_id": tid}
+                "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid}
     calls = [st["metrics"] for st in state.get("trajectory") or []
              if st.get("step") in ("plan", "critic") and st.get("metrics")]
     for m in calls:

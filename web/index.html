@@ -563,15 +563,19 @@ function renderAnswer(d){
     el.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ok=!!d.allowed;
+  const byGuard=d.decided_by==="guard"||d.decided_by==="policy";
   const cls=ok?"":"deny";
   let h=`<div class="card"><div class="trust ${cls}">
       <span class="pill ${cls}">${ok?"Answered":"Refused"}</span>
-      <small>${ok?"Verified by the security layer · read-only · result-limited":"Blocked at the boundary before any data was read"}</small></div>`;
+      <small>${ok?"Verified by the security layer · read-only · result-limited":(byGuard?"Blocked at the boundary before any data was read":"No answer was returned")}</small></div>`;
 
   if(!ok){
+    const why=byGuard?"This is the guard working as intended."
+      :d.decided_by==="exhausted"?"The agent ran out of attempts without a query that passed review and ran."
+      :"The agent could not produce a working query.";
     h+=`<div class="pad"><div class="eyebrow">Why it was refused</div>
         <div style="font-size:15px">${esc(d.reason||"Not permitted")}</div>
-        <p class="small muted" style="margin-top:12px">This is the guard working as intended. Rephrase your question, or see <a href="#" id="toTrust">how this works</a>.</p></div>`;
+        <p class="small muted" style="margin-top:12px">${why} Rephrase your question, or see <a href="#" id="toTrust">how this works</a>.</p></div>`;
   } else {
     const rows=d.rows||[], cols=d.columns||[];
     h+=`<div class="pad">`;

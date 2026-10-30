@@ -18,6 +18,7 @@ DuckDB/Parquet store and set seed_demo=False.
 
 from __future__ import annotations
 
+import re
 import os
 from typing import Any, Dict
 
@@ -26,6 +27,23 @@ import duckdb
 from src.tools.base import BaseTool, ToolResult
 from sql_guard import validate_query
 
+
+
+
+_QUOTED_VALUE = re.compile(r"'(?:[^']|'')*'")
+
+
+def redact_values(message: str) -> str:
+    """An execution error with every single-quoted literal replaced.
+
+    DuckDB quotes the offending VALUE in a conversion error ("Could not convert
+    string 'Jane Doe' to INT32"), and gold_patient has name columns on the
+    allowlist. The error goes to the client, the trace, the graph's checkpoint
+    and -- on a retry -- back to the LLM provider in the next prompt, so it must
+    not carry data. Identifiers (double-quoted) are kept: they are schema, not
+    data, and the agent needs them to correct its SQL.
+    """
+    return _QUOTED_VALUE.sub("'<value>'", message)
 
 class AnalyticsQueryTool(BaseTool):
     def __init__(self, db_path: str = ":memory:", seed_demo: bool = True,
@@ -179,7 +197,7 @@ class AnalyticsQueryTool(BaseTool):
             )
         except Exception as e:
             return ToolResult(success=False, output={"safe_sql": decision.safe_sql, "backend": backend},
-                              error=f"query execution failed: {e}")
+                              error=f"query execution failed: {redact_values(str(e))}")
 
     # -- demo data only; delete when you point at real Gold -----------------
     def _seed_demo_gold(self) -> None:

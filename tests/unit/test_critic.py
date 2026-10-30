@@ -90,3 +90,27 @@ def test_the_eval_harness_scores_a_critic_exhausted_run_as_its_own_mode():
 
     mode, detail, attempts = eh.run_once_graph({"question": "q"}, Agent())
     assert mode == eh.F_CRITIC_REJECTED and attempts == 3
+
+
+def test_an_unanswerable_refusal_is_approved_without_a_model_call():
+    calls = []
+
+    class P:
+        def critique(self, *a, **k):
+            calls.append(1)
+            return '{"verdict": "revise", "reason": "that is not an answer"}', METRICS
+
+    for sql in ("SELECT 'no cost data here' AS unanswerable",
+                "  select 'it''s not in this dataset' as UNANSWERABLE ; "):
+        assert critic.is_refusal(sql)
+        assert critic.review(P(), "q", sql)["verdict"] == "approve"
+    assert calls == []
+    assert not critic.is_refusal("SELECT 'x' AS unanswerable, facility_id FROM gold_hospital_profile")
+
+
+def test_a_malformed_critic_reply_fails_open_instead_of_failing_the_run():
+    class P:
+        def critique(self, *a, **k):
+            return {"not": "text"}, object()      # no as_dict(), not a string
+    v = critic.review(P(), "q", "SELECT 1")
+    assert v["verdict"] == critic.UNAVAILABLE

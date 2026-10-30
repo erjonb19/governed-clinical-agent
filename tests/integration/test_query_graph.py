@@ -140,3 +140,30 @@ def test_single_mode_keeps_the_old_path(make_client):
     assert body["allowed"] and body.get("attempts") is None and body.get("critic") is None
     names = [s["name"] for s in c.get(f"/traces/{body['trace_id']}", headers=H).json()["spans"]]
     assert names == ["plan", "guard", "execute", "answer"]
+
+
+def test_an_unanswerable_refusal_reaches_the_switch_dataset_card(make_client):
+    # one scripted item: if the critic were consulted it would find nothing to
+    # pop, fail open, and the step would not say "nothing to review"
+    c, _ = make_client({"what does": [("sql", "SELECT 'no cost data in this dataset' AS unanswerable")]})
+    body = c.post("/query", json={"question": "what does a knee replacement cost?"},
+                  headers=H).json()
+    assert body["unanswerable"] and body["rows"] == []
+    crit = [s for s in body["trajectory"] if s["step"] == "critic"]
+    assert crit and crit[0]["verdict"] == "approve" and "nothing to review" in crit[0]["reason"]
+
+
+def test_an_execution_error_never_puts_a_value_into_state(make_client):
+    bad = ("SELECT CAST(facility_name AS INTEGER) AS x FROM gold_hospital_profile "
+           "WHERE facility_name IS NOT NULL ORDER BY facility_id LIMIT 1")
+    c, tmp = make_client({"cast": [("sql", bad), ("verdict", "approve")] * 3})
+    name = c.post("/raw-sql", headers=H, json={
+        "sql": "SELECT facility_name FROM gold_hospital_profile WHERE facility_name IS NOT NULL "
+               "ORDER BY facility_id LIMIT 1"}).json()["rows"][0]["facility_name"]
+    body = c.post("/query", json={"question": "cast the names"}, headers=H).json()
+    assert body["allowed"] is False
+    assert name not in json.dumps(body)
+    # nor in the checkpoint DB, which the retry prompt is built from
+    raw = (tmp / "checkpoints.sqlite").read_bytes()
+    assert name.encode() not in raw
+
