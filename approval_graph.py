@@ -33,6 +33,7 @@ Usage:
     python approval_graph.py          # end-to-end demo: propose, queue, decide, resume
 """
 
+import contextlib
 import os
 import sys
 import uuid
@@ -44,6 +45,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+import tracing
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
@@ -56,6 +58,11 @@ POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "medicare
 CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "logs/checkpoints.sqlite")
 CAPABILITY = "analytics.query_aggregate"
 MAX_ATTEMPTS = 3
+# Rows the reviewer sees as evidence. Only these are kept in the checkpointed
+# state: _propose re-runs on resume (possibly hours later, in another process)
+# and needs them, and the approval record stores the same rows anyway. The rest
+# of the result never reaches the checkpoint DB, which nothing prunes.
+EVIDENCE_ROWS = 3
 
 
 class ApprovalState(TypedDict, total=False):
@@ -80,7 +87,8 @@ class ApprovalState(TypedDict, total=False):
 
 class GovernedApprovalAgent:
     def __init__(self, db_path: str = GOLD_DB, capability: str = "brief.commit",
-                 runtime=None, planner=None):
+                 runtime=None, planner=None,
+                 tracer: Optional[tracing.Tracer] = None):
         """
         runtime / planner: pass in an ALREADY-BUILT runtime and planner to share
         them with a host application.
@@ -106,11 +114,19 @@ class GovernedApprovalAgent:
                                 schema_label=os.environ.get("PLANNER_SCHEMA", "hospital"),
                                 db_label=db_path)
         self.store = ApprovalStore()
+        self.tracer = tracer or tracing.get_tracer()
         os.makedirs(os.path.dirname(CHECKPOINT_DB) or ".", exist_ok=True)
         # the checkpointer is what makes state outlive the request
         self._cm = SqliteSaver.from_conn_string(CHECKPOINT_DB)
         self.checkpointer = self._cm.__enter__()
         self.graph = self._build()
+
+    def _traced(self, state: ApprovalState):
+        """Attach the thread's trace (trace id = thread id) around a node."""
+        tid = state.get("thread_id")
+        if tid and tracing.current_trace_id() != tid:
+            return self.tracer.attach(tid)
+        return contextlib.nullcontext(tid)
 
     # ---------------- nodes ----------------
 
@@ -120,27 +136,44 @@ class GovernedApprovalAgent:
         if state.get("last_error"):
             prompt = (f"{state['question']}\n\nYour previous SQL was REJECTED:\n"
                       f"{state['last_error']}\n\nWrite a corrected query.")
-        sql, _ = self.planner.generate_sql_with_metrics(prompt)
+        with self._traced(state), self.tracer.span(
+                "plan", attempt=attempt, retry_context=bool(state.get("last_error"))) as sp:
+            sql, m = self.planner.generate_sql_with_metrics(prompt)
+            sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql),
+                   model=getattr(m, "model", None), provider=getattr(m, "provider", None),
+                   prompt_tokens=getattr(m, "prompt_tokens", None),
+                   completion_tokens=getattr(m, "completion_tokens", None),
+                   est_cost_usd=getattr(m, "est_cost_usd", None),
+                   latency_ms=getattr(m, "latency_ms", None))
         return {"sql": sql, "attempts": attempt,
                 "trajectory": state.get("trajectory", []) + [
                     {"step": "plan", "attempt": attempt, "sql": sql[:120]}]}
 
     def _execute(self, state: ApprovalState) -> dict:
-        result = self.runtime.execute_tool(CAPABILITY, {"sql": state.get("sql") or ""})
-        if not getattr(result, "allowed", False):
-            reason = getattr(result, "explanation", None) or "not permitted"
-            return {"allowed": False, "reason": reason, "last_error": reason,
-                    "trajectory": state.get("trajectory", []) + [
-                        {"step": "execute", "outcome": "denied", "reason": reason[:120]}]}
-        tr = result.result
-        if tr is None or not getattr(tr, "success", False):
-            err = getattr(tr, "error", "no result") if tr else "no result"
-            return {"allowed": False, "reason": err, "last_error": err,
-                    "trajectory": state.get("trajectory", []) + [
-                        {"step": "execute", "outcome": "failed", "reason": err[:120]}]}
-        out = tr.output or {}
+        sql = state.get("sql") or ""
+        with self._traced(state), self.tracer.span(
+                "guard", attempt=state.get("attempts"), sql_sha256=tracing.sql_sha256(sql)) as g:
+            result = self.runtime.execute_tool(CAPABILITY, {"sql": sql})
+            if not getattr(result, "allowed", False):
+                reason = getattr(result, "explanation", None) or "not permitted"
+                g.set(allowed=False, decided_by="policy", reason=reason[:500])
+                return {"allowed": False, "reason": reason, "last_error": reason,
+                        "trajectory": state.get("trajectory", []) + [
+                            {"step": "execute", "outcome": "denied", "reason": reason[:120]}]}
+            tr = result.result
+            if tr is None or not getattr(tr, "success", False):
+                err = getattr(tr, "error", "no result") if tr else "no result"
+                g.set(allowed=False, decided_by="guard", reason=(err or "")[:500])
+                return {"allowed": False, "reason": err, "last_error": err,
+                        "trajectory": state.get("trajectory", []) + [
+                            {"step": "execute", "outcome": "failed", "reason": err[:120]}]}
+            out = tr.output or {}
+            g.set(allowed=True, decided_by="executed")
+            self.tracer.event("execute", attempt=state.get("attempts"),
+                              row_count=out.get("row_count"), backend=out.get("backend"))
         return {"allowed": True, "reason": None, "last_error": None,
-                "safe_sql": out.get("safe_sql"), "rows": out.get("rows"),
+                "safe_sql": out.get("safe_sql"),
+                "rows": (out.get("rows") or [])[:EVIDENCE_ROWS],
                 "row_count": out.get("row_count"),
                 "trajectory": state.get("trajectory", []) + [
                     {"step": "execute", "outcome": "success",
@@ -177,8 +210,13 @@ class GovernedApprovalAgent:
                 capability=self.capability,
                 question=state["question"],
                 proposal=proposal,
-                evidence=str(rows[:3]),
+                evidence=str(rows[:EVIDENCE_ROWS]),
             )
+            with self._traced(state):
+                # recorded once, when the record is minted; the re-execution on
+                # resume takes the `existing` branch above
+                self.tracer.event("approval.propose", approval_id=approval_id,
+                                  capability=self.capability, row_count=state.get("row_count"))
 
         # THE PAUSE. Execution stops here and state is persisted. Whatever is
         # passed to interrupt() is surfaced to the caller as the pending payload.
@@ -186,7 +224,7 @@ class GovernedApprovalAgent:
             "approval_id": approval_id,
             "capability": self.capability,
             "proposal": proposal,
-            "evidence_rows": rows[:3],
+            "evidence_rows": rows[:EVIDENCE_ROWS],
         })
 
         # --- everything below runs only AFTER a decision resumes the graph ---
@@ -202,6 +240,9 @@ class GovernedApprovalAgent:
         verdict = decision.get("decision")
         who = decision.get("decided_by", "unknown")
 
+        with self._traced(state):
+            self.tracer.event("answer", outcome="committed" if verdict in EXECUTES
+                              else "not_committed", verdict=verdict, decided_by=f"human:{who}")
         if verdict in EXECUTES:
             final = decision.get("edited_proposal") or state.get("proposal")
             return {"committed": True, "decided_by": f"human:{who}",
@@ -240,18 +281,50 @@ class GovernedApprovalAgent:
 
     # ---------------- public API ----------------
 
+    def state(self, thread_id: str) -> dict:
+        """Where the checkpointed thread stands: parked at the interrupt, or done."""
+        snap = self.graph.get_state({"configurable": {"thread_id": thread_id}})
+        values = getattr(snap, "values", None) or {}
+        if not values:
+            return {"thread_id": thread_id, "exists": False}
+        nxt = list(getattr(snap, "next", ()) or ())
+        return {
+            "thread_id": thread_id, "exists": True, "finished": not nxt, "next": nxt,
+            "attempts": values.get("attempts", 0), "last_error": values.get("last_error"),
+            "approval_id": values.get("approval_id"), "committed": values.get("committed"),
+            "steps": len(values.get("trajectory") or []),
+        }
+
     def start(self, question: str, thread_id: str | None = None) -> dict:
         """Run until the approval checkpoint. Returns immediately with a pending id."""
         thread_id = thread_id or str(uuid.uuid4())[:8]
         cfg = {"configurable": {"thread_id": thread_id}}
-        state = self.graph.invoke(
-            {"question": question, "thread_id": thread_id, "attempts": 0,
-             "trajectory": [], "committed": False}, cfg)
-        interrupts = state.get("__interrupt__")
-        if interrupts:
-            payload = interrupts[0].value
-            return {"status": "pending_approval", "thread_id": thread_id, **payload}
-        return {"status": "completed", "thread_id": thread_id, **state}
+        # trace id = thread id: a decision submitted hours later appends to this trace
+        # preserved(): start_trace makes the approval trace current, and attach()
+        # alone would "restore" it on exit, leaving it current for the caller
+        with self.tracer.preserved(), self.tracer.attach(self.tracer.start_trace(
+                "approval", trace_id=thread_id, question=question,
+                capability=self.capability)):
+            try:
+                state = self.graph.invoke(
+                    {"question": question, "thread_id": thread_id, "attempts": 0,
+                     "trajectory": [], "committed": False}, cfg)
+            except BaseException as exc:
+                self.tracer.end_trace(thread_id, status="error",
+                                      error=f"{type(exc).__name__}: {exc}"[:500])
+                raise
+            interrupts = state.get("__interrupt__")
+            if interrupts:
+                payload = interrupts[0].value
+                # still open: the trace ends when a terminal decision resumes it
+                self.tracer.end_trace(thread_id, status="pending_approval",
+                                      approval_id=payload.get("approval_id"))
+                return {"status": "pending_approval", "thread_id": thread_id,
+                        "trace_id": thread_id, **payload}
+            self.tracer.end_trace(thread_id, status="ok", attempts=state.get("attempts"),
+                                  reason=(state.get("reason") or "")[:500])
+            return {"status": "completed", "thread_id": thread_id, "trace_id": thread_id,
+                    **state}
 
     def resume(self, thread_id: str, decision: str, decided_by: str,
                reason: str | None = None, edited_proposal: str | None = None,
@@ -275,6 +348,11 @@ class GovernedApprovalAgent:
                                    reason=reason, edited_proposal=edited_proposal,
                                    escalated_to=escalated_to)
 
+        with self.tracer.attach(thread_id):
+            self.tracer.event("approval.decision", approval_id=approval_id,
+                              decision=decision, decided_by=decided_by,
+                              terminal=decision in TERMINAL,
+                              escalated_to=escalated_to, reason=(reason or "")[:500])
         if decision not in TERMINAL:
             return {"status": "reassigned", "approval_record": record,
                     "committed": False, "assigned_to": record.get("assigned_to"),
@@ -283,10 +361,18 @@ class GovernedApprovalAgent:
                     "trajectory": []}
 
         cfg = {"configurable": {"thread_id": thread_id}}
-        state = self.graph.invoke(Command(resume={
-            "decision": decision, "decided_by": decided_by, "reason": reason,
-            "edited_proposal": edited_proposal, "escalated_to": escalated_to,
-        }), cfg)
+        with self.tracer.attach(thread_id):
+            try:
+                state = self.graph.invoke(Command(resume={
+                    "decision": decision, "decided_by": decided_by, "reason": reason,
+                    "edited_proposal": edited_proposal, "escalated_to": escalated_to,
+                }), cfg)
+            except BaseException as exc:
+                self.tracer.end_trace(thread_id, status="error",
+                                      error=f"{type(exc).__name__}: {exc}"[:500])
+                raise
+            self.tracer.end_trace(thread_id, status="ok", decision=decision,
+                                  committed=bool(state.get("committed")))
         return {"status": "resumed", "approval_record": record,
                 "committed": state.get("committed"),
                 "still_pending": False,
