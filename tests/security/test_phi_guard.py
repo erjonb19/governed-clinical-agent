@@ -101,6 +101,12 @@ BLOCKED = {
                                        "FROM gold_patient"),
     "QUALIFY singling out by name": ("SELECT gender, age_years FROM gold_patient "
                                      "QUALIFY count(*) OVER (PARTITION BY given_name) = 1"),
+    # --- second adversarial review ---
+    "COLUMNS() by regex": ("SELECT COLUMNS('^patient_id$'), COLUMNS('^given_name$'), "
+                           "replace(COLUMNS('^birth_date$'), '-', '/') FROM gold_patient"),
+    "COLUMNS() by lambda": "SELECT COLUMNS(c -> c = 'family_name') FROM gold_patient",
+    "a condition hidden in SUM": "SELECT SUM(CASE WHEN age_years > 105 THEN 1 ELSE 0 END) AS n FROM gold_patient",
+    "a condition hidden in COUNT": "SELECT count(CASE WHEN age_years = 115 THEN 1 END) AS n FROM gold_patient",
 }
 
 ALLOWED = {
@@ -125,6 +131,16 @@ ALLOWED = {
     "CTE keeping the patient key": ("WITH t AS (SELECT patient_id, gender FROM gold_patient) "
                                     "SELECT gender, count(*) AS n FROM t GROUP BY gender"),
     "public hospital data": "SELECT facility_name, zip, city FROM gold_hospital_profile LIMIT 3",
+    "percentage from two scalar counts": (
+        "SELECT 100.0 * (SELECT count(*) FROM gold_patient WHERE gender = 'female') / "
+        "(SELECT count(*) FROM gold_patient) AS pct"),
+    "share of total over groups": ("SELECT gender, count(*) * 1.0 / SUM(count(*)) OVER () AS share "
+                                   "FROM gold_patient GROUP BY gender"),
+    "share of total from a grouped CTE": (
+        "WITH g AS (SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender) "
+        "SELECT gender, n * 1.0 / SUM(n) OVER () AS share FROM g"),
+    "sum over a union of counts": ("SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient "
+                                   "UNION ALL SELECT count(*) FROM gold_condition) x"),
 }
 
 
@@ -273,3 +289,30 @@ def test_an_aliased_safe_column_is_not_refused_by_the_output_check(tool):
     r = tool.execute({"sql": "SELECT round(avg(c.age_at_onset), 1) AS v FROM gold_condition c "
                              "WHERE c.patient_id IN (SELECT patient_id FROM gold_patient WHERE gender = 'female')"})
     assert r.success, r.error
+
+
+def test_a_cross_join_cannot_pad_a_group_past_11(tool):
+    # the unrelated gold_patient source has 15 people; the group itself has 4
+    r = tool.execute({"sql": "SELECT c.condition_name, count(DISTINCT c.patient_id) AS n "
+                             "FROM gold_patient pad, gold_condition c "
+                             "WHERE c.condition_name = 'Rare disease' GROUP BY 1"})
+    assert r.success and r.output["rows"] == []
+
+
+def test_a_filtered_count_of_a_small_subgroup_is_nulled(tool):
+    r = tool.execute({"sql": "SELECT count(*) FILTER (WHERE gender = 'male') AS men, "
+                             "count(*) FILTER (WHERE gender = 'female') AS women FROM gold_patient"})
+    assert r.success and r.output["rows"] == [{"men": None, "women": 12}]
+
+
+def test_an_aggregate_sqlglot_does_not_model_is_still_suppressed(tool):
+    r = tool.execute({"sql": "SELECT fsum(1) AS n FROM gold_patient WHERE gender = 'male'"})
+    assert r.success and r.output["rows"] == []
+
+
+@pytest.mark.parametrize("name", ["percentage from two scalar counts", "share of total over groups",
+                                  "share of total from a grouped CTE", "sum over a union of counts"])
+def test_plausible_ratio_queries_run(tool, name):
+    r = tool.execute({"sql": ALLOWED[name]})
+    assert r.success, (name, r.error)
+

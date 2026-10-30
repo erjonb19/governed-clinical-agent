@@ -184,6 +184,31 @@ def _banned_wrapper(col: exp.Expression, root: exp.Expression) -> Optional[str]:
     return None
 
 
+def _duckdb_aggregates() -> set[str]:
+    """DuckDB's own aggregate names: sqlglot parses ones it does not model
+    (fsum, sumkahan, ...) as plain anonymous functions, which must still count."""
+    try:
+        import duckdb
+        con = duckdb.connect()
+        try:
+            return {r[0].lower() for r in con.execute(
+                "SELECT DISTINCT function_name FROM duckdb_functions() "
+                "WHERE function_type = 'aggregate'").fetchall()}
+        finally:
+            con.close()
+    except Exception:
+        return set()
+
+
+_AGG_NAMES = _duckdb_aggregates()
+
+
+def is_agg(node: exp.Expression) -> bool:
+    if isinstance(node, exp.AggFunc):
+        return True
+    return isinstance(node, exp.Anonymous) and (node.name or "").lower() in _AGG_NAMES
+
+
 def _is_aggregate(select: exp.Select) -> bool:
     """Does this SELECT collapse rows (GROUP BY or a non-window aggregate)?"""
     if select.args.get("group"):
@@ -192,7 +217,7 @@ def _is_aggregate(select: exp.Select) -> bool:
         for node in proj.walk():
             if isinstance(node, (exp.Subquery, exp.Select)) and node is not proj:
                 continue
-            if isinstance(node, exp.AggFunc) and not isinstance(node.parent, exp.Window) \
+            if is_agg(node) and not isinstance(node.parent, exp.Window) \
                     and not any(isinstance(a, exp.Window) for a in _ancestors(node, proj)):
                 return True
     having = select.args.get("having")
@@ -251,7 +276,8 @@ class _Analysis:
         self.memo: dict[int, list[tuple[str, Sens]]] = {}
         self.person: dict[int, Optional[str]] = {}     # person-row scopes: key output name
         self.findings: list[str] = []
-        self.rewrites: list[tuple[exp.Select, str]] = []
+        self.rewrites: list[tuple[exp.Select, list]] = []
+        self.filters: list[tuple[exp.Filter, list]] = []
 
     # -- sensitivity of a column reference --
     def resolve(self, scope: Scope, col: exp.Column) -> Sens:
@@ -379,22 +405,28 @@ class _Analysis:
         return result is not False, result if isinstance(result, str) else None
 
     def _person_source(self, scope: Scope) -> tuple[bool, Optional[str]]:
-        """(aggregates person rows?, a qualified person-key expression)."""
-        found, key = False, None
+        """(reads person rows?, the person keys of EVERY person source joined
+        with AND, or None if any of them has none). Every source counts: a
+        cross join to an unrelated patient table must not pad a group's count."""
+        found, keys, missing = False, [], False
         for alias, src in scope.sources.items():
             if isinstance(src, exp.Table):
                 t = (src.name or "").lower()
                 if t in PROTECTED:
                     found = True
-                    if key is None and PERSON_KEY in TABLES[t]:
-                        key = f"{alias}.{PERSON_KEY}"
+                    if PERSON_KEY in TABLES[t]:
+                        keys.append(f"{alias}.{PERSON_KEY}")
+                    else:
+                        missing = True
             elif isinstance(src, Scope):
                 rows, k = self.person_rows(src)
                 if rows:
                     found = True
-                    if key is None and k:
-                        key = f"{alias}.{k}"
-        return found, key
+                    if k:
+                        keys.append(f"{alias}.{k}")
+                    else:
+                        missing = True
+        return found, (None if missing or not keys else keys)
 
     def small_cells(self, scope: Scope) -> None:
         sel = scope.expression
@@ -403,6 +435,18 @@ class _Analysis:
         found, key = self._person_source(scope)
         if not found:
             return
+        # A conditional aggregate carves a subgroup the group's HAVING does not
+        # see (count(*) FILTER (WHERE age_years > 105) inside a group of 1,180).
+        # FILTER is suppressed per aggregate below; a condition hidden inside an
+        # aggregate's argument cannot be, so it is refused.
+        for agg in _own_nodes(sel, exp.Expression):
+            if not is_agg(agg) or isinstance(agg.parent, exp.Window):
+                continue
+            if any(isinstance(n, (exp.Case, exp.If)) for n in agg.walk() if n is not agg):
+                self.findings.append(
+                    f"a condition inside an aggregate ({agg.sql(dialect=DIALECT)[:50]}) over "
+                    f"patient rows forms a subgroup that cannot be held to {MIN_CELL} people; "
+                    "use FILTER (WHERE ...) or GROUP BY instead")
         if key is None:
             self.findings.append(
                 "an aggregate over patient records without a patient key, so groups of fewer "
@@ -410,6 +454,8 @@ class _Analysis:
                 "query, or aggregate the tables directly")
             return
         self.rewrites.append((sel, key))
+        self.filters.extend((f, key) for f in _own_nodes(sel, exp.Filter)
+                            if not isinstance(f.parent, exp.Window))
 
     def windows(self, scope: Scope) -> None:
         """Window functions over patient rows: an aggregate OVER a partition is a
@@ -417,8 +463,10 @@ class _Analysis:
         column in any window (projections, QUALIFY, ORDER BY) is refused too."""
         sel = scope.expression
         reads_patients = self._person_source(scope)[0]
+        grouped = isinstance(sel, exp.Select) and _is_aggregate(sel)
         for win in _own_nodes(sel, exp.Window):
-            if reads_patients and isinstance(win.this, exp.AggFunc):
+            over_groups = grouped and any(is_agg(n) for n in win.this.walk() if n is not win.this)
+            if reads_patients and is_agg(win.this) and not over_groups:
                 self.findings.append(
                     f"a window aggregate ({win.this.sql(dialect=DIALECT)[:40]} OVER ...) over "
                     f"patient rows, whose groups cannot be held to {MIN_CELL} people; use GROUP BY")
@@ -431,6 +479,18 @@ class _Analysis:
                                          f"PARTITION BY / ORDER BY")
 
     def run(self) -> None:
+        # COLUMNS('regex') / COLUMNS(lambda) select columns by pattern, so no
+        # column reference exists to classify; a * qualify() could not expand
+        # is the same. On patient data both are refused.
+        for node in self.root.walk():
+            if isinstance(node, exp.Columns) or (
+                    isinstance(node, exp.Anonymous) and (node.name or "").lower() == "columns"):
+                self.findings.append("COLUMNS(...) selects columns by pattern; name them instead")
+                break
+        for star in self.root.find_all(exp.Star):
+            if not isinstance(star.parent, (exp.Count, exp.AggFunc)):
+                self.findings.append("an unexpanded * over patient data; name the columns")
+                break
         scopes = list(traverse_scope(self.root))
         for scope in scopes:
             self.outputs(scope)
@@ -500,9 +560,24 @@ def check(tree: exp.Expression) -> PhiDecision:
     o_selects = list(out_tree.find_all(exp.Select))
     if len(q_selects) != len(o_selects):
         out_tree, o_selects = q, q_selects
-    for sel, key in a.rewrites:
+    def _enough(keys):
+        return sqlglot.parse_one(" AND ".join(f"count(DISTINCT {k}) >= {MIN_CELL}" for k in keys),
+                                 read=DIALECT)
+
+    # FILTERed aggregates first (their nodes are found by position in the
+    # copy), each nulled unless its own subgroup holds 11+ people
+    q_filters = list(q.find_all(exp.Filter))
+    o_filters = list(out_tree.find_all(exp.Filter))
+    for flt, keys in a.filters:
+        target = o_filters[next(i for i, x in enumerate(q_filters) if x is flt)]
+        where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
+        guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL}"
+                             for k in keys)
+        target.replace(sqlglot.parse_one(
+            f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END", read=DIALECT))
+    for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]
-        cond = sqlglot.parse_one(f"count(DISTINCT {key}) >= {MIN_CELL}", read=DIALECT)
+        cond = _enough(keys)
         having = target.args.get("having")
         target.set("having", exp.Having(this=exp.and_(having.this, cond) if having else cond))
     root_sel = q if isinstance(q, exp.Select) else None
@@ -544,7 +619,10 @@ def _trace(node) -> list[tuple[str, bool, str, bool]]:
             if isinstance(child.source, exp.Table) and child.source.name:
                 table = child.source.name.lower()
                 src_name = f"{table}.{column}"
-            if table not in PROTECTED and table not in _PUBLIC_TABLES:
+            if not isinstance(child.source, exp.Table) and \
+                    not any(True for _ in child.expression.find_all(exp.Column)):
+                cls, is_date = SAFE, False              # a constant or COUNT(*): no source
+            elif table not in PROTECTED and table not in _PUBLIC_TABLES:
                 cls, is_date = IDENTIFIER, False        # cannot place it: fail closed
             else:
                 cls, is_date = classify(table, column)
