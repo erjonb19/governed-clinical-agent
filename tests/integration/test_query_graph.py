@@ -129,6 +129,7 @@ def test_a_planner_outage_is_a_clean_refusal_with_a_trace(make_client):
     c, _ = make_client({"down": [("raise", RuntimeError("Error code: 429"))]})
     body = c.post("/query", json={"question": "down?"}, headers=H).json()
     assert body["allowed"] is False and "planner error" in body["reason"]
+    assert body["decided_by"] == "planner_error"     # not "policy": the guard never ran
     t = c.get(f"/traces/{body['trace_id']}", headers=H).json()
     assert t["status"] == "error"
 
@@ -166,4 +167,12 @@ def test_an_execution_error_never_puts_a_value_into_state(make_client):
     # nor in the checkpoint DB, which the retry prompt is built from
     raw = (tmp / "checkpoints.sqlite").read_bytes()
     assert name.encode() not in raw
+
+
+def test_single_mode_names_a_database_failure_as_such(make_client):
+    c, _ = make_client({"cast": [("sql", "SELECT CAST(city AS DATE) AS d FROM gold_hospital_profile "
+                                          "ORDER BY facility_id LIMIT 1")]}, mode="single")
+    body = c.post("/query", json={"question": "cast cities"}, headers=H).json()
+    assert body["allowed"] is False and body["decided_by"] == "sql_error"
+    assert "withheld" in body["reason"]
 

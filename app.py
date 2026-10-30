@@ -330,7 +330,7 @@ class DecisionRequest(BaseModel):
 
 class GovernedResponse(BaseModel):
     allowed: bool
-    decided_by: str                      # "policy" | "guard" | "executed" | "critic" | "exhausted" | "sql_error"
+    decided_by: str                      # "policy" | "guard" | "executed" | "critic" | "exhausted" | "sql_error" | "planner_error"
     reason: Optional[str] = None
     sql: Optional[str] = None            # the SQL that was evaluated
     safe_sql: Optional[str] = None       # what the guard actually ran
@@ -362,6 +362,8 @@ def interpret_result(result: Any, sql: str) -> dict:
             reason = getattr(result.decision, "reason", None)
         reason = reason or "not permitted"
         decided_by = "guard" if "sql_guard" in reason or "guard" in reason.lower() else "policy"
+        if "query execution failed" in reason:
+            decided_by = "sql_error"     # it passed the guard and failed in the database
         return {"allowed": False, "decided_by": decided_by, "reason": reason, "sql": sql}
 
     tr = getattr(result, "result", None)
@@ -564,8 +566,8 @@ def query(request: Request, req: QueryRequest) -> dict:
                        est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
         except Exception as e:
             tracer.event("answer", outcome="planner_error")
-            tracer.end_trace(tid, status="error", decided_by="policy")
-            return {"allowed": False, "decided_by": "policy",
+            tracer.end_trace(tid, status="error", decided_by="planner_error")
+            return {"allowed": False, "decided_by": "planner_error",
                     "reason": f"planner error: {e}", "trace_id": tid}
         out = run_governed_sql(sql, req.backend, ds)
         note = _unanswerable(out)
@@ -603,7 +605,7 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
                     cost_tracker.record(st["metrics"], question=req.question)
         except Exception:
             pass
-        return {"allowed": False, "decided_by": "policy",
+        return {"allowed": False, "decided_by": "planner_error",
                 "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid}
     calls = [st["metrics"] for st in state.get("trajectory") or []
              if st.get("step") in ("plan", "critic") and st.get("metrics")]

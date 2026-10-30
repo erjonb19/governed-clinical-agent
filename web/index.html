@@ -572,7 +572,8 @@ function renderAnswer(d){
   if(!ok){
     const why=byGuard?"This is the guard working as intended."
       :d.decided_by==="exhausted"?"The agent ran out of attempts without a query that passed review and ran."
-      :"The agent could not produce a working query.";
+      :d.decided_by==="planner_error"?"The language model could not be reached or did not answer; nothing was run."
+      :"The query passed the guard but failed in the database.";
     h+=`<div class="pad"><div class="eyebrow">Why it was refused</div>
         <div style="font-size:15px">${esc(d.reason||"Not permitted")}</div>
         <p class="small muted" style="margin-top:12px">${why} Rephrase your question, or see <a href="#" id="toTrust">how this works</a>.</p></div>`;

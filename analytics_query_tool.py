@@ -32,18 +32,45 @@ from sql_guard import validate_query
 
 _QUOTED_VALUE = re.compile(r"'(?:[^']|'')*'")
 
+# Errors whose message is ABOUT A DATA VALUE. DuckDB quotes the value -- in single
+# quotes, in double quotes, or bare on its own line under a caret -- so their
+# text cannot be kept at all. Databricks says the same things in its own words.
+_DATA_ERROR_TYPES = {"ConversionException", "InvalidInputException", "OutOfRangeException"}
+_DATA_ERROR_WORDS = ("could not convert", "could not parse", "conversion error",
+                     "cast_invalid_input", "invalid_format", "out of range",
+                     "cannot be cast", "malformed")
+_TARGET_TYPE = re.compile(r"\bto (?:type )?([A-Z][A-Z0-9_]*(?:\(\d+(?:,\s*\d+)?\))?)")
+
 
 def redact_values(message: str) -> str:
-    """An execution error with every single-quoted literal replaced.
-
-    DuckDB quotes the offending VALUE in a conversion error ("Could not convert
-    string 'Jane Doe' to INT32"), and gold_patient has name columns on the
-    allowlist. The error goes to the client, the trace, the graph's checkpoint
-    and -- on a retry -- back to the LLM provider in the next prompt, so it must
-    not carry data. Identifiers (double-quoted) are kept: they are schema, not
-    data, and the agent needs them to correct its SQL.
-    """
+    """Every single-quoted literal in `message` replaced (the fallback for
+    errors that are about the SQL, whose LINE 1 echo can still carry a literal)."""
     return _QUOTED_VALUE.sub("'<value>'", message)
+
+
+def describe_execution_error(e: Exception) -> str:
+    """An execution error safe to show anyone, and to send back to the LLM.
+
+    The text goes to the client, the trace, the graph's checkpoint and -- on a
+    retry -- the next prompt to the provider, so it must not carry data (hard
+    rule 3). The PHI at risk is FHIR's birth_date, city and postal_code: a
+    model that casts or parses one wrongly gets an error quoting a real value.
+
+    So an error about a VALUE is reduced to its class and the target type,
+    which is all the agent needs to fix its SQL ("Conversion Error converting to
+    DATE: the value is withheld"). Errors about the SQL itself (binder, parser,
+    catalog) keep their text, which names columns and tables, with any quoted
+    literal redacted.
+    """
+    name = type(e).__name__
+    text = str(e)
+    if name in _DATA_ERROR_TYPES or any(w in text.lower() for w in _DATA_ERROR_WORDS):
+        m = _TARGET_TYPE.search(text)
+        target = f" converting to {m.group(1)}" if m else ""
+        return (f"{name}{target}: a value in the data did not fit the query's cast, "
+                f"parse or format (the value is withheld). Check the column's type and "
+                f"format in the schema.")
+    return redact_values(text)
 
 class AnalyticsQueryTool(BaseTool):
     def __init__(self, db_path: str = ":memory:", seed_demo: bool = True,
@@ -197,7 +224,7 @@ class AnalyticsQueryTool(BaseTool):
             )
         except Exception as e:
             return ToolResult(success=False, output={"safe_sql": decision.safe_sql, "backend": backend},
-                              error=f"query execution failed: {redact_values(str(e))}")
+                              error=f"query execution failed: {describe_execution_error(e)}")
 
     # -- demo data only; delete when you point at real Gold -----------------
     def _seed_demo_gold(self) -> None:
