@@ -94,3 +94,62 @@ def test_registration_reuses_a_capability_that_is_already_registered():
     if existing is None:
         M.runtime.register_tool(M.EchoTool())
     M._ensure_registered(M.runtime, M.EchoTool())   # no ValueError
+
+
+def test_requests_past_the_limit_get_429():
+    clock = [0.0]
+    limit = M.RateLimit(per_minute=3, clock=lambda: clock[0])
+    app = Starlette(routes=[Route("/mcp", endpoint=M.MCPAuth(_ok, "k", [], limit), methods=["POST"])])
+    c = TestClient(app)
+    codes = [c.post("/mcp", headers={"X-API-Key": "k"}).status_code for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
+    clock[0] = 61.0                      # a new window
+    assert c.post("/mcp", headers={"X-API-Key": "k"}).status_code == 200
+
+
+def test_a_rejected_key_does_not_spend_the_limit():
+    limit = M.RateLimit(per_minute=1)
+    app = Starlette(routes=[Route("/mcp", endpoint=M.MCPAuth(_ok, "k", [], limit), methods=["POST"])])
+    c = TestClient(app)
+    for _ in range(5):
+        assert c.post("/mcp", headers={"X-API-Key": "bad"}).status_code == 401
+    assert c.post("/mcp", headers={"X-API-Key": "k"}).status_code == 200
+
+
+def test_a_websocket_is_refused_not_passed_through():
+    import asyncio
+    sent, reached = [], []
+
+    async def app(scope, receive, send):
+        reached.append(1)
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(M.MCPAuth(app, "k", [])({"type": "websocket", "headers": []}, None, send))
+    assert reached == [] and sent == [{"type": "websocket.close", "code": 1008}]
+
+
+def test_mounted_calls_use_the_host_lock(monkeypatch):
+    # the API's DuckDB connection is not thread-safe; mounted, every tool call
+    # must hold the API's lock
+    import threading
+    lock = threading.Lock()
+    seen = []
+
+    class Rt:
+        audit_logger = None
+
+        def execute_tool(self, cap, params):
+            seen.append(lock.locked())
+            from types import SimpleNamespace
+            return SimpleNamespace(allowed=True, result=SimpleNamespace(success=True, output="x",
+                                                                         error=None))
+
+    monkeypatch.setattr(M, "runtime", Rt())
+    M.attach_host(audit_logger="AUDIT", lock=lock)
+    try:
+        assert M.call_guarded("demo.echo", {"text": "hi"})[0] is True
+        assert seen == [True] and M.runtime.audit_logger == "AUDIT"
+    finally:
+        M._EXEC_LOCK = None

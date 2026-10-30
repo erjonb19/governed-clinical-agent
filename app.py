@@ -241,12 +241,16 @@ async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
         try:
             import mcp_server
+            # same audit trail and DuckDB lock as /query and /raw-sql
+            mcp_server.attach_host(audit_logger=audit, lock=_LOCK)
             manager, handler = mcp_server.build_http_handler(mcp_server.mcp_key())
             await stack.enter_async_context(manager.run())
             _STATE["mcp_http"] = handler
         except Exception as e:
             _STATE["mcp_http"] = None
-            _STATE["mcp_error"] = f"{type(e).__name__}: {e}"[:300]
+            # /health is unauthenticated: the exception type only, no paths
+            _STATE["mcp_error"] = type(e).__name__
+            print(f"WARNING: MCP over HTTP disabled ({type(e).__name__}: {e})")
         yield
     _STATE.clear()
 

@@ -152,13 +152,31 @@ _analytics = AnalyticsQueryTool(
 _ensure_registered(runtime, _analytics)
 
 
+# Set by attach_host() when the API serves these tools at /mcp; None standalone.
+_EXEC_LOCK = None
+
+
+def attach_host(audit_logger=None, lock=None) -> None:
+    """Join the hosting API's audit trail and DuckDB lock (app.py, D5).
+
+    Mounted, the tools run in the API's process on the API's analytics tool, so
+    their calls must be audited where the API's are, and serialised with the
+    API's own queries: one DuckDB connection is not safe across threads.
+    """
+    global _EXEC_LOCK
+    runtime.audit_logger = audit_logger
+    _EXEC_LOCK = lock
+
+
 def available_datasets() -> list[str]:
     """Datasets this server can actually serve.
 
-    Taken from the tool's own connections rather than from os.path.exists, so
-    what we advertise is what we can answer.
+    Taken from the EXECUTING tool's own connections rather than from
+    os.path.exists, so what we advertise is what we can answer. Mounted in the
+    API, that is the API's tool (the registry holds one per capability).
     """
-    return _analytics.datasets()
+    tool = get_tool(ANALYTICS_CAPABILITY) or _analytics
+    return tool.datasets() if hasattr(tool, "datasets") else _analytics.datasets()
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +225,11 @@ def call_guarded(capability: str, params: dict) -> tuple[bool, Any, Optional[str
     it is sql_guard's single-line reason, naming the rule and the offending
     identifier -- so prefer it over the outer policy explanation.
     """
-    result = runtime.execute_tool(capability, params)
+    if _EXEC_LOCK is not None:
+        with _EXEC_LOCK:
+            result = runtime.execute_tool(capability, params)
+    else:
+        result = runtime.execute_tool(capability, params)
     tool_result = getattr(result, "result", None)
     output = getattr(tool_result, "output", None)
 
@@ -434,28 +456,67 @@ def presented_key(headers: dict) -> Optional[str]:
     return None
 
 
-class MCPAuth:
-    """ASGI middleware: Origin check, then the API key. Anything else is refused
-    before the MCP app sees the request. `key=None` means open access, which the
-    callers only allow under ALLOW_OPEN_ACCESS."""
+class RateLimit:
+    """A fixed one-minute window per client (the presented key, else the peer
+    address). In memory, per process -- the same scope as the API's slowapi
+    limits. MCP_RATE_LIMIT_PER_MINUTE, default 60, matching RATE_LIMIT_READ."""
 
-    def __init__(self, app, key: Optional[str], origins: Optional[list[str]] = None):
+    def __init__(self, per_minute: Optional[int] = None, clock=None):
+        import time
+        self.per_minute = per_minute if per_minute is not None else int(
+            os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60"))
+        self.clock = clock or time.monotonic
+        self.windows: dict[str, tuple[float, int]] = {}
+
+    def allow(self, client: str) -> bool:
+        now = self.clock()
+        start, count = self.windows.get(client, (now, 0))
+        if now - start >= 60:
+            start, count = now, 0
+        if count >= self.per_minute:
+            self.windows[client] = (start, count)
+            return False
+        self.windows[client] = (start, count + 1)
+        if len(self.windows) > 10_000:          # bound memory: forget the oldest
+            for k in sorted(self.windows, key=lambda k: self.windows[k][0])[:5_000]:
+                del self.windows[k]
+        return True
+
+
+class MCPAuth:
+    """ASGI middleware: Origin check, the API key, then a rate limit. Anything
+    else is refused before the MCP app sees the request. `key=None` means open
+    access, which the callers only allow under ALLOW_OPEN_ACCESS."""
+
+    def __init__(self, app, key: Optional[str], origins: Optional[list[str]] = None,
+                 limit: Optional[RateLimit] = None):
         self.app, self.key = app, key
         self.origins = allowed_origins() if origins is None else origins
+        self.limit = limit or RateLimit()
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
             return await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            # fail closed: Streamable HTTP is plain HTTP; a websocket (or anything
+            # else) is refused rather than handed to the app unchecked
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            return
         import hmac
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
         if not origin_allowed(headers.get("origin"), self.origins):
             return await _json(send, 403, {"detail": "origin not allowed"})
+        given = presented_key(headers)
         if self.key is not None:
-            given = presented_key(headers)
             if given is None or not hmac.compare_digest(given.encode(), self.key.encode()):
                 return await _json(send, 401, {"detail": "missing or invalid API key"},
                                    [(b"www-authenticate", b"Bearer")])
+        client = given or str((scope.get("client") or ("?",))[0])
+        if not self.limit.allow(client):
+            return await _json(send, 429, {"detail": "rate limit exceeded"},
+                               [(b"retry-after", b"60")])
         return await self.app(scope, receive, send)
 
 

@@ -88,3 +88,15 @@ def test_tools_list_and_a_guarded_call(client):
         "sql": "SELECT * FROM information_schema.tables"}}, rid=4).json()
     assert "REFUSED" in bad["result"]["content"][0]["text"]
     assert "catalog" in bad["result"]["content"][0]["text"]
+
+
+def test_mcp_calls_land_in_the_api_audit_log(client, tmp_path):
+    assert rpc(client, "initialize", INIT).status_code == 200
+    rpc(client, "tools/call", {"name": "query_analytics", "arguments": {
+        "sql": "SELECT COUNT(*) AS n FROM gold_hospital_profile"}}, rid=5)
+    lines = [json.loads(line) for f in (tmp_path / "audit").glob("*.jsonl")
+             for line in f.read_text().splitlines() if line.strip()]
+    assert any(e.get("capability") == "analytics.query_aggregate" for e in lines)
+    # and, as for /raw-sql, the audit line holds counts, never rows
+    assert all("rows" not in json.dumps(e.get("execution_result") or {}) for e in lines)
+

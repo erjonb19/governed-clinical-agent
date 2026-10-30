@@ -47,33 +47,43 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _serve(args, env_extra, health_url):
+def _serve(args, env_extra, health_url, log_path):
+    """Start a server; its output goes to a file (a pipe nobody drains can fill
+    and block it) and is shown if it fails to come up."""
     env = {**os.environ, **env_extra}
-    proc = subprocess.Popen(args, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    log = open(log_path, "w")
+    proc = subprocess.Popen(args, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     deadline = time.time() + 90
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"server exited early:\n{proc.stdout.read()}")
+            raise RuntimeError(f"server exited early:\n{open(log_path).read()}")
         try:
             if httpx.get(health_url, timeout=2).status_code == 200:
                 return proc
         except httpx.HTTPError:
             time.sleep(0.5)
-    proc.kill()
-    raise RuntimeError(f"server never became healthy:\n{proc.stdout.read()}")
+    _stop(proc)
+    raise RuntimeError(f"server never became healthy:\n{open(log_path).read()}")
+
+
+def _stop(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 # Function-scoped: the API and the MCP server each open the hospital Gold
 # read-write, and DuckDB lets only one PROCESS do that. One server at a time.
 @pytest.fixture
-def standalone():
+def standalone(tmp_path):
     port = _free_port()
     proc = _serve([sys.executable, "mcp_server.py", "--transport", "http", "--port", str(port)],
-                  {"MCP_API_KEY": KEY}, f"http://127.0.0.1:{port}/health")
+                  {"MCP_API_KEY": KEY}, f"http://127.0.0.1:{port}/health", tmp_path / "server.log")
     yield f"http://127.0.0.1:{port}/mcp"
-    proc.terminate()
-    proc.wait(timeout=10)
+    _stop(proc)
 
 
 @pytest.fixture
@@ -85,10 +95,9 @@ def mounted(tmp_path):
                    "TRACE_DB": str(tmp / "t.sqlite"), "CHECKPOINT_DB": str(tmp / "c.sqlite"),
                    "APPROVALS_DB": str(tmp / "a.sqlite"), "AUDIT_LOG_DIR": str(tmp / "audit"),
                    "PLANNER_METRICS_LOG": str(tmp / "m.jsonl")},
-                  f"http://127.0.0.1:{port}/health")
+                  f"http://127.0.0.1:{port}/health", tmp / "server.log")
     yield f"http://127.0.0.1:{port}/mcp"
-    proc.terminate()
-    proc.wait(timeout=10)
+    _stop(proc)
 
 
 async def _exercise(session: ClientSession) -> None:
