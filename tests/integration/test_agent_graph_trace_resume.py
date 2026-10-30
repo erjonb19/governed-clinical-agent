@@ -173,9 +173,9 @@ def test_no_result_rows_are_ever_written_to_the_checkpoint(make_agent, tmp_path)
 
 def test_a_run_leaves_the_callers_trace_context_alone(make_agent):
     make, _ = make_agent
-    assert tracing.current_trace_id() is None
-    make(StubPlanner(["SELECT 1 AS n"])).run("q")
-    assert tracing.current_trace_id() is None
+    before = tracing.current_trace_id()   # other test files may leave one set
+    state = make(StubPlanner(["SELECT 1 AS n"])).run("q")
+    assert tracing.current_trace_id() == before != state["trace_id"]
 
 
 def test_a_run_resumed_after_execute_says_its_rows_are_gone(make_agent):
@@ -225,9 +225,11 @@ def test_a_failed_run_resumes_from_its_checkpoint(make_agent):
     assert "resume" in names and names[-1] == "answer"
     assert agent.state(tid)["finished"] is True
 
-    # A finished run returns its saved state; nothing runs again.
+    # A finished run returns its saved state; nothing runs again. Its rows were
+    # never checkpointed, and it says so rather than looking empty.
     again = agent.run(trace_id=tid)
     assert again["decided_by"] == "executed" and planner.calls == 2
+    assert again["rows"] is None and again["rows_unavailable"] is True
 
 
 def test_a_run_survives_an_unwritable_trace_store(make_agent, tmp_path):

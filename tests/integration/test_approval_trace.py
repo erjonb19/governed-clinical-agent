@@ -103,3 +103,9 @@ def test_propose_escalate_approve_is_one_trace(agent):
     blobs = [r[0] for r in con.execute("SELECT attrs FROM spans")]
     con.close()
     assert all("Mercy General" not in b for b in blobs)
+
+
+def test_start_leaves_the_callers_trace_context_alone(agent):
+    before = tracing.current_trace_id()
+    started = agent.start("Which hospitals have the worst readmission rates?")
+    assert tracing.current_trace_id() == before != started["thread_id"]

@@ -300,7 +300,9 @@ class GovernedApprovalAgent:
         thread_id = thread_id or str(uuid.uuid4())[:8]
         cfg = {"configurable": {"thread_id": thread_id}}
         # trace id = thread id: a decision submitted hours later appends to this trace
-        with self.tracer.attach(self.tracer.start_trace(
+        # preserved(): start_trace makes the approval trace current, and attach()
+        # alone would "restore" it on exit, leaving it current for the caller
+        with self.tracer.preserved(), self.tracer.attach(self.tracer.start_trace(
                 "approval", trace_id=thread_id, question=question,
                 capability=self.capability)):
             try:

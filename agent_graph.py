@@ -311,17 +311,20 @@ class GovernedAgentGraph:
         A new run gets a fresh trace id, which is also the checkpoint thread id.
         Passing the id of a run that stopped part-way (a node raised) continues it
         from the last checkpoint without repeating the steps that completed. The
-        id of a finished run returns its saved state without running anything;
-        that state has `rows: None`, because result rows are never checkpointed.
-        For the same reason a run resumed AFTER `execute` succeeded comes back
-        with `rows: None` and `rows_unavailable: True` -- never as an empty result.
+        id of a finished run returns its saved state without running anything.
+        Result rows are never checkpointed, so a finished run re-read by id, or
+        a run resumed AFTER `execute` succeeded, comes back with `rows: None`
+        and `rows_unavailable: True` -- never as an empty result.
         """
         tid = trace_id or tracing.new_id()
         cfg = {"configurable": {"thread_id": tid}}
         existing = self.state(tid) if trace_id else {"exists": False}
         if existing.get("exists") and existing.get("finished"):
             snap = self.graph.get_state(cfg)
-            return {**snap.values, "rows": None, "trace_id": tid}
+            done = {**snap.values, "rows": None, "trace_id": tid}
+            if done.get("allowed"):
+                done["rows_unavailable"] = True
+            return done
         resume = bool(existing.get("exists"))
         if resume:
             self.tracer.start_trace("run", trace_id=tid)   # no-op if it exists
