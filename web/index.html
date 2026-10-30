@@ -45,6 +45,18 @@
   /* ---------- layout ---------- */
   main{max-width:1080px;margin:0 auto;padding:38px 28px 90px}
   .view{display:none} .view.on{display:block}
+  /* Advanced: the technical controls are hidden until asked for (PLAN v2 item 6) */
+  body:not(.advanced) .adv{display:none!important}
+  .advtog{background:none;border:1px solid var(--rule);border-radius:999px;padding:6px 12px;
+          font:inherit;font-size:13px;color:var(--ink-3);cursor:pointer;margin-left:auto}
+  .advtog[aria-pressed="true"]{background:var(--paper-2);color:var(--ink)}
+  .ovgrid{margin-bottom:18px}
+  .ovcard .metric{font-family:var(--serif);font-size:34px;line-height:1.1;margin:4px 0 8px}
+  .ovcard h3{font-family:var(--serif);font-size:18px;font-weight:600;margin:0 0 8px;line-height:1.3}
+  .ovcard p{margin:0 0 10px;line-height:1.55}
+  .ovcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .defs dt{font-weight:600;margin-top:10px} .defs dd{margin:2px 0 0;color:var(--ink-2)}
+  #ovHow p{line-height:1.55}
   .hero{margin-bottom:26px}
   .hero h2{font-family:var(--serif);font-size:33px;line-height:1.22;font-weight:600;margin:0 0 8px;letter-spacing:-.2px}
   .hero p{color:var(--ink-2);margin:0;max-width:62ch;font-size:15.5px}
@@ -182,7 +194,8 @@
     <div><h1>Clinical Intelligence</h1><span>Governed Analytics</span></div>
   </div>
   <nav id="nav">
-    <button data-v="ask" class="on">Ask</button>
+    <button data-v="overview" class="on">Overview</button>
+    <button data-v="ask">Ask</button>
     <button data-v="review">Review<span class="qbadge" id="qBadge" hidden>0</span></button>
     <button data-v="data">Data</button>
     <button data-v="uses">Guide</button>
@@ -190,12 +203,49 @@
     <button data-v="usage">Usage</button>
     <button data-v="traces">Traces</button>
   </nav>
-  <button class="gear" id="gearBtn"><span class="dot" id="connDot"></span><span id="connTxt">Connect</span></button>
+  <button class="advtog" id="advBtn" aria-pressed="false" title="Show the technical controls: data source, dataset, SQL mode, access key and traces">Advanced</button>
+  <button class="gear adv" id="gearBtn"><span class="dot" id="connDot"></span><span id="connTxt">Connect</span></button>
 </div></div>
 
 <main>
+  <!-- ============ OVERVIEW (the landing view, PLAN v2 item 6) ============ -->
+  <section class="view on" id="v-overview">
+    <div class="hero">
+      <h2>Hospital quality at a glance</h2>
+      <p>What the latest Medicare data says about hospitals in the Northeast and Mid-Atlantic. Each finding is computed the same way every time, from the published data, and checked by the same security layer as every other question. <span id="ovVintage"></span></p>
+    </div>
+
+    <div class="card pad" id="ovConnect" hidden style="border-color:var(--copper);background:var(--copper-wash);margin-bottom:18px">
+      <p style="margin:0 0 10px;color:#6E3E20">This service is protected. Enter your access key once to see the findings.</p>
+      <button class="go" id="ovConnectBtn" style="margin:0">Enter access key</button>
+    </div>
+
+    <div class="grid ovgrid" id="ovFindings"></div>
+
+    <div class="ovcols">
+      <div class="card pad" id="ovDefs">
+        <div class="eyebrow">What the measures mean</div>
+        <dl class="defs">
+          <dt>Star rating</dt><dd>Medicare's overall hospital quality rating, from 1 to 5 stars. More stars is better. Some hospitals are not rated.</dd>
+          <dt>Medicare spending per patient (MSPB)</dt><dd>What Medicare spends on a patient around a hospital stay, compared with the national average. 1.0 is average; below 1.0 costs less.</dd>
+          <dt>30-day readmission rate</dt><dd>The percentage of patients readmitted to a hospital within 30 days of going home, adjusted for how sick they were. Lower is better.</dd>
+          <dt>ED median time</dt><dd>The median number of minutes emergency patients spend in the emergency department. Lower is better.</dd>
+          <dt>Psychiatric ED time (boarding)</dt><dd>The same median time for patients with a mental-health condition, who often wait in the ED for a bed. Lower is better.</dd>
+          <dt>Left before being seen</dt><dd>The percentage of emergency patients who leave before a clinician sees them. Lower is better.</dd>
+          <dt>Data as of</dt><dd>The date of the Medicare data release the numbers come from. It is refreshed monthly.</dd>
+        </dl>
+      </div>
+      <div class="card pad" id="ovHow">
+        <div class="eyebrow">How this works, and its limits</div>
+        <p>Each finding is a fixed query written and reviewed in advance, filled into a sentence. No AI writes these numbers, so they cannot be invented, and they change only when the data changes. Open <b>How we know</b> on any card to see the exact query.</p>
+        <p>The data is Medicare's public hospital quality release for 12 Northeast and Mid-Atlantic states. It describes hospitals, not individual patients, and it lags the present by months. State comparisons include only states with at least 10 reporting hospitals.</p>
+        <p>These are measures, not verdicts: a high readmission rate is a reason to ask questions, not a diagnosis. To ask your own question in plain English, use <a href="#" id="ovToAsk">Ask</a>.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ ASK ============ -->
-  <section class="view on" id="v-ask">
+  <section class="view" id="v-ask">
     <div class="hero">
       <h2>What would you like to know?</h2>
       <p>Ask in plain English. Every answer is checked by a security layer before any data is read &mdash; and you can see exactly how it was produced.</p>
@@ -217,12 +267,12 @@
         <textarea id="q" placeholder="e.g. Which hospitals deliver the best value — high quality at lower cost?"></textarea>
       </div>
       <div class="askfoot">
-        <span class="seglabel">Mode</span>
-        <div class="seg" id="segMode"><button data-m="query" class="on">Question</button><button data-m="raw-sql">SQL</button></div>
-        <span class="seglabel" title="Which body of data to ask about.">Dataset</span>
-        <div class="seg" id="segDataset"></div>
-        <span class="seglabel" title="Where the data is read from. Both hold the same tables and obey the same rules.">Read from</span>
-        <div class="seg" id="segBackend">
+        <span class="seglabel adv">Mode</span>
+        <div class="seg adv" id="segMode"><button data-m="query" class="on">Question</button><button data-m="raw-sql">SQL</button></div>
+        <span class="seglabel adv" title="Which body of data to ask about.">Dataset</span>
+        <div class="seg adv" id="segDataset"></div>
+        <span class="seglabel adv" title="Where the data is read from. Both hold the same tables and obey the same rules.">Read from</span>
+        <div class="seg adv" id="segBackend">
           <button data-b="local" class="on" title="A local database file on this machine — fast, no cloud.">This computer</button>
           <button data-b="databricks" title="The same tables stored in your Databricks cloud warehouse.">Databricks cloud</button>
         </div>
@@ -379,8 +429,49 @@ const KEY="ci_access_key";
 let MODE="query", BACKEND="local", DATASET=null;
 
 /* ---------- settings drawer ---------- */
+/* Advanced toggle: remembered per browser; storage may be unavailable */
+const ADV="ci_advanced";
+function setAdvanced(on){
+  document.body.classList.toggle("advanced",on);
+  $("advBtn").setAttribute("aria-pressed",on?"true":"false");
+  try{ localStorage.setItem(ADV,on?"1":"0"); }catch(_){}
+}
+try{ setAdvanced(localStorage.getItem(ADV)==="1"); }catch(_){ setAdvanced(false); }
+$("advBtn").onclick=()=>setAdvanced(!document.body.classList.contains("advanced"));
+
+/* ---------- overview: deterministic findings ---------- */
+function findingCard(f){
+  const how=`<details><summary class="small muted">How we know</summary>
+      ${(f.sql||[]).map(q=>`<pre>${esc(q)}</pre>`).join("")}
+      <p class="small muted" style="margin:6px 0 0">Data as of ${esc(f.vintage||"unknown")} · checked by the security layer like any other query</p></details>`;
+  if(f.status!=="ok"){
+    return `<div class="card pad ovcard"><div class="eyebrow">${esc(f.title)}</div>
+      <span class="pill warn">Unavailable</span>
+      <p class="small muted" style="margin-top:10px">This finding could not be computed right now, so no number is shown.</p>
+      <p class="small muted">${esc(f.reason||"")}</p>${how}</div>`;
+  }
+  return `<div class="card pad ovcard"><div class="eyebrow">${esc(f.title)}</div>
+    <div class="metric">${esc(f.metric)}</div><h3>${esc(f.headline)}</h3>
+    <p>${esc(f.sentence)}</p>${how}</div>`;
+}
+async function loadOverview(){
+  const box=$("ovFindings");
+  $("ovConnect").hidden=true;
+  box.innerHTML=`<div class="card pad muted">Loading the findings…</div>`;
+  try{
+    const r=await fetch("/findings",{headers:authHdrs()});
+    if(r.status===401){ box.innerHTML=""; $("ovConnect").hidden=false; return; }
+    const d=await r.json();
+    $("ovVintage").textContent=d.vintage?`Data as of ${d.vintage}.`:"";
+    box.innerHTML=(d.findings||[]).map(findingCard).join("");
+  }catch(e){ box.innerHTML=`<div class="card pad">Could not load the findings: ${esc(e.message||e)}</div>`; }
+}
+function overviewNeedsKey(){ $("ovFindings").innerHTML=""; $("ovConnect").hidden=false; }
+
 function openDrawer(){ $("drawer").classList.add("on"); $("scrim").classList.add("on"); $("key").focus(); }
 function closeDrawer(){ $("drawer").classList.remove("on"); $("scrim").classList.remove("on"); }
+$("ovConnectBtn").onclick=openDrawer;
+$("ovToAsk").onclick=e=>{e.preventDefault();show("ask");};
 $("gearBtn").onclick=openDrawer; $("closeDrawer").onclick=closeDrawer; $("scrim").onclick=closeDrawer;
 $("key").value=localStorage.getItem(KEY)||"";
 $("whereAmI").textContent=location.origin;
@@ -398,13 +489,13 @@ async function testKey(quiet){
     setConn("bad","Error"); return false;
   }catch(e){ setConn("bad","Offline"); if(!quiet) $("keyResult").textContent="Could not reach the service."; return false; }
 }
-$("saveKey").onclick=async()=>{ localStorage.setItem(KEY,$("key").value.trim()); const ok=await testKey(false); if(ok){ $("connectCard").style.display="none"; setTimeout(closeDrawer,700);} };
+$("saveKey").onclick=async()=>{ localStorage.setItem(KEY,$("key").value.trim()); const ok=await testKey(false); if(ok){ $("connectCard").style.display="none"; loadOverview(); setTimeout(closeDrawer,700);} };
 
 /* Inline connect card (shown only when a key is actually needed) */
 $("connect2").onclick=async()=>{
   const v=$("key2").value.trim(); $("key").value=v; localStorage.setItem(KEY,v);
   const ok=await testKey(true);
-  if(ok){ $("connectCard").style.display="none"; $("key2Result").innerHTML='<span style="color:var(--green)">✓ Connected.</span>'; }
+  if(ok){ $("connectCard").style.display="none"; $("key2Result").innerHTML='<span style="color:var(--green)">✓ Connected.</span>'; loadOverview(); }
   else { $("key2Result").innerHTML='<span style="color:var(--red)">That key was rejected by '+esc(location.host)+'.</span>'; }
 };
 $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").click(); });
@@ -420,7 +511,7 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
       `<button data-d="${esc(x.id)}" class="${x.id===DATASET?"on":""}" ${x.available?"":"disabled title='not built on this server'"}>${esc(x.label.split(" (")[0])}</button>`).join("");
     setDataset(DATASET);   // paints the hint + starters for the initial dataset
   } else { renderStarters(); }
-  if(!cfg.auth_required){ setConn("ok","Open access"); refreshBadge(); return; }
+  if(!cfg.auth_required){ setConn("ok","Open access"); refreshBadge(); loadOverview(); return; }
   // On this machine the server's own key is authoritative: always use it, even if
   // a stale/wrong key was saved earlier from another environment.
   if(cfg.prefill_key){
@@ -435,7 +526,8 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
     localStorage.removeItem(KEY); $("key").value="";
   }
   // testKey already set the badge (rejected / Offline / Error) if it ran.
-  if(!ok){ if(!haveKey) setConn("bad","Key needed"); $("connectCard").style.display="block"; } else { refreshBadge(); }
+  if(!ok){ if(!haveKey) setConn("bad","Key needed"); $("connectCard").style.display="block"; overviewNeedsKey(); }
+  else { refreshBadge(); loadOverview(); }
 })();
 
 /* ---------- nav ---------- */
@@ -602,7 +694,7 @@ function renderAnswer(d){
       <span>Source <b>${esc(d.backend||BACKEND)}</b></span>
       <span>Decision <b>${esc(d.decided_by||"—")}</b></span>
       ${m?`<span>Model <b>${esc(m.model)}</b></span><span>Time <b>${esc(m.latency_ms)} ms</b></span><span>Cost <b>$${esc(m.est_cost_usd??0)}</b></span>`:""}
-      ${d.trace_id?`<span><a href="#" id="toTrace" data-tid="${esc(d.trace_id)}">View trace</a></span>`:""}
+      ${d.trace_id?`<span class="adv"><a href="#" id="toTrace" data-tid="${esc(d.trace_id)}">View trace</a></span>`:""}
     </div></div>`;
   el.innerHTML=h;
   const t=$("toTrust"); if(t)t.onclick=e=>{e.preventDefault();show("trust");};
