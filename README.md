@@ -221,26 +221,21 @@ non-deterministic, and a case that passes 1 of 3 is not passing — scores the
 agent's answer against the reference for **exact match**, classifies failures
 into a taxonomy, and writes a timestamped report for regression tracking.
 
-**Measured results — single-shot vs. self-correcting graph.** Latest full sweep,
-3 runs per case against HEAD on Gemini `gemini-flash-lite-latest`: all four
-suites, 63 cases, 378 runs, **not one incorrect answer and no provider errors**.
+**Measured results — single-shot vs. self-correcting graph.** Full sweeps, 3 runs
+per case, on Gemini `gemini-flash-lite-latest`, against the October 2026 CMS Gold:
 
-| | CMS hospital (35 cases) | FHIR clinical (28 cases) |
+| | CMS hospital (38 cases) | FHIR clinical (28 cases) |
 |---|---|---|
-| Single-shot | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
-| Graph (self-correcting) | 35/35 cases · 100% runs | 28/28 cases · 100% runs |
+| Single-shot (2026-10-18) | 38/38 cases · 114/114 runs | 28/28 cases · 84/84 runs |
+| Graph, self-correcting (2026-10-30) | 38/38 cases · 114/114 runs · **0 retries** | 28/28 cases · 84/84 runs · **0 retries** |
 
-> **The hospital suite is now 38 cases on a corrected Gold** (`ed_volume` was an
-> empty DOUBLE and is now the text bucket CMS actually publishes; the stale
-> `readmit_hwr` column is populated again). Re-measured end to end on Gemini,
-> 3 runs per case: **38/38 cases, 114/114 runs, 100%**, every tier at 100%
-> (`eval_single_hospital_20260908T145421Z`).
-
-Every tier is at 100% in all four reports. The three hospital/FHIR single-shot
-and hospital graph runs are from 2026-09-05; the FHIR graph run is 2026-09-07,
-delayed two days because the Gemini free tier's 500-requests-per-day-per-model
-cap was exhausted — three attempts returned `provider_unavailable` and are not
-reported as results, since an inconclusive run is not a measurement.
+Every tier is at 100% in all four reports. Since then the hospital bank has grown
+to 42 cases: the four **standing questions** that `schedules.yaml` runs unattended
+(three weekly, one monthly; see [Runs, traces and schedules](#runs-traces-and-schedules)). Each was validated
+3/3 on both paths before it was scheduled. The first full 42-case sweep
+(2026-10-30) passed the gate with **107/107 completed runs correct**; 19 runs hit
+the Gemini free tier's daily quota (429) and are excluded as provider errors, not
+counted as answers.
 
 **What the current sweep does and does not show.** In the August sweeps
 (`eval_single_20260803T030757Z`, 33/35 · 95%; `eval_graph_20260803T033040Z`,
@@ -248,8 +243,10 @@ reported as results, since an inconclusive run is not a measurement.
 transient tool failures that retry recovered. At HEAD that gap is gone — not
 because self-correction regressed, but because **single-shot no longer produces
 the failures it used to recover**. Both graph runs report zero retries —
-`0/35` and `0/28` cases, avg attempts 1.00: the retry loop was never entered, so
-this sweep is evidence neither for nor against it.
+`0/38` and `0/28` cases, avg attempts 1.00: the retry loop was never entered, so
+this sweep is evidence neither for nor against it. Both paths are at the ceiling
+on these banks, which therefore cannot separate them; cases built to fail first
+(PLAN v2 item 3) are what will.
 
 The mechanism is still the point, and it predicts when retry can help at all.
 Retry only helps when there is a *failure signal* to react to. A guard denial
@@ -279,10 +276,12 @@ python validate_fhir_bank.py                        # verify the answer key itse
 ```
 
 Every run above is committed under `eval_runs/`:
-`eval_single_hospital_20260905T180442Z.json`,
-`eval_graph_hospital_20260905T181329Z.json`,
-`eval_single_fhir_20260905T182030Z.json`, and
-`eval_graph_fhir_20260907T011508Z.json`.
+`eval_single_hospital_20261018T042457Z.json`,
+`eval_graph_hospital_20261030T035035Z.json`,
+`eval_single_fhir_20261018T043155Z.json`,
+`eval_graph_fhir_20261030T033654Z.json`, and the 42-case sweep,
+`eval_single_hospital_20261030T141101Z.json` (FHIR the same day:
+`eval_single_fhir_20261030T141840Z.json`, 72/72 completed runs correct).
 
 **Infrastructure failures vs. accuracy regressions.** The harness distinguishes
 the two so a provider outage never looks like the agent getting worse. A run that
@@ -318,13 +317,75 @@ python eval_harness.py --provider anthropic   # needs ANTHROPIC_API_KEY
 For rate-limited free/low tiers, pace calls with `--min-interval <seconds>` (or
 `PLANNER_MIN_INTERVAL_SEC`) to avoid tripping 429s across a full sweep.
 
+## Runs, traces and schedules
+
+Every run has one id. A `/query`, `/raw-sql` or `/propose` response carries a
+`trace_id` that names the run's trace (`GET /traces/{id}`, the **Traces** view).
+For a graph run (`/propose`, and `GovernedAgentGraph.run`) the same id is also the
+LangGraph checkpoint thread; `/query` is single-shot and gets a checkpoint thread
+when PLAN v2 D2 moves it onto the graph. A graph run that died part-way resumes
+from its last checkpoint with `GovernedAgentGraph.run(trace_id=...)`, and
+`state(trace_id)` says where it stopped. Traces and planner-graph checkpoints hold
+the question, the SQL and row counts, never result rows; an approval checkpoint
+keeps the 3 evidence rows the reviewer is shown, as the approval record does.
+
+**Standing questions run unattended.** `schedules.yaml` lists questions a quality
+team would otherwise re-ask by hand: the average heart attack (AMI) readmission
+rate, how many EDs lose more than 5% of patients before they are seen, the ten
+worst AMI readmission rates, and which states have the most 1-2 star hospitals.
+Each schedule names an **eval case**, not free text, so the question and its trusted
+reference SQL come from the eval bank, and `scheduled_runs.py` refuses a case
+that is not there. A standing question is therefore one the suite already passes.
+
+`scheduled_runs.py` asks each due question through the self-correcting graph,
+under the same guard as every other path. It then scores the answer against the
+reference and compares it with the answer from the last run that got it right:
+
+| status | meaning |
+|---|---|
+| `ok` | correct, and the same answer as last time |
+| `drift` | correct, but the answer **changed**: the data moved (a CMS refresh) |
+| `failed` | guard denial, SQL error, model error, or a wrong answer |
+| `provider_error` | the LLM provider was unreachable; says nothing about the answer |
+| `skipped` | not started, because its worst-case cost would break a cap |
+
+Answers are hashed in the form the eval scores them (the value, or the key
+columns in order), so a renamed column is not drift. Results go to
+`logs/scheduled_runs.sqlite` (`SCHEDULED_RUNS_DB`): hashes and counts, never rows.
+
+**Cost caps that cannot be exceeded.** `budget_usd` caps a sweep and
+`max_cost_usd` caps one question, and both are checked against the question's
+**worst case** (every allowed attempt at full prompt and full output) *before* it
+starts. A run that errors part-way is charged its worst case too. On Gemini the
+worst case is about $0.003 a question, and the real bill on the free tier is $0.
+
+**Weekly, in CI.** `scheduled-runs.yml` runs Mondays at 09:00 UTC on Gemini's free
+tier. The result history travels from week to week as a workflow artifact. A
+`failed` or `drift` opens one issue per schedule, titled `scheduled run: <name>`,
+or comments on it if it is already open; the next `ok` closes it. A provider
+outage is a warning, not an issue. Answer values from the FHIR dataset are never
+written into an issue: the repo is public.
+
+```bash
+python scheduled_runs.py                        # due hospital schedules
+python scheduled_runs.py --all --summary s.json # everything, plus a JSON summary
+```
+
+Exit codes follow the eval harness: `0` ok or drift, `1` failed, `2` provider
+unavailable, plus `3` when a cost cap stopped a run.
+
+To add a standing question, add the eval case first, validate it with
+`EVAL_CASES=<id> python eval_harness.py` (and `--graph`), then add a schedule
+that names it.
+
 ## CI
 
-Four GitHub Actions workflows:
+Five GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **481 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **562 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
-- **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 35 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
+- **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
+- **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
 Fast feedback on every change, complete coverage every night. Reports are uploaded as artifacts.
@@ -403,7 +464,7 @@ python build_fhir_gold.py                        # ~367k resources
 A working reference implementation, described plainly:
 
 - Single-instance; queries serialized under a lock. Horizontal scaling is future work.
-- Auth is enforced when `API_KEY` is set, and the service runs **open in dev mode** when it is not (flagged loudly at startup and in `/health`). There is **no rate limiting** yet.
+- The service **refuses to start without `API_KEY`** unless `ALLOW_OPEN_ACCESS=true` is set explicitly for local dev (then flagged loudly at startup and in `/health`). Rate limits are per API key (slowapi).
 - The data is public CMS data and **synthetic** Synthea patients. There is no real PHI here, and the system is not hardened for PHI or production load. The PHI-protection design is real and tested; the deployment posture is not production-grade.
 - The **hospital** Gold refreshes monthly in CI; the FHIR Gold is a fixed Sep-2019
   Synthea sample and is built on demand (it is a gitignored derived artifact, so
@@ -430,12 +491,19 @@ A working reference implementation, described plainly:
   changed source data cannot silently ship.
 - Rate limiting and fail-closed auth — per-API-key limits via slowapi; the service
   refuses to start without `API_KEY` unless open access is set explicitly.
+- Tracing and checkpointed runs — one id per run across the response and the
+  trace, and for graph runs the checkpoint thread; a failed graph run resumes
+  where it stopped.
+- Unattended standing questions — `schedules.yaml` + `scheduled_runs.py`, weekly
+  in CI, with worst-case cost caps and an issue on failure or drift.
+- Graph vs. single-shot, measured on the full suite: both at 100%, zero retries.
 
 **Next**
 
 - RAG over CMS measure definitions, so the agent can answer *what a measure means*, not only what its value is
 - MCP server Milestone 2+: a general capability-mapping layer, then Streamable HTTP and OAuth 2.1 (currently stdio)
-- Measure the self-correcting graph against single-shot on the full suite
+- Adversarial cases built to fail first, so the retry loop (and a critic) have
+  something to correct; on the existing banks both paths are at the ceiling
 
 ## License
 
