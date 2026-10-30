@@ -87,15 +87,20 @@ Logs: `eval_runs/overnight_hospital_graph.log`, `eval_runs/overnight_fhir_graph.
 both banks.
 
 What it means for this plan:
-- The graph path matches the single-shot sweeps (hospital 114/114 on
-  2026-09-08, FHIR 84/84 on 2026-09-07). On these banks graph and
-  single-shot do equally well. That answers CLAUDE.md roadmap item 2 for
-  Gemini.
-- **Zero retries means the existing banks never exercise self-correction.**
-  The retry edge, and later the critic (item 4), only show up on cases built
-  to fail first. Item 3's 10 adversarial cases are therefore the only
-  measurement of the graph's added value, and the trajectory
-  `retries` dimension will be trivially satisfied on the 66 existing cases.
+- The graph path matches the single-shot sweeps on the same Gold
+  (`eval_single_hospital_20261018T042457Z` 114/114,
+  `eval_single_fhir_20261018T043155Z` 84/84). **Both paths are at the
+  ceiling**, so these banks cannot tell them apart. For Gemini, roadmap item 2
+  ("graph vs single-shot") is measured but not answered.
+- **On Gemini, zero retries means the existing banks never exercise
+  self-correction.** That is a property of the model as well as the bank. The
+  Aug 3 graph sweep on gpt-oss-120b (`eval_graph_20260803T033040Z`, 35-case
+  hospital bank) retried 5 cases: t2_count_ny_5star, t2_avg_hwr_ma,
+  t2_count_cheap, t4_count_fast_lowlbs and t5_clinical_vocab_copd. Item 3's
+  10 adversarial cases are what exercise the retry edge, and later the critic
+  (item 4), on any model. On Gemini the trajectory `retries` dimension will be
+  trivially satisfied on the 66 existing cases. That is not guaranteed on
+  Haiku 5.5 (7c).
 - The baseline for 7c is now 100% on both banks on the graph path. A
   Haiku 5.5 run below that is a model difference, not a graph regression.
 
