@@ -194,7 +194,7 @@ it ever goes empty again, they fail outright instead of passing on `NULL` = `NUL
 
 ### PHI protection
 
-Only the curated **Gold** views are on the guard's allowlist. The `bronze_*` tables — which carry raw patient names, addresses, and identifiers — are deliberately excluded, even though they sit in the same database. This is the analytics equivalent of querying a de-identified view instead of the source system.
+Only the curated **Gold** views are on the guard's allowlist. The `bronze_*` tables, the raw source records, are deliberately excluded, even though they sit in the same database. That alone is not enough, because the Gold patient table still holds names, birth dates and postal codes, so the guard also applies the patient-data rules below.
 
 Tested adversarially, including the case that matters most:
 
@@ -206,6 +206,33 @@ FROM gold_condition g JOIN bronze_patient b ON g.patient_id = b.patient_id
 ```
 
 A guard that only checked the first table reference would let that through. This one walks every table in the parse tree.
+
+### What the guard blocks
+
+In plain terms, for the clinical (FHIR) data:
+
+- **No one's identity comes back.** Names, patient and record IDs, cities,
+  postal codes and full dates (of birth, visits, diagnoses, prescriptions)
+  are never returned row by row. That holds however a query tries: renaming the
+  column, joining it in from another table, hiding it in a sub-query, gluing it
+  to other text, or asking for "everything" with `SELECT *`.
+- **Counts are fine; lists of people are not.** You can count patients, count
+  distinct cities, or group patients by age, sex or condition. You cannot group
+  by patient, or ask for the first, last, smallest or largest ID or name in a
+  group, or for a list of them.
+- **Dates only to the year.** "How many patients were born in 1960" works.
+  "Patients born on 5 March 1960" does not.
+- **No small groups.** Any group of fewer than 11 people is left out of a
+  result. That is the rule Medicare uses for its own public data. A count that
+  would describe fewer than 11 people is not shown at all.
+- **A second check on the way out.** Before a result leaves, the guard traces
+  every column back to where it came from, and refuses it if it leads to
+  identifying data under any name. It also refuses values that look like full
+  dates or zip codes. The audit log records the refusal, never the value.
+
+The CMS hospital data is public and about facilities, not people, so none of
+this applies to it. The column-by-column labels are in `phi_columns.yaml`; a
+column without a label is treated as identifying.
 
 ## Evaluation
 
@@ -405,7 +432,7 @@ that names it.
 
 Seven GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **659 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **722 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).

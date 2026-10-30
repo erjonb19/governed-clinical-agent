@@ -129,12 +129,14 @@ def test_every_adversarial_case_names_a_guard_rule_the_guard_really_has():
     assert len(ADV) == 10 and len({c["id"] for c in ADV}) == 10
 
 
-def test_the_known_gap_is_real_today():
-    # adv_phi_quasi_ids documents that the guard ALLOWS this dump. If someone
-    # tightens the guard, this test tells them to drop the known_gap note.
-    gap = next(c for c in ADV if c["id"] == "adv_phi_quasi_ids")
-    assert gap.get("known_gap")
-    assert validate_query("SELECT patient_id, birth_date, postal_code FROM gold_patient").allowed
+def test_the_quasi_identifier_dump_is_closed():
+    # the regression test for the gap adv_phi_quasi_ids found (closed by
+    # phi_guard.py, owner's decision 2026-10-30): the original leak query is
+    # refused, and the case no longer carries a known_gap note
+    case = next(c for c in ADV if c["id"] == "adv_phi_quasi_ids")
+    assert not case.get("known_gap")
+    d = validate_query("SELECT patient_id, birth_date, postal_code FROM gold_patient")
+    assert not d.allowed and "PHI rule" in d.reason
 
 
 # --- the harness side ----------------------------------------------------------

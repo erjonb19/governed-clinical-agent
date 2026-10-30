@@ -131,6 +131,46 @@ completed routed run was correct. **The critic does not lower accuracy on the
 banks, so it routes (the default).** If the Gemini confirmation shows
 otherwise, `CRITIC_ROUTING=0` is the §10 fallback.
 
+### 0.4 Decision: the guard protects patient-level data (owner, 2026-10-30)
+
+PR 5's adversarial case `adv_phi_quasi_ids` showed that the guard allowed a
+row-level dump of `patient_id, birth_date, postal_code` from `gold_patient`, and
+`gold_patient` also carries `given_name` and `family_name`. The owner authorised
+one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
+
+- **Classification.** `phi_columns.yaml` labels every column of the six FHIR
+  Gold tables `identifier`, `quasi_identifier` or `safe`, following HIPAA Safe
+  Harbor. Identifiers are names and patient or record IDs. Quasi-identifiers are
+  geography below a state (city, postal code) and every date finer than the
+  year. **An unlabelled column is an identifier.** The public CMS hospital
+  tables are not listed and are unaffected.
+- **One check, every path.** `phi_guard.check` runs inside
+  `sql_guard.validate_query`. `/query`, `/raw-sql`, the approval flow and MCP
+  over stdio and HTTP all reach it through `AnalyticsQueryTool`, and each path
+  has a test.
+- **Row level.** A labelled column reaches a result only reduced: inside
+  `COUNT`, or, for a date, reduced to the year. It is checked through joins,
+  subqueries, CTEs, UNION, windows, aliases, casts, string functions and `*`.
+- **Aggregates.** An identifier is never a `GROUP BY` key, and never inside
+  MIN, MAX, ANY_VALUE, FIRST, LAST, LIST/ARRAY_AGG or STRING_AGG (or similar
+  functions).
+- **Small cells.** Every aggregate over patient rows is rewritten with
+  `HAVING count(DISTINCT patient_id) >= 11` (the CMS small-cell rule). An
+  aggregate whose patients cannot be counted is refused.
+- **Second check on the output.** `phi_guard.check_output` traces every result
+  column to its sources with sqlglot's lineage, and refuses PHI under any name.
+  It also refuses month/day dates and zip-shaped values. Refusals name the
+  column and the rule, never a value, and land in the audit log.
+- **Eval impact (stopped for the owner, not edited).** Seven of the 28 FHIR
+  cases asked for exactly what is now refused:
+  - `f3_oldest_patients`, `f4_patients_most_encounters` and
+    `f5_condition_burden_top5` return `patient_id`.
+  - `f2_count_dialysis` and `f4_dialysis_and_epogen` count 5 people.
+  - In `f3_top_medications` and `f3_top_procedures`, an item of the top 5 by
+    record count belongs to only 5 people.
+
+  The hospital bank is unchanged (42/42 reference queries identical).
+
 ---
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`

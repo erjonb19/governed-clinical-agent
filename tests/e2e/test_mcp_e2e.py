@@ -113,6 +113,11 @@ async def _exercise(session: ClientSession) -> None:
     text = bad.content[0].text
     assert text.startswith("REFUSED") and "catalog" in text
 
+    # the PHI leak the adversarial suite found, refused on every transport
+    leak = await session.call_tool("query_analytics", {
+        "sql": "SELECT patient_id, birth_date, postal_code FROM gold_patient", "dataset": "fhir"})
+    assert leak.content[0].text.startswith("REFUSED") and "PHI rule" in leak.content[0].text
+
 
 async def test_stdio():
     params = StdioServerParameters(command=sys.executable, args=["mcp_server.py"], cwd=ROOT,

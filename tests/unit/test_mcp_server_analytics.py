@@ -202,8 +202,11 @@ def test_an_allowed_query_returns_rows_as_json():
 @needs_gold
 def test_row_cap_is_applied_without_being_asked_for():
     ds = M.available_datasets()[0]
+    # row-level and PHI-free on either dataset (SELECT * on gold_patient would
+    # return identifiers, which phi_guard refuses)
+    cols = "*" if ds == "hospital" else "gender, age_years"
     table = "gold_hospital_profile" if ds == "hospital" else "gold_patient"
-    payload = json.loads(M.query_analytics(f"SELECT * FROM {table}", ds))
+    payload = json.loads(M.query_analytics(f"SELECT {cols} FROM {table}", ds))
     assert payload["row_count"] <= 1000
     assert "LIMIT" in payload["sql_executed"].upper()
 
