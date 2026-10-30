@@ -170,6 +170,28 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
     record count belongs to only 5 people.
 
   The hospital bank is unchanged (42/42 reference queries identical).
+- **Hardened after adversarial review.** The first version was bypassed on the
+  real data four ways, all now closed and each pinned by a test:
+  - a correlated scalar subquery in the SELECT list (returned names, IDs and
+    dates);
+  - YEAR() around date arithmetic (leaked month and day);
+  - COUNT of a CASE, or FILTER (WHERE …), on identifying columns (lookups and
+    small counts);
+  - window aggregates over patient rows (unsuppressed groups, and QUALIFY used
+    to single people out).
+
+  The output check now fails closed on a lineage leaf it cannot place.
+- **Left to the owner (not bugs; the stated rules allow them):**
+  - **Identifiers used to filter.** `WHERE given_name = …`, `JOIN … ON
+    patient_id` and `WHERE postal_code LIKE '02%'` are allowed, because they
+    return nothing identifying. Combined with row-level safe columns, though,
+    they can pull one named person's diagnoses or act as a prefix oracle.
+  - **Patient GROUP BY that never reaches the result.** It is refused as
+    specified, which refuses plausible queries such as "average encounters
+    per patient".
+  - **Inherent limits of cell suppression.** Differencing (a total minus a
+    visible part), and `ORDER BY <date> LIMIT 1` over safe columns to single
+    out one person.
 
 ---
 

@@ -62,6 +62,45 @@ BLOCKED = {
     "unlabelled column is an identifier": "SELECT some_new_column FROM gold_patient",
     "aggregate without a patient key": ("WITH t AS (SELECT gender FROM gold_patient) "
                                         "SELECT gender, count(*) AS n FROM t GROUP BY gender"),
+    # --- bypasses found by adversarial review, each confirmed on the real data ---
+    "correlated scalar subquery: id": (
+        "SELECT (SELECT p2.patient_id FROM gold_patient p2 WHERE p2.patient_id = c.patient_id) AS pid, "
+        "condition_name FROM gold_condition c"),
+    "correlated scalar subquery: name": (
+        "SELECT (SELECT given_name || family_name FROM gold_patient p2 WHERE p2.patient_id = c.patient_id) "
+        "AS who, c.condition_name FROM gold_condition c"),
+    "scalar subquery inside CASE": (
+        "SELECT CASE WHEN true THEN (SELECT given_name FROM gold_patient p2 WHERE "
+        "p2.patient_id = p.patient_id) END AS n FROM gold_patient p"),
+    "scalar subquery: reshaped date": (
+        "SELECT (SELECT replace(birth_date, '-', '') FROM gold_patient p2 WHERE "
+        "p2.patient_id = p.patient_id) AS d, gender FROM gold_patient p"),
+    "scalar subquery: reshaped zip": (
+        "SELECT (SELECT postal_code || '.' FROM gold_patient p2 WHERE p2.patient_id = p.patient_id) "
+        "AS z FROM gold_patient p"),
+    "YEAR around date arithmetic": (
+        "SELECT year(CAST(birth_date AS DATE) + to_years(month(CAST(birth_date AS DATE)) * 100 + "
+        "day(CAST(birth_date AS DATE)))) - year(CAST(birth_date AS DATE)) AS mmdd, gender FROM gold_patient"),
+    "date_diff year around day of year": (
+        "SELECT date_diff('year', DATE '2000-01-01', DATE '2000-01-01' + "
+        "to_years(dayofyear(CAST(birth_date AS DATE)))) AS doy FROM gold_patient"),
+    "EXTRACT year around day": (
+        "SELECT extract(year FROM CAST(birth_date AS DATE) + to_years(day(CAST(birth_date AS DATE)))) "
+        "AS y FROM gold_patient"),
+    "COUNT of a CASE on identifiers": (
+        "SELECT count(CASE WHEN postal_code LIKE '021%' AND family_name LIKE 'A%' THEN 1 END) AS n "
+        "FROM gold_patient"),
+    "FILTER on a city": ("SELECT gender, count(*) FILTER (WHERE city = 'Boston' AND age_years > 90) AS n "
+                         "FROM gold_patient GROUP BY gender"),
+    "FILTER on a name": "SELECT count(*) FILTER (WHERE given_name = 'Bo157') AS n FROM gold_patient",
+    "window count by city": ("SELECT DISTINCT n FROM (SELECT count(*) OVER (PARTITION BY city) AS n "
+                             "FROM gold_patient) t WHERE n < 11"),
+    "window count by zip": ("SELECT gender, age_years, count(*) OVER (PARTITION BY postal_code) AS n "
+                            "FROM gold_patient"),
+    "window aggregate over patients": ("SELECT gender, count(*) OVER (PARTITION BY gender) AS n "
+                                       "FROM gold_patient"),
+    "QUALIFY singling out by name": ("SELECT gender, age_years FROM gold_patient "
+                                     "QUALIFY count(*) OVER (PARTITION BY given_name) = 1"),
 }
 
 ALLOWED = {
@@ -215,3 +254,22 @@ def test_a_refusal_reaches_the_audit_log_without_the_value(tmp_path):
     finally:
         tool_base._TOOL_REGISTRY.clear()
         tool_base._TOOL_REGISTRY.update(saved)
+
+
+def test_the_output_check_fails_closed_on_a_lineage_leaf_it_cannot_place():
+    # a correlated subquery: lineage reports the leaf as a bare column name
+    q = ("SELECT (SELECT given_name FROM gold_patient p2 WHERE p2.patient_id = c.patient_id) AS who "
+         "FROM gold_condition c")
+    analysed = phi_guard.qualify(phi_guard.sqlglot.parse_one(q, read="duckdb"), schema=phi_guard.SCHEMA,
+                                 dialect="duckdb", validate_qualify_columns=False).sql(dialect="duckdb")
+    d = Decision(True, "allowed", phi_sql=analysed, phi_names=["who"])
+    with pytest.raises(phi_guard.OutputRefused):
+        phi_guard.check_output(d, ["who"], [{"who": "x"}])
+
+
+
+def test_an_aliased_safe_column_is_not_refused_by_the_output_check(tool):
+    # lineage names the leaf by the alias; it must still be placed as safe
+    r = tool.execute({"sql": "SELECT round(avg(c.age_at_onset), 1) AS v FROM gold_condition c "
+                             "WHERE c.patient_id IN (SELECT patient_id FROM gold_patient WHERE gender = 'female')"})
+    assert r.success, r.error

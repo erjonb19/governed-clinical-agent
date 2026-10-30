@@ -126,37 +126,49 @@ def _is_year(node: exp.Expression) -> bool:
     return False
 
 
-def _not_returned(child: exp.Expression, parent: exp.Expression) -> bool:
-    """Is `child` in a part of `parent` that filters rather than returns?"""
-    if isinstance(parent, exp.Window):
-        return child is not parent.this            # PARTITION BY / ORDER BY
-    if isinstance(parent, exp.Filter):
-        return child is parent.args.get("expression")   # agg FILTER (WHERE ...)
-    return False
+# Nodes that change a value's type, not what it says. A reduction counts only
+# when nothing else sits between the column and the reducing function: YEAR()
+# around arithmetic on a date smuggles the month and day out, and COUNT around
+# a CASE on a name is a lookup, not a count of people.
+_TRANSPARENT = (exp.Cast, exp.TryCast, exp.Paren, exp.Distinct)
 
 
-def _path(col: exp.Expression, root: exp.Expression):
-    """Ancestors of `col` up to and including `root`, nearest first; None if a
-    filter-only branch is crossed (the column does not reach the value)."""
-    out, node = [], col
+def side_channel(col: exp.Expression, root: exp.Expression) -> Optional[str]:
+    """Is `col` used as an aggregate FILTER or a window PARTITION BY / ORDER BY
+    inside `root`? Those do not return the value, but on a labelled column they
+    look a person up (a filtered count) or form unsuppressed groups (a window)."""
+    node = col
     while node is not root and node.parent is not None:
         parent = node.parent
-        if _not_returned(node, parent):
-            return None
-        out.append(parent)
+        if isinstance(parent, exp.Filter) and node is parent.args.get("expression"):
+            return "an aggregate FILTER"
+        if isinstance(parent, exp.Window) and node is not parent.this:
+            return "a window PARTITION BY / ORDER BY"
         node = parent
+    return None
+
+
+def _path(col: exp.Expression, root: exp.Expression) -> list:
+    """Ancestors of `col` up to and including `root`, nearest first."""
+    out, node = [], col
+    while node is not root and node.parent is not None:
+        out.append(node.parent)
+        node = node.parent
     return out
 
 
 def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
-    path = _path(col, root)
-    if path is None:
-        return True
-    for anc in path:
+    """Is `col` reduced on its way to `root`: the direct argument of COUNT, or a
+    date with YEAR / EXTRACT(year) / date_diff('year') applied to it directly
+    (only casts and DISTINCT in between)?"""
+    for anc in _path(col, root):
+        if isinstance(anc, _TRANSPARENT):
+            continue
         if isinstance(anc, exp.Count):
             return True
         if is_date and _is_year(anc):
             return True
+        return False
     return False
 
 
@@ -185,6 +197,19 @@ def _is_aggregate(select: exp.Select) -> bool:
                 return True
     having = select.args.get("having")
     return having is not None
+
+
+def _own_nodes(select: exp.Expression, kind):
+    """Nodes of `kind` in this SELECT itself, not in its nested queries."""
+    stack = [select]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, kind):
+            yield node
+        for child in node.iter_expressions():
+            if isinstance(child, (exp.Subquery, exp.Select)) and child is not select:
+                continue
+            stack.append(child)
 
 
 def _ancestors(node, root):
@@ -266,9 +291,13 @@ class _Analysis:
         worst = Sens()
         for col in proj.find_all(exp.Column):
             if any(isinstance(a, (exp.Subquery, exp.Select)) for a in _ancestors(col, proj)):
-                continue                                  # its own scope
+                continue                                  # its own scope, below
             s = self.resolve(scope, col)
             if s.cls == SAFE:
+                continue
+            via = side_channel(col, proj)
+            if via:
+                self.findings.append(f"{s.cls} {s.base or col.name} used in {via}")
                 continue
             if s.cls == IDENTIFIER:
                 banned = _banned_wrapper(col, proj)
@@ -277,6 +306,20 @@ class _Analysis:
             if reduced(col, proj, s.is_date):
                 continue
             worst = worst.worse(Sens(s.cls, s.is_date, s.base))
+        # A scalar subquery in the SELECT list returns a VALUE into this row --
+        # correlated, it is a per-row lookup. Its output's sensitivity is this
+        # projection's, unless reduced here like a column.
+        for sq in proj.find_all(exp.Subquery):
+            if any(isinstance(a, (exp.Subquery, exp.Select)) for a in _ancestors(sq, proj)):
+                continue
+            if isinstance(sq.parent, exp.In):
+                continue                                  # x IN (SELECT ...): a filter
+            child = next((c for c in scope.subquery_scopes if c.expression is sq.this), None)
+            outs = self.outputs(child) if child is not None else [("?", Sens(IDENTIFIER))]
+            for _, s in outs:
+                if s.cls == SAFE or reduced(sq, proj, s.is_date):
+                    continue
+                worst = worst.worse(s)
         inner = proj.this if isinstance(proj, exp.Alias) else proj
         if isinstance(inner, exp.Column) and worst.cls != SAFE:
             worst = Sens(worst.cls, worst.is_date, self.resolve(scope, inner).base)
@@ -368,6 +411,25 @@ class _Analysis:
             return
         self.rewrites.append((sel, key))
 
+    def windows(self, scope: Scope) -> None:
+        """Window functions over patient rows: an aggregate OVER a partition is a
+        group the small-cell rule cannot suppress, so it is refused; a labelled
+        column in any window (projections, QUALIFY, ORDER BY) is refused too."""
+        sel = scope.expression
+        reads_patients = self._person_source(scope)[0]
+        for win in _own_nodes(sel, exp.Window):
+            if reads_patients and isinstance(win.this, exp.AggFunc):
+                self.findings.append(
+                    f"a window aggregate ({win.this.sql(dialect=DIALECT)[:40]} OVER ...) over "
+                    f"patient rows, whose groups cannot be held to {MIN_CELL} people; use GROUP BY")
+            for col in win.find_all(exp.Column):
+                if col.parent is win.this or any(a is win.this for a in _ancestors(col, win)):
+                    continue
+                s = self.resolve(scope, col)
+                if s.cls != SAFE:
+                    self.findings.append(f"{s.cls} {s.base or col.name} used in a window "
+                                         f"PARTITION BY / ORDER BY")
+
     def run(self) -> None:
         scopes = list(traverse_scope(self.root))
         for scope in scopes:
@@ -375,6 +437,7 @@ class _Analysis:
             if isinstance(scope.expression, exp.Select):
                 self.group_keys(scope)
                 self.small_cells(scope)
+                self.windows(scope)
         root_scope = scopes[-1] if scopes else None
         if root_scope is not None:
             for name, sens in self.outputs(root_scope):
@@ -453,6 +516,14 @@ def check(tree: exp.Expression) -> PhiDecision:
 # the post-execution check
 # ---------------------------------------------------------------------------
 
+def _public_tables() -> set[str]:
+    from sql_guard import ALLOWED_TABLES
+    return {t.lower() for t in ALLOWED_TABLES} - PROTECTED
+
+
+_PUBLIC_TABLES = _public_tables()
+
+
 class OutputRefused(Exception):
     """A result that must not be returned. The message never holds a value."""
 
@@ -468,7 +539,15 @@ def _trace(node) -> list[tuple[str, bool, str, bool]]:
         src_name = child.name.replace('"', "").lower()
         if leaf:
             table, _, column = src_name.rpartition(".")
-            cls, is_date = classify(table, column)
+            # lineage names the leaf by its ALIAS (o.value_num); the node's
+            # source is the real table. Without one, it cannot be placed.
+            if isinstance(child.source, exp.Table) and child.source.name:
+                table = child.source.name.lower()
+                src_name = f"{table}.{column}"
+            if table not in PROTECTED and table not in _PUBLIC_TABLES:
+                cls, is_date = IDENTIFIER, False        # cannot place it: fail closed
+            else:
+                cls, is_date = classify(table, column)
             reduced_here = _reduces(node.expression, child.name, is_date)
             out.append((src_name, reduced_here or cls == SAFE, cls, is_date))
         else:

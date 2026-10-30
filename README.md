@@ -230,6 +230,12 @@ In plain terms, for the clinical (FHIR) data:
   identifying data under any name. It also refuses values that look like full
   dates or zip codes. The audit log records the refusal, never the value.
 
+Two limits, stated plainly. Cell suppression can in principle be undone by
+subtraction, for example a total minus every visible group. Filtering by an
+identifying column, such as a name in a `WHERE` clause, is allowed today
+because it returns nothing identifying, though it can narrow a result to one
+person. Both are recorded as open decisions in `docs/PLAN_v2.md` §0.4.
+
 The CMS hospital data is public and about facilities, not people, so none of
 this applies to it. The column-by-column labels are in `phi_columns.yaml`; a
 column without a label is treated as identifying.
@@ -432,7 +438,7 @@ that names it.
 
 Seven GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **722 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **739 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
