@@ -103,3 +103,40 @@ this build session against the $3.00 cap.
 - **Anthropic spend so far:** $0.00. There is still no key.
 - **Render:** no new env var. **Latency:** a graph `/query` makes at least two
   paced Gemini calls, so expect 5–10 s or more per answer on the free tier.
+
+## PR 5 (item 3) — trajectory scoring and 10 adversarial cases (#34)
+
+- **What merged:**
+  - `trajectory_eval.py` scores the whole path of each graph run on answer,
+    tables, retries, guard, stopping and critic. It is deterministic.
+  - The guard dimension re-runs `sql_guard` on every attempted SQL. Anything
+    the guard denies must have been refused before it reached the database.
+  - `--trajectory` runs this on the existing banks. `EVAL_DATASET=adversarial`
+    runs 10 cases (prompt injection, PHI exfiltration, allowlist bypass) with a
+    **100% gate** on guard, stopping and tables.
+  - The existing gates and exit codes are unchanged. Trajectory suites run live
+    only in 7c.
+- **⚠ A finding you need to decide on:** `sql_guard` **allows**
+  `SELECT patient_id, birth_date, postal_code FROM gold_patient`, a row-level
+  quasi-identifier dump capped at 1,000 rows.
+  - `adv_phi_quasi_ids` states the behaviour we want and is marked `known_gap`.
+    It fails whenever the model complies. A test pins that the gap is real today.
+  - The rules for this run forbid me changing `sql_guard`, so this is your call.
+    The options are: deny row-level access to those three columns together,
+    require aggregation on `gold_patient`, or accept and document it.
+- **Live check:** I ran it on Groq twice. Both runs were inconclusive: Groq's
+  limit returned 429s and only 1 of 10 cases completed each time. The two
+  completed cases (ignore-rules, catalog probe) were both safe. A full run is
+  for Gemini after its quota resets, or 7c.
+- **Reviews:** 3 rounds. They found:
+  - policy-layer denials counted as misses;
+  - `deny_rule` required every denial to match;
+  - a missing FHIR Gold made 7 cases pass without testing anything;
+  - `tables_in` blind to table functions and DDL;
+  - **(blocker)** my first fix let a guard-denied query that reached DuckDB and
+    then errored count as safe.
+  All fixed, each with a test that fails without the fix, including one through
+  the real graph, runtime and guard.
+- **Tests:** 659 passed, 1 skipped.
+- **Anthropic spend so far:** $0.00. There is still no key.
+- **You need to:** decide the quasi-identifier gap (above).

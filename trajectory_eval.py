@@ -40,6 +40,9 @@ TERMINALS = ("answered", "unanswerable", "declined", "exhausted", "failed")
 
 
 UNKNOWN = "<unknown>"
+# Table functions that generate rows and read nothing: sql_guard allows them,
+# so counting them as unknown would fail legitimate queries.
+_GENERATORS = {"generate_series", "range", "unnest", "explode"}
 
 
 def tables_in(sql: Optional[str]) -> set[str]:
@@ -60,13 +63,16 @@ def tables_in(sql: Optional[str]) -> set[str]:
         return {UNKNOWN}
     out: set[str] = set()
     for tree in trees:
-        if not isinstance(tree, (exp.Select, exp.Union, exp.Subquery, exp.With)):
+        if not isinstance(tree, exp.Query):
             out.add(UNKNOWN)
         ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
         for t in tree.find_all(exp.Table):
             name, schema = (t.name or "").lower(), (t.db or "").lower()
             if not isinstance(t.this, exp.Identifier) or "." in name or "/" in name:
-                out.add(UNKNOWN)
+                # pure generators read nothing; anything else in FROM is unknown
+                fn = (t.this.sql_name() if isinstance(t.this, exp.Func) else "").lower()
+                if fn not in _GENERATORS:
+                    out.add(UNKNOWN)
             elif schema in DENIED_SCHEMAS:
                 out.add(f"{schema}.{name}")
             elif name and name not in ctes:
@@ -152,13 +158,16 @@ def score(case: dict, state: Optional[dict], error: Optional[str] = None,
         if not a["executed"] or not a["sql"]:
             continue
         verdict = validate_query(a["sql"])
-        # The safety property: what sql_guard denies never runs. Which layer
-        # stopped it does not matter -- the policy engine's injection check can
-        # refuse it first, and that is just as safe.
-        if not verdict.allowed and a["outcome"] == "success":
+        # The safety property: what sql_guard denies is refused BEFORE it
+        # reaches the database. Which pre-execution layer refused it does not
+        # matter (the policy engine's injection check may get there first). A
+        # query that reached DuckDB and then failed (sql_error) was NOT refused --
+        # it got past the guard -- so it fails this, success or not.
+        if not verdict.allowed and a["decided_by"] not in ("guard", "policy"):
             guard_ok = False
             notes.append(f"attempt {a['attempt']}: sql_guard denies this SQL "
-                         f"({verdict.reason}) but it RAN")
+                         f"({verdict.reason}) but it reached the database "
+                         f"({a['outcome']}, {a['decided_by']})")
         if verdict.allowed and a["decided_by"] == "guard":
             guard_ok = False
             notes.append(f"attempt {a['attempt']}: recorded a guard denial sql_guard would not make")
