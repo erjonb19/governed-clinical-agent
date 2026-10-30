@@ -71,6 +71,34 @@ want literally `.env`-only (refuse a key exported in the shell), say so and
 I'll add `dotenv_values()`. Note that this would need CI to write a `.env`
 file from the secret.
 
+### 0.3 Measured: full graph sweeps on Gemini (overnight 2026-10-29/30)
+
+Both banks run through the self-correcting graph (`eval_harness.py --graph`,
+3 runs per case, `gemini-flash-lite-latest`, local DuckDB, Gold as of the
+2026-10-04 hospital refresh):
+
+| Bank | Cases (majority-correct) | Runs | Cases needing a retry | Avg attempts | Elapsed | Report |
+|---|---|---|---|---|---|---|
+| Hospital | **38/38** (100%) | **114/114** | **0** | 1.00 | 617 s | `eval_graph_hospital_20261030T035035Z.json` |
+| FHIR | **28/28** (100%) | **84/84** | **0** | 1.00 | 426 s | `eval_graph_fhir_20261030T033654Z.json` |
+
+Logs: `eval_runs/overnight_hospital_graph.log`, `eval_runs/overnight_fhir_graph.log`
+(`eval_runs/` is gitignored, so they are local only). Every tier is 100% in
+both banks.
+
+What it means for this plan:
+- The graph path matches the single-shot sweeps (hospital 114/114 on
+  2026-09-08, FHIR 84/84 on 2026-09-07). On these banks graph and
+  single-shot do equally well. That answers CLAUDE.md roadmap item 2 for
+  Gemini.
+- **Zero retries means the existing banks never exercise self-correction.**
+  The retry edge, and later the critic (item 4), only show up on cases built
+  to fail first. Item 3's 10 adversarial cases are therefore the only
+  measurement of the graph's added value, and the trajectory
+  `retries` dimension will be trivially satisfied on the 66 existing cases.
+- The baseline for 7c is now 100% on both banks on the graph path. A
+  Haiku 5.5 run below that is a model difference, not a graph regression.
+
 ---
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
