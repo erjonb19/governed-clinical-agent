@@ -24,6 +24,7 @@ class AuditEventType(Enum):
     PARAMETER_VALIDATION = "parameter_validation"
     TAINT_VIOLATION = "taint_violation"
     SANDBOX_EXECUTION = "sandbox_execution"
+    CRITIC_REVIEW = "critic_review"
 
 
 class DecisionType(Enum):
@@ -424,6 +425,41 @@ class AuditLogger:
                 "parameter_path": parameter_path,
                 "matched_token": matched_token,
             },
+        )
+        return self._log_event(event)
+
+    def log_critic_review(
+        self,
+        capability: str,
+        verdict: str,
+        reason: str,
+        sql_sha256: Optional[str] = None
+    ) -> str:
+        """
+        Log the critic's verdict on a proposed query (PLAN v2 item 4).
+
+        The critic is a quality step, not a control: "revise" sends the agent
+        back to re-plan, and "approve" or "unavailable" lets the query go on to
+        the guard, which still decides what runs. So approve and unavailable are
+        recorded as ALLOW, revise as DENY, and the verdict itself is in context.
+
+        Args:
+            capability: The capability the query was proposed for
+            verdict: approve | revise | unavailable
+            reason: The critic's one-line reason
+            sql_sha256: Hash of the reviewed SQL (the SQL itself is in the trace)
+
+        Returns:
+            Event ID for correlation
+        """
+        event = AuditEvent(
+            timestamp=datetime.now().isoformat(),
+            event_type=AuditEventType.CRITIC_REVIEW,
+            agent_id=self.agent_id,
+            capability=capability,
+            decision=DecisionType.DENY if verdict == "revise" else DecisionType.ALLOW,
+            reason=reason,
+            context={"verdict": verdict, "sql_sha256": sql_sha256}
         )
         return self._log_event(event)
 
