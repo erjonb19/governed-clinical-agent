@@ -348,7 +348,7 @@ def issue_actions(results: list[dict], open_issues: dict[str, int],
         number = open_issues.get(title)
         body = (f"**{r['status']}** on {r['run_at']} -- case `{r['case']}` ({r['dataset']})\n\n"
                 f"{r.get('detail') or ''}\n\ntrace: `{r.get('trace_id')}`  attempts: "
-                f"{r.get('attempts')}  cost: ${r.get('cost_usd') or 0:.4f}{link}")
+                f"{r.get('attempts') or 'unknown'}  cost: ${r.get('cost_usd') or 0:.4f}{link}")
         if r["status"] in (FAILED, DRIFT):
             if number:
                 actions.append({"action": "comment", "number": number, "body": body})
