@@ -10,8 +10,10 @@ wants, including unsafe SQL, and the guard still only lets read-only, allowliste
 row-capped queries through. The governance constrains the model, not your own
 hand-written queries.
 
-Provider-agnostic by design. Both Cerebras and Groq expose OpenAI-compatible
-endpoints, so switching providers is two lines in PROVIDERS / ACTIVE_PROVIDER.
+Provider-agnostic by design. Cerebras, Groq, xAI and Gemini expose
+OpenAI-compatible endpoints; Anthropic goes through its native SDK (see the
+PROVIDERS comment for why). Either way the caller gets the same (sql,
+CallMetrics), so switching providers is PLANNER_PROVIDER, nothing else.
 
 Setup:
     pip install openai
@@ -67,15 +69,23 @@ PROVIDERS = {
         "api_key_env": "XAI_API_KEY",
         "model": os.environ.get("XAI_MODEL", "grok-3"),
     },
-    # Anthropic exposes an OpenAI-SDK-compatible endpoint, so Claude drops into
-    # the SAME abstraction with no client-code changes -- the payoff of building
-    # this provider-agnostic from the start. This is the frontier-model option
-    # for harder or more ambiguous questions, where the fast open models can be
-    # underspecified.
+    # Anthropic uses its NATIVE SDK ("sdk": "anthropic"), not the OpenAI-compat
+    # endpoint. Current Claude models changed the request contract: Haiku 5.5
+    # rejects temperature/top_p/top_k with a 400, and runs adaptive thinking by
+    # default (billed as output tokens). The native client lets us set effort,
+    # read stop_reason (refusal, max_tokens) and get exact usage; the compat
+    # layer hides all three. Override the model with $ANTHROPIC_MODEL.
+    # Do NOT reintroduce claude-sonnet-4-5: deprecated 2026-09-30, retires
+    # 2026-11-30.
     "anthropic": {
-        "base_url": "https://api.anthropic.com/v1/",
+        "sdk": "anthropic",
         "api_key_env": "ANTHROPIC_API_KEY",
-        "model": "claude-sonnet-4-5",
+        "model": os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5"),
+        # SQL writing is a narrow task; low effort keeps thinking spend down.
+        "effort": "low",
+        # Room for thinking + the SQL. 800 (the compat-era cap) can truncate
+        # before the SQL is written once thinking tokens count against it.
+        "max_tokens": 4000,
     },
     # Google Gemini via its OpenAI-compatible endpoint. Its FREE tier is far more
     # generous than Groq's (much higher tokens-per-minute), so it can run the full
@@ -103,11 +113,45 @@ ACTIVE_PROVIDER = os.environ.get("PLANNER_PROVIDER", "cerebras")
 PROVIDER_RATES = {
     "cerebras":  {"input": 0.85, "output": 0.85},
     "groq":      {"input": 0.59, "output": 0.79},
-    "anthropic": {"input": 3.00, "output": 15.00},
+    "anthropic": {"input": 0.10, "output": 0.50},    # = the default model, claude-haiku-5-5
     "xai":       {"input": 3.00, "output": 15.00},   # grok-3 estimate
     "gemini":    {"input": 0.15, "output": 0.60},    # gemini-2.5-flash est; free tier = $0
 }
 _DEFAULT_RATE = {"input": 1.00, "output": 1.00}
+
+# Rates keyed by MODEL take precedence over the provider rate. Needed once a
+# provider's model is switchable by env var ($ANTHROPIC_MODEL): Opus costs 40x
+# Haiku, so a per-provider rate would misreport cost by that factor. Add a row
+# here when you point a provider at a new model. Anthropic list prices
+# (platform.claude.com/docs/en/about-claude/pricing). Haiku 5.5 is priced by
+# prompt length -- this is the <=100K-token tier; planner prompts are ~1-2K.
+MODEL_RATES = {
+    "claude-haiku-5-5":  {"input": 0.10, "output": 0.50},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+    "claude-opus-5-5":   {"input": 4.00, "output": 20.00},
+}
+
+
+def rate_for(provider: str, model: str) -> dict:
+    """USD per 1M tokens for this model: model rate, else provider rate.
+
+    An Anthropic model with no MODEL_RATES row is priced at the dearest listed
+    Claude rate, not at the provider rate (which is Haiku's): an unlisted model
+    then over-reports cost instead of under-reporting it 40x.
+    """
+    if model in MODEL_RATES:
+        return MODEL_RATES[model]
+    if provider == "anthropic" and model:
+        return max(MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
+    return PROVIDER_RATES.get(provider, _DEFAULT_RATE)
+
+
+class PlannerError(RuntimeError):
+    """The model answered but gave us no usable SQL (refusal, truncation).
+
+    Distinct from transport errors (rate limit, 5xx), which the SDKs raise
+    themselves and the eval harness scores as provider_error, not regression.
+    """
 
 
 # --- optional call pacing --------------------------------------------------
@@ -143,7 +187,7 @@ class CallMetrics:
         self.total_tokens = self.prompt_tokens + self.completion_tokens
         self.model = model
         self.provider = provider
-        rate = PROVIDER_RATES.get(provider, _DEFAULT_RATE)
+        rate = rate_for(provider, model)
         self.est_cost_usd = round(
             (self.prompt_tokens / 1_000_000) * rate["input"]
             + (self.completion_tokens / 1_000_000) * rate["output"],
@@ -321,7 +365,14 @@ class NLToSQLPlanner:
         key = os.environ.get(cfg["api_key_env"])
         if not key:
             raise SystemExit(f"set {cfg['api_key_env']} in your environment first")
-        self._client = OpenAI(base_url=cfg["base_url"], api_key=key)
+        self._sdk = cfg.get("sdk", "openai")
+        if self._sdk == "anthropic":
+            import anthropic   # only this provider needs it
+            self._client = anthropic.Anthropic(api_key=key)
+            self._effort = cfg["effort"]
+            self._max_tokens = cfg["max_tokens"]
+        else:
+            self._client = OpenAI(base_url=cfg["base_url"], api_key=key)
         self._model = cfg["model"]
         self.provider = provider
 
@@ -349,28 +400,64 @@ class NLToSQLPlanner:
         LLM cost: read tokens from the response, multiply by a configurable rate.
         """
         import time
+        system = build_system_prompt(schema_doc) if schema_doc else SYSTEM_PROMPT
         _pace_call()                     # respect provider rate limits, if configured
         t0 = time.perf_counter()
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": build_system_prompt(schema_doc) if schema_doc else SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
-            temperature=0.1,
-            max_tokens=800,
-        )
+        if self._sdk == "anthropic":
+            text, prompt_tokens, completion_tokens = self._call_anthropic(system, question)
+        else:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": question},
+                ],
+                temperature=0.1,
+                max_tokens=800,
+            )
+            usage = getattr(resp, "usage", None)
+            text = resp.choices[0].message.content or ""
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        usage = getattr(resp, "usage", None)
         metrics = CallMetrics(
             latency_ms=latency_ms,
-            prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
-            completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             model=self._model,
             provider=self.provider,
         )
-        sql = self._extract_sql(resp.choices[0].message.content or "")
+        sql = self._extract_sql(text)
         return sql, metrics
+
+    def _call_anthropic(self, system: str, question: str) -> tuple[str, int, int]:
+        """One Messages API call. Returns (text, input_tokens, output_tokens).
+
+        No temperature/top_p/top_k: current Claude models reject them (400).
+        No thinking param: adaptive thinking is the default; effort bounds it.
+        output_tokens INCLUDES thinking, which is why cost is read from usage
+        rather than estimated from the SQL's length.
+        """
+        resp = self._client.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": question}],
+            output_config={"effort": self._effort},
+        )
+        if resp.stop_reason == "refusal":
+            details = getattr(resp, "stop_details", None)
+            category = getattr(details, "category", None) if details else None
+            raise PlannerError(f"model declined the request (refusal: {category or 'unspecified'})")
+        if resp.stop_reason == "max_tokens":
+            # Partial SQL is worse than none: it might even pass the guard.
+            raise PlannerError(f"model output truncated at max_tokens={self._max_tokens}")
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        if not text.strip():
+            # Thinking with no answer. Empty SQL would reach the guard and be
+            # scored as a guard denial, hiding a model problem in guard stats.
+            raise PlannerError("model returned no answer text (thinking only)")
+        return text, resp.usage.input_tokens, resp.usage.output_tokens
 
     def generate_sql(self, question: str, schema_doc: str | None = None) -> str:
         """SQL only. Backward-compatible wrapper over generate_sql_with_metrics."""
