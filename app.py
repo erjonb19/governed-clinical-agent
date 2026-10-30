@@ -547,7 +547,7 @@ def query(request: Request, req: QueryRequest) -> dict:
     if planner is None:
         return {
             "allowed": False,
-            "decided_by": "policy",
+            "decided_by": "planner_error",
             "reason": f"planner not configured: {_STATE.get('planner_error')}",
         }
     ds = _dataset(req.dataset)

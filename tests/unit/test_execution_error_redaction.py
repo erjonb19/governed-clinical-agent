@@ -85,3 +85,20 @@ def test_through_the_real_tool_no_cell_value_comes_back(expr):
                              "WHERE city IS NOT NULL ORDER BY facility_id LIMIT 1"})
     assert not r.success and "query execution failed" in r.error
     assert row["city"] not in r.error and row["facility_name"] not in r.error
+
+
+def test_a_value_that_looks_like_a_type_is_not_read_as_one():
+    # DuckDB puts the value before the type; " to WORD" inside a value must not
+    # be taken for the target type (it would carry the value out)
+    e = _error("SELECT CAST('go to FRANKLIN' AS INT)")
+    out = describe_execution_error(e)
+    assert "FRANKLIN" not in out and "converting to INT32" in out
+
+
+def test_a_databricks_data_exception_is_caught_by_its_sqlstate():
+    class ServerOperationError(Exception):
+        pass
+    e = ServerOperationError("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION] 1980051 cannot be "
+                             "represented as Decimal(4, 0). SQLSTATE: 22003")
+    out = describe_execution_error(e)
+    assert "1980051" not in out and "withheld" in out

@@ -37,9 +37,15 @@ _QUOTED_VALUE = re.compile(r"'(?:[^']|'')*'")
 # text cannot be kept at all. Databricks says the same things in its own words.
 _DATA_ERROR_TYPES = {"ConversionException", "InvalidInputException", "OutOfRangeException"}
 _DATA_ERROR_WORDS = ("could not convert", "could not parse", "conversion error",
-                     "cast_invalid_input", "invalid_format", "out of range",
-                     "cannot be cast", "malformed")
-_TARGET_TYPE = re.compile(r"\bto (?:type )?([A-Z][A-Z0-9_]*(?:\(\d+(?:,\s*\d+)?\))?)")
+                     "cast_invalid_input", "invalid_format", "out of range", "out_of_range",
+                     "out_of_bounds", "cannot be cast", "malformed")
+# Databricks / ANSI SQL put the SQLSTATE in the message; class 22 is "data
+# exception" -- whatever the error class is called, it is about a value.
+_SQLSTATE_DATA = re.compile(r"SQLSTATE[:=\s]*22[0-9A-Z]{3}", re.I)
+# The target type is the LAST thing on the message's first line ("... to INT32"),
+# after the quoted value; anchoring there keeps a value that happens to contain
+# " to WORD" from being read as the type.
+_TARGET_TYPE = re.compile(r"\bto (?:type )?([A-Z][A-Z0-9_]*(?:\(\d+(?:,\s*\d+)?\))?)\s*$")
 
 
 def redact_values(message: str) -> str:
@@ -64,8 +70,9 @@ def describe_execution_error(e: Exception) -> str:
     """
     name = type(e).__name__
     text = str(e)
-    if name in _DATA_ERROR_TYPES or any(w in text.lower() for w in _DATA_ERROR_WORDS):
-        m = _TARGET_TYPE.search(text)
+    if (name in _DATA_ERROR_TYPES or _SQLSTATE_DATA.search(text)
+            or any(w in text.lower() for w in _DATA_ERROR_WORDS)):
+        m = _TARGET_TYPE.search(text.splitlines()[0] if text else "")
         target = f" converting to {m.group(1)}" if m else ""
         return (f"{name}{target}: a value in the data did not fit the query's cast, "
                 f"parse or format (the value is withheld). Check the column's type and "
