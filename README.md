@@ -230,8 +230,8 @@ per case, on Gemini `gemini-flash-lite-latest`, against the October 2026 CMS Gol
 | Graph, self-correcting (2026-10-30) | 38/38 cases · 114/114 runs · **0 retries** | 28/28 cases · 84/84 runs · **0 retries** |
 
 Every tier is at 100% in all four reports. Since then the hospital bank has grown
-to 42 cases: the four **standing questions** that `schedules.yaml` runs every week
-(see [Runs, traces and schedules](#runs-traces-and-schedules)). Each was validated
+to 42 cases: the four **standing questions** that `schedules.yaml` runs unattended
+(three weekly, one monthly; see [Runs, traces and schedules](#runs-traces-and-schedules)). Each was validated
 3/3 on both paths before it was scheduled. The first full 42-case sweep
 (2026-10-30) passed the gate with **107/107 completed runs correct**; 19 runs hit
 the Gemini free tier's daily quota (429) and are excluded as provider errors, not
@@ -320,11 +320,14 @@ For rate-limited free/low tiers, pace calls with `--min-interval <seconds>` (or
 ## Runs, traces and schedules
 
 Every run has one id. A `/query`, `/raw-sql` or `/propose` response carries a
-`trace_id`; the same id names the run's trace (`GET /traces/{id}`, the **Traces**
-view) and its LangGraph checkpoint thread. A graph run that died part-way resumes
+`trace_id` that names the run's trace (`GET /traces/{id}`, the **Traces** view).
+For a graph run (`/propose`, and `GovernedAgentGraph.run`) the same id is also the
+LangGraph checkpoint thread; `/query` is single-shot and gets a checkpoint thread
+when PLAN v2 D2 moves it onto the graph. A graph run that died part-way resumes
 from its last checkpoint with `GovernedAgentGraph.run(trace_id=...)`, and
-`state(trace_id)` says where it stopped. Traces and checkpoints hold the question,
-the SQL and row counts, never result rows.
+`state(trace_id)` says where it stopped. Traces and planner-graph checkpoints hold
+the question, the SQL and row counts, never result rows; an approval checkpoint
+keeps the 3 evidence rows the reviewer is shown, as the approval record does.
 
 **Standing questions run unattended.** `schedules.yaml` lists questions a quality
 team would otherwise re-ask by hand: the average heart attack (AMI) readmission
@@ -336,7 +339,7 @@ that is not there. A standing question is therefore one the suite already passes
 
 `scheduled_runs.py` asks each due question through the self-correcting graph,
 under the same guard as every other path. It then scores the answer against the
-reference and compares it with the last recorded answer:
+reference and compares it with the answer from the last run that got it right:
 
 | status | meaning |
 |---|---|
@@ -461,7 +464,7 @@ python build_fhir_gold.py                        # ~367k resources
 A working reference implementation, described plainly:
 
 - Single-instance; queries serialized under a lock. Horizontal scaling is future work.
-- Auth is enforced when `API_KEY` is set, and the service runs **open in dev mode** when it is not (flagged loudly at startup and in `/health`). There is **no rate limiting** yet.
+- The service **refuses to start without `API_KEY`** unless `ALLOW_OPEN_ACCESS=true` is set explicitly for local dev (then flagged loudly at startup and in `/health`). Rate limits are per API key (slowapi).
 - The data is public CMS data and **synthetic** Synthea patients. There is no real PHI here, and the system is not hardened for PHI or production load. The PHI-protection design is real and tested; the deployment posture is not production-grade.
 - The **hospital** Gold refreshes monthly in CI; the FHIR Gold is a fixed Sep-2019
   Synthea sample and is built on demand (it is a gitignored derived artifact, so
@@ -488,8 +491,9 @@ A working reference implementation, described plainly:
   changed source data cannot silently ship.
 - Rate limiting and fail-closed auth — per-API-key limits via slowapi; the service
   refuses to start without `API_KEY` unless open access is set explicitly.
-- Tracing and checkpointed runs — one id per run across the response, the trace
-  and the checkpoint thread; a failed graph run resumes where it stopped.
+- Tracing and checkpointed runs — one id per run across the response and the
+  trace, and for graph runs the checkpoint thread; a failed graph run resumes
+  where it stopped.
 - Unattended standing questions — `schedules.yaml` + `scheduled_runs.py`, weekly
   in CI, with worst-case cost caps and an issue on failure or drift.
 - Graph vs. single-shot, measured on the full suite: both at 100%, zero retries.
