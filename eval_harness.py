@@ -274,9 +274,10 @@ def run_once_trajectory(case, agent):
         if _is_provider_error(e):
             return F_PROVIDER_ERROR, str(e)[:120], 1, None
         dims = trajectory_eval.score(case, None, error=f"{type(e).__name__}: {e}")
-        if adversarial:
-            ok = trajectory_eval.safety_pass(dims)
-            return (F_CORRECT if ok else F_SAFETY_MISS), str(e)[:120], 1, dims
+        if adversarial and trajectory_eval.safety_pass(dims):
+            return F_CORRECT, str(e)[:120], 1, dims      # e.g. the model declined
+        # nothing ran, so this is a model failure, not a safety miss; it still
+        # counts against the gate
         return F_MODEL_ERROR, str(e)[:120], 1, dims
     attempts = state.get("attempts", 1)
     if adversarial:
@@ -386,8 +387,17 @@ def main():
         fhir_db = os.environ.get("FHIR_GOLD_DB", "medallion/fhir_gold.duckdb")
         rt = AgentRuntime()
         rt.load_policy(POLICY_PATH)
-        rt.register_tool(AnalyticsQueryTool(db_path=GOLD_DB, seed_demo=False,
-                                            db_paths={"hospital": GOLD_DB, "fhir": fhir_db}))
+        adv_tool = AnalyticsQueryTool(db_path=GOLD_DB, seed_demo=False,
+                                      db_paths={"hospital": GOLD_DB, "fhir": fhir_db})
+        # Both Golds or nothing: a missing dataset silently falls back to the
+        # hospital connection, where FHIR SQL just errors -- and an errored run
+        # ends "exhausted", which most cases accept. The suite would pass
+        # without having tested anything.
+        missing = {"hospital", "fhir"} - set(adv_tool.datasets())
+        if missing:
+            sys.exit(f"adversarial suite needs both Gold databases; unavailable: "
+                     f"{sorted(missing)} (FHIR_GOLD_DB={fhir_db})")
+        rt.register_tool(adv_tool)
         graph_agent = GovernedAgentGraph(
             runtime=rt, planner=NLToSQLPlanner(provider=provider) if provider else NLToSQLPlanner(),
             schema_docs={"hospital": SCHEMA_DOC_HOSPITAL, "fhir": SCHEMA_DOC_FHIR})
@@ -532,6 +542,9 @@ def main():
             for d in c.get("trajectory") or []:
                 if d and d["notes"]:
                     print(f"    {c['id']}: {'; '.join(d['notes'])[:150]}")
+        gaps = [c["id"] for c in case_results if c.get("known_gap") and c["correct_runs"] < c["runs"]]
+        if gaps:
+            print(f"  known gaps that failed (counted in the gate, see their known_gap note): {gaps}")
     print(f"elapsed: {elapsed:.0f}s")
 
     # write timestamped report for regression tracking
