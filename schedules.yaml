@@ -1,0 +1,51 @@
+# schedules.yaml -- standing questions, run unattended by scheduled_runs.py
+#
+# Each schedule names an EVAL CASE, not a free-text question: the question and
+# its trusted reference SQL come from the eval bank for `dataset`, so the
+# schedule never asks something the suite does not already pass, and every
+# answer is checked against ground truth as well as against last week's.
+# scheduled_runs.py refuses to start if a case id is not in its bank.
+#
+#   name          unique slug; the GitHub issue is titled "scheduled run: <name>"
+#   case          an id from eval_bank.py (hospital) or eval_bank_fhir.py (fhir)
+#   dataset       hospital | fhir   (the weekly workflow runs hospital only:
+#                 FHIR Gold is built from Synthea, not checked in). For fhir the
+#                 summary and issues carry the status only, no values or hashes;
+#                 the history artifact still holds answer hashes, so think
+#                 before scheduling a FHIR question with a tiny answer space.
+#   cadence       weekly | monthly  (monthly = due once 28 days have passed)
+#   max_cost_usd  hard cap for one run of this question. A run is only started
+#                 if its WORST case (every attempt at full prompt and max output
+#                 tokens) fits under the cap, so the cap cannot be exceeded.
+#
+# budget_usd caps the whole sweep the same way: a question whose worst case
+# would take the sweep past it is not started, and the run exits 3.
+# Costs are the planner's labelled estimates (PROVIDER_RATES); on Gemini's free
+# tier the real bill is $0, and these caps bound what a paid provider would cost.
+
+budget_usd: 0.05
+
+schedules:
+  - name: ami-readmission-average
+    case: t1_avg_ami_readmit
+    dataset: hospital
+    cadence: weekly
+    max_cost_usd: 0.01
+
+  - name: ed-left-before-seen-over-5pct
+    case: t2_count_ed_lbs_over5
+    dataset: hospital
+    cadence: weekly
+    max_cost_usd: 0.01
+
+  - name: ami-readmission-watchlist
+    case: t3_ami_watchlist_top10
+    dataset: hospital
+    cadence: weekly
+    max_cost_usd: 0.01
+
+  - name: low-star-hospitals-by-state
+    case: t3_low_star_by_state
+    dataset: hospital
+    cadence: monthly
+    max_cost_usd: 0.01

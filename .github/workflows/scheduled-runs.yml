@@ -1,0 +1,122 @@
+# .github/workflows/scheduled-runs.yml
+# Standing questions, unattended (PLAN v2 7e). Once a week, every due schedule in
+# schedules.yaml is asked through the self-correcting graph on Gemini's free
+# tier, checked against its eval reference, and compared with last week's
+# answer. failed or drift opens (or comments on) one issue per schedule,
+# titled "scheduled run: <name>"; the next ok run closes it.
+#
+# The result history (logs/scheduled_runs.sqlite: hashes and counts, never rows)
+# is carried from run to run as an artifact, because a runner's disk starts
+# empty. An artifact outlives the 7-day cache eviction a weekly job would hit.
+
+name: scheduled runs (standing questions)
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"         # Mondays 09:00 UTC, after the 07:00 Gemini nightly
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Run every schedule, ignoring cadence"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write       # open / comment / close the scheduled-run issues
+  actions: read       # download the previous run's history artifact
+
+concurrency:
+  group: scheduled-runs
+  cancel-in-progress: false
+
+jobs:
+  standing-questions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify required secret is present
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error title=Missing secret::GEMINI_API_KEY is not set for this workflow. The scheduled runs use the Gemini provider and cannot run without it."
+            exit 1
+          fi
+          echo "GEMINI_API_KEY is present."
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt
+
+      # The newest completed run that left a history artifact, whatever its
+      # conclusion: a week that failed still recorded the hashes before it.
+      - name: Restore result history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p logs
+          # same branch only: a manual run from a feature branch must not become
+          # main's baseline
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow scheduled-runs.yml \
+                        --branch "$GITHUB_REF_NAME" --status completed --limit 20 \
+                        --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n scheduled-runs-history -D logs 2>/dev/null; then
+              echo "restored history from run $id"
+              break
+            fi
+          done
+          [ -f logs/scheduled_runs.sqlite ] || echo "no earlier history: every schedule is due and has no previous answer"
+
+      - name: Run due schedules
+        id: run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PLANNER_PROVIDER: "gemini"
+          PLANNER_MIN_INTERVAL_SEC: "5"   # ~12 RPM: under the Gemini free-tier per-minute cap
+        run: |
+          set +e
+          python scheduled_runs.py --summary scheduled_summary.json ${{ inputs.all && '--all' || '' }}
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload result history
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-runs-history
+          path: logs/scheduled_runs.sqlite
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-runs-summary
+          path: scheduled_summary.json
+          if-no-files-found: ignore
+
+      - name: Open, update or close issues
+        if: always() && hashFiles('scheduled_summary.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scheduled_runs.py --file-issues scheduled_summary.json
+
+      # Exit codes as eval_harness.py, plus 3 (a cost cap stopped a run, D9).
+      # 2 = provider unavailable: infrastructure, not an answer -- warn only.
+      - name: Verdict
+        if: always()
+        run: |
+          code="${{ steps.run.outputs.code }}"
+          if [ "$code" = "2" ]; then
+            echo "::warning title=Provider unavailable::Scheduled runs inconclusive -- the LLM provider was unavailable. This is NOT a failed answer."
+            exit 0
+          fi
+          exit "${code:-1}"

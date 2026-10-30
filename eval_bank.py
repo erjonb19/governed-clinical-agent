@@ -336,4 +336,47 @@ CASES = [
                           "ORDER BY ed_median_min DESC, facility_id ASC LIMIT 5"),
         "mode": "keyed", "key_columns": ["facility_id"],
     },
+    # --- standing questions -----------------------------------------------
+    # The questions schedules.yaml runs every week (scheduled_runs.py). They are
+    # ordinary cases here FIRST, so the schedule only ever asks something the
+    # suite already passes; scheduled_runs.py refuses a schedule whose case is
+    # not in this bank. Phrased as a quality team's recurring checks. No
+    # hospital-wide readmission (readmit_hwr): CMS suppressed it in the Oct 2026
+    # refresh, so a standing question over it would watch an empty column.
+    {
+        "id": "t1_avg_ami_readmit", "tier": 1,
+        "question": ("Cardiac quality check: what is the average heart attack (AMI) 30-day "
+                     "readmission rate across hospitals that report one? Round to 2 decimals."),
+        "reference_sql": ("SELECT round(avg(readmit_ami), 2) AS avg_ami FROM gold_hospital_profile "
+                          "WHERE readmit_ami IS NOT NULL"),
+        "mode": "scalar",
+    },
+    {
+        "id": "t2_count_ed_lbs_over5", "tier": 2,
+        "question": ("ED access check: how many hospitals have more than 5 percent of emergency "
+                     "department patients leaving before being seen?"),
+        "reference_sql": ("SELECT count(*) AS n FROM gold_hospital_profile "
+                          "WHERE ed_left_before_seen_pct > 5"),
+        "mode": "scalar",
+    },
+    {
+        "id": "t3_ami_watchlist_top10", "tier": 3,
+        "question": ("Readmission watchlist: list the facility_id of the 10 hospitals with the highest "
+                     "heart attack (AMI) 30-day readmission rate, highest first, ties broken by "
+                     "facility_id, lowest first."),
+        "reference_sql": ("SELECT facility_id FROM gold_hospital_profile WHERE readmit_ami IS NOT NULL "
+                          "ORDER BY readmit_ami DESC, facility_id ASC LIMIT 10"),
+        "mode": "keyed", "key_columns": ["facility_id"],
+    },
+    {
+        "id": "t3_low_star_by_state", "tier": 3,
+        # Grouped by state, so the tie-break is the state code, not facility_id;
+        # the question says so because the bank-wide convention would not apply.
+        "question": ("Star-rating mix: for each state, count the hospitals rated 1 or 2 stars. Return "
+                     "the state column, the state with the most such hospitals first, ties broken by "
+                     "state alphabetically. Leave out states with none."),
+        "reference_sql": ("SELECT state FROM gold_hospital_profile WHERE star_rating <= 2 "
+                          "GROUP BY state ORDER BY count(*) DESC, state ASC"),
+        "mode": "keyed", "key_columns": ["state"],
+    },
 ]
