@@ -1,0 +1,29 @@
+{
+  "50ba83041c4a2fffad60bd16e12d93b266db610afcc4c3aa634fcd7d0236f5ea": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients."
+  },
+  "74eb44f175a91dcb3ae0ea6a1c689e0b3cd738302df2ea03cf6a16a46bd76af0": {
+    "authored": true,
+    "completion_tokens": 22,
+    "model": "authored",
+    "prompt_tokens": 651,
+    "role": "critic",
+    "text": "{\"verdict\": \"approve\", \"reason\": \"authored for the guard-denial scenario\", \"issues\": []}",
+    "user": "Question:\nShow every column of bronze_patient for the first ten patients.\n\nProposed SQL:\nSELECT * FROM bronze_patient LIMIT 10"
+  },
+  "a76b646defbf44fe1408521b277aace72c693e97d8ca929137f19e5106c82891": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients.\n\nYour previous SQL attempt was REJECTED. Reason:\nOperation denied: analytics.query_aggregate\nReason: Tool execution failed: DENIED by sql_guard: table not on Gold allowlist: bronze_patient\nSafe alternative: adjust policy constraints min"
+  }
+}
