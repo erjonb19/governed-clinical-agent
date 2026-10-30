@@ -65,6 +65,9 @@ def reload_planner(monkeypatch):
     $ANTHROPIC_MODEL default/override needs a reload.
     """
     def _reload():
+        # the module calls load_dotenv() at import; a developer's .env must not
+        # put back the variables this test just removed
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
         return importlib.reload(planner_mod)
     yield _reload
     monkeypatch.undo()
@@ -160,12 +163,21 @@ def test_truncated_output_is_rejected_not_executed(planner):
         p.generate_sql_with_metrics("q")
 
 
+def test_thinking_only_response_is_a_planner_error(planner):
+    p, stub = planner
+    stub.response = _response(text=None)   # a thinking block and no text
+    with pytest.raises(planner_mod.PlannerError, match="no answer text"):
+        p.generate_sql_with_metrics("q")
+
+
 def test_planner_errors_score_as_model_errors_not_outages():
     # a refusal or truncation is about the model's answer, not provider uptime
     assert not _is_provider_error(planner_mod.PlannerError(
         "model declined the request (refusal: cyber)"))
     assert not _is_provider_error(planner_mod.PlannerError(
         "model output truncated at max_tokens=4000"))
+    assert not _is_provider_error(planner_mod.PlannerError(
+        "model returned no answer text (thinking only)"))
 
 
 # --- rates ------------------------------------------------------------------
@@ -178,3 +190,10 @@ def test_model_rate_beats_provider_rate():
 def test_unlisted_model_falls_back_to_provider_rate():
     assert planner_mod.rate_for("gemini", "some-new-model") == planner_mod.PROVIDER_RATES["gemini"]
     assert planner_mod.rate_for("nobody", "x") == planner_mod._DEFAULT_RATE
+
+
+def test_unlisted_claude_model_is_never_priced_below_listed_ones():
+    rate = planner_mod.rate_for("anthropic", "claude-some-future-model")
+    dearest = max(planner_mod.MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
+    assert rate == dearest
+    assert rate["output"] > planner_mod.PROVIDER_RATES["anthropic"]["output"]

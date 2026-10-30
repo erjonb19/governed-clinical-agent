@@ -133,8 +133,17 @@ MODEL_RATES = {
 
 
 def rate_for(provider: str, model: str) -> dict:
-    """USD per 1M tokens for this model: model rate, else provider rate."""
-    return MODEL_RATES.get(model) or PROVIDER_RATES.get(provider, _DEFAULT_RATE)
+    """USD per 1M tokens for this model: model rate, else provider rate.
+
+    An Anthropic model with no MODEL_RATES row is priced at the dearest listed
+    Claude rate, not at the provider rate (which is Haiku's): an unlisted model
+    then over-reports cost instead of under-reporting it 40x.
+    """
+    if model in MODEL_RATES:
+        return MODEL_RATES[model]
+    if provider == "anthropic" and model:
+        return max(MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
+    return PROVIDER_RATES.get(provider, _DEFAULT_RATE)
 
 
 class PlannerError(RuntimeError):
@@ -444,6 +453,10 @@ class NLToSQLPlanner:
             # Partial SQL is worse than none: it might even pass the guard.
             raise PlannerError(f"model output truncated at max_tokens={self._max_tokens}")
         text = "".join(b.text for b in resp.content if b.type == "text")
+        if not text.strip():
+            # Thinking with no answer. Empty SQL would reach the guard and be
+            # scored as a guard denial, hiding a model problem in guard stats.
+            raise PlannerError("model returned no answer text (thinking only)")
         return text, resp.usage.input_tokens, resp.usage.output_tokens
 
     def generate_sql(self, question: str, schema_doc: str | None = None) -> str:
