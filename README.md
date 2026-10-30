@@ -60,7 +60,7 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### The agent
 
-- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic** via an OpenAI-compatible client: Cerebras, Groq, and Anthropic are configured, switchable with one environment variable. Per-provider cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
+- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic**: Gemini, Cerebras, Groq and xAI through an OpenAI-compatible client, Anthropic through its native SDK (default `claude-haiku-5-5`, override with `ANTHROPIC_MODEL`), all switchable with one environment variable. Per-model cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
 - **Stateful graph** (`agent_graph.py`) — LangGraph. The agent plans, executes through the guard, and on failure feeds the denial reason back into the next attempt and revises. **Bounded retries** (an unbounded agent loop is a real production failure mode). **Full trajectory capture** — every step, what it cost, how long it took.
 - **Analytics tool** (`analytics_query_tool.py`) — runs the planner's SQL through the guard, then executes the validated query.
 - **Backend-agnostic data layer** (`data_backends.py`) — local DuckDB or Databricks Delta behind one interface, selected by `DATA_BACKEND`. The governance is identical either way.
@@ -378,6 +378,10 @@ $env:PLANNER_PROVIDER="gemini"      # gemini | groq | cerebras | xai | anthropic
 $env:PLANNER_SCHEMA="fhir"          # hospital | fhir
 $env:PLANNER_MIN_INTERVAL_SEC="12"  # pace calls for free/low-tier rate limits (Groq free tier ~8K TPM)
 ```
+
+With `anthropic`, `ANTHROPIC_MODEL` picks the model (default `claude-haiku-5-5`).
+Current Claude models reject `temperature` and think by default, so this provider
+uses the native SDK at low effort rather than the OpenAI-compat endpoint.
 
 Note: `xai` is xAI/Grok (`api.x.ai`, `XAI_API_KEY` starting `xai-`), a different
 vendor from `groq` (`api.groq.com`, `GROQ_API_KEY` starting `gsk_`).
