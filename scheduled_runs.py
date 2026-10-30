@@ -245,8 +245,11 @@ def run_one(schedule: dict, case: dict, agent: Any, prev_hash: Optional[str],
     `case` carries `_ref_rows`, the reference answer computed by the caller.
     """
     out = _run_one(case, agent, prev_hash, is_provider_error)
-    if schedule["dataset"] not in DETAIL_VALUES_OK and out.get("detail"):
-        out["detail"] = out["detail"].split(":", 1)[0] + ": values withheld"
+    kind = out.pop("kind", None)
+    if schedule["dataset"] not in DETAIL_VALUES_OK:
+        # Rebuilt from the classification alone: no text the answer could ride
+        # in on, and no hashes (a small count is recoverable from its hash).
+        out["detail"] = f"{out['status']}" + (f" ({kind})" if kind else "") + ": values withheld"
     return out
 
 
@@ -257,19 +260,23 @@ def _run_one(case: dict, agent: Any, prev_hash: Optional[str],
     try:
         state = agent.run(case["question"])
     except Exception as e:
+        # The run may have paid for several calls before it raised, and its
+        # state (with the cost) is lost with the exception. Charge the worst
+        # case, so the sweep budget stays a bound.
         out.update(status=PROVIDER_ERROR if is_provider_error(e) else FAILED,
-                   detail=f"{type(e).__name__}: {e}"[:300], attempts=1, cost_usd=0.0)
+                   kind=type(e).__name__, detail=f"{type(e).__name__}: {e}"[:300],
+                   cost_usd=worst_case_usd(agent.planner, agent.max_attempts))
         return out
     out.update(trace_id=state.get("trace_id"), attempts=state.get("attempts"),
                cost_usd=float(state.get("total_cost_usd") or 0.0))
     if not state.get("allowed"):
-        out.update(status=FAILED,
+        out.update(status=FAILED, kind=state.get("decided_by") or "denied",
                    detail=f"{state.get('decided_by') or 'denied'}: {state.get('reason') or ''}"[:300])
         return out
     rows = state.get("rows") or []
     mode, detail = score_one(case, rows)
     if mode != F_CORRECT:
-        out.update(status=FAILED, detail=f"{mode}: {detail}"[:300])
+        out.update(status=FAILED, kind=mode, detail=f"{mode}: {detail}"[:300])
         return out
     h = answer_hash(canonical_answer(case, rows))
     changed = prev_hash is not None and h != prev_hash
@@ -446,9 +453,12 @@ def main() -> int:
     print(f"exit {code}")
     if args.summary:
         with open(args.summary, "w", encoding="utf-8") as f:
+            public = [r if r["dataset"] in DETAIL_VALUES_OK else
+                      {k: v for k, v in r.items() if k not in ("result_hash", "prev_hash")}
+                      for r in results]
             json.dump({"exit_code": code, "dataset": args.dataset,
                        "planner": f"{agent.planner.provider} ({agent.planner._model})",
-                       "results": results}, f, indent=2)
+                       "results": public}, f, indent=2)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(_markdown(results, code))

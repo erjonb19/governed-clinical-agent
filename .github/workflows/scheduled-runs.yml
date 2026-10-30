@@ -63,8 +63,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p logs
+          # same branch only: a manual run from a feature branch must not become
+          # main's baseline
           for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow scheduled-runs.yml \
-                        --status completed --limit 20 --json databaseId --jq '.[].databaseId'); do
+                        --branch "$GITHUB_REF_NAME" --status completed --limit 20 \
+                        --json databaseId --jq '.[].databaseId'); do
             if gh run download "$id" -R "$GITHUB_REPOSITORY" -n scheduled-runs-history -D logs 2>/dev/null; then
               echo "restored history from run $id"
               break

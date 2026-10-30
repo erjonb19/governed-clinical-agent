@@ -288,5 +288,27 @@ def test_fhir_answer_values_never_reach_the_detail(store):
                            StubAgent({"q?": answered(wrong)}), store, _is_provider_error,
                            now=NOW, dataset="fhir")
     assert r["status"] == sr.FAILED
-    assert r["detail"] == "wrong_answer: values withheld"
+    assert r["detail"] == "failed (wrong_answer): values withheld"
+
+
+def test_a_correct_fhir_scalar_does_not_reach_the_detail(store):
+    case = {"id": "f_s", "question": "how many?", "mode": "scalar",
+            "_ref_rows": [{"n": 42}]}
+    [r] = sr.run_schedules(config(sched("f", "f_s", dataset="fhir")), {"f_s": case},
+                           StubAgent({"how many?": answered([{"n": 42}])}), store,
+                           _is_provider_error, now=NOW, dataset="fhir")
+    assert r["status"] == sr.OK
+    assert r["detail"] == "ok: values withheld" and "42" not in r["detail"]
+
+
+def test_a_run_that_raises_is_charged_its_worst_case(store):
+    # it may have paid for several attempts before raising; the budget must
+    # not treat it as free
+    agent = StubAgent({"avg AMI?": ProviderDown("Error code: 429"),
+                       "worst AMI?": answered(KEYED["_ref_rows"])})
+    worst = sr.worst_case_usd(agent.planner, agent.max_attempts)
+    results = run(agent, store, sched("ami", SCALAR["id"]), sched("watch", KEYED["id"]),
+                  budget=worst * 1.5)
+    assert results[0]["cost_usd"] == worst
+    assert [r["status"] for r in results] == [sr.PROVIDER_ERROR, sr.SKIPPED]
 

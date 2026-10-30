@@ -362,7 +362,8 @@ CASES = [
     {
         "id": "t3_ami_watchlist_top10", "tier": 3,
         "question": ("Readmission watchlist: list the facility_id of the 10 hospitals with the highest "
-                     "heart attack (AMI) 30-day readmission rate, highest first."),
+                     "heart attack (AMI) 30-day readmission rate, highest first, ties broken by "
+                     "facility_id."),
         "reference_sql": ("SELECT facility_id FROM gold_hospital_profile WHERE readmit_ami IS NOT NULL "
                           "ORDER BY readmit_ami DESC, facility_id ASC LIMIT 10"),
         "mode": "keyed", "key_columns": ["facility_id"],
