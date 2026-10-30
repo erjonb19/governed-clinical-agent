@@ -152,6 +152,25 @@ def test_no_result_rows_are_ever_written_to_the_trace(make_agent):
         assert "rows" not in json.loads(b)
 
 
+def test_no_result_rows_are_ever_written_to_the_checkpoint(make_agent, tmp_path):
+    make, _ = make_agent
+    agent = make(StubPlanner(["SELECT 1 AS n"]))
+    state = agent.run("rows please")
+    assert state["rows"] == [{"facility_name": "Mercy General", "rate": 21.4}]
+    assert agent._rows == {}   # nothing held after the run
+    import sqlite3
+
+    con = sqlite3.connect(str(tmp_path / "checkpoints.sqlite"))
+    tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    blobs = []
+    for t in tables:
+        for row in con.execute(f"SELECT * FROM {t}"):
+            blobs += [v if isinstance(v, bytes) else str(v).encode() for v in row if v is not None]
+    con.close()
+    assert blobs, "the run was checkpointed"
+    assert not any(b"Mercy General" in b for b in blobs)
+
+
 def test_a_failed_run_resumes_from_its_checkpoint(make_agent):
     make, tracer = make_agent
     planner = StubPlanner([RuntimeError("provider down"), "SELECT 1 AS n"])

@@ -79,6 +79,27 @@ _current_span: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "tracing_current_span", default=None)
 
 
+_clock_lock = threading.Lock()
+_last_start = 0.0
+
+
+def _start_ts() -> float:
+    """A span start time that is strictly increasing within the process.
+
+    Spans are written when they close, so a parent lands after its children.
+    Ordering by start_ts puts them back, but on a coarse clock (Windows ticks
+    in milliseconds) parent and child can share a timestamp and the rowid
+    tie-break then puts the child first.
+    """
+    global _last_start
+    with _clock_lock:
+        t = time.time()
+        if t <= _last_start:
+            t = _last_start + 1e-6
+        _last_start = t
+        return t
+
+
 def new_id() -> str:
     return uuid.uuid4().hex[:16]
 
@@ -119,7 +140,7 @@ class Span:
         self.span_id = span_id
         self.parent_id = parent_id
         self.name = name
-        self.start_ts = time.time()
+        self.start_ts = _start_ts()
         self.status = "ok"
         self.attrs = dict(attrs)
 
@@ -226,7 +247,12 @@ class Tracer:
             self.end_trace(tid, status="error", error=f"{type(exc).__name__}: {exc}"[:500])
             raise
         else:
-            self.end_trace(tid, status="ok")
+            # A body that already closed the trace (e.g. status="error" on a
+            # planner failure, then return) keeps its outcome; only close it here
+            # if it is still running.
+            done = self._read("SELECT status FROM traces WHERE trace_id = ?", (tid,))
+            if not done or done[0][0] == "running":
+                self.end_trace(tid, status="ok")
         finally:
             _current_trace.set(prev_t)
             _current_span.set(prev_s)

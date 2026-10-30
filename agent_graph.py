@@ -135,6 +135,10 @@ class GovernedAgentGraph:
         os.makedirs(os.path.dirname(self.checkpoint_db) or ".", exist_ok=True)
         self._cm = SqliteSaver.from_conn_string(self.checkpoint_db)
         self.checkpointer = self._cm.__enter__()
+        # Result rows never enter the graph state, because the checkpointer
+        # writes every state to disk and nothing prunes it. They are held here
+        # by trace id for the length of run() and handed back to the caller.
+        self._rows: dict[str, Optional[list]] = {}
         self.graph = self._build()
 
     def _traced(self, state: AgentState):
@@ -222,6 +226,7 @@ class GovernedAgentGraph:
                 }
 
             out = tool_result.output or {}
+            self._rows[state.get("trace_id") or ""] = out.get("rows")
             g.set(allowed=True, decided_by="executed")
             self.tracer.event("execute", attempt=state.get("attempts"),
                               row_count=out.get("row_count"), backend=out.get("backend"))
@@ -230,7 +235,7 @@ class GovernedAgentGraph:
         return {
             "allowed": True, "decided_by": "executed", "reason": None, "last_error": None,
             "safe_sql": out.get("safe_sql"), "row_count": out.get("row_count"),
-            "columns": out.get("columns"), "rows": out.get("rows"),
+            "columns": out.get("columns"),
             "trajectory": state.get("trajectory", []) + [step],
         }
 
@@ -301,14 +306,15 @@ class GovernedAgentGraph:
         A new run gets a fresh trace id, which is also the checkpoint thread id.
         Passing the id of a run that stopped part-way (a node raised) continues it
         from the last checkpoint without repeating the steps that completed. The
-        id of a finished run returns its saved state without running anything.
+        id of a finished run returns its saved state without running anything;
+        that state has `rows: None`, because result rows are never checkpointed.
         """
         tid = trace_id or tracing.new_id()
         cfg = {"configurable": {"thread_id": tid}}
         existing = self.state(tid) if trace_id else {"exists": False}
         if existing.get("exists") and existing.get("finished"):
             snap = self.graph.get_state(cfg)
-            return {**snap.values, "trace_id": tid}
+            return {**snap.values, "rows": None, "trace_id": tid}
         resume = bool(existing.get("exists"))
         if resume:
             self.tracer.start_trace("run", trace_id=tid)   # no-op if it exists
@@ -335,6 +341,9 @@ class GovernedAgentGraph:
                 self.tracer.end_trace(tid, status="error",
                                       error=f"{type(exc).__name__}: {exc}"[:500])
                 raise
+            finally:
+                rows = self._rows.pop(tid, None)
+            final["rows"] = rows
             self.tracer.end_trace(
                 tid, status="ok", decided_by=final.get("decided_by"),
                 attempts=final.get("attempts"), total_tokens=final.get("total_tokens"),

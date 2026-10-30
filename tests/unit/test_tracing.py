@@ -123,3 +123,13 @@ def test_list_is_newest_first_with_span_counts(tracer):
     assert [x["trace_id"] for x in listed] == [b, a]
     assert [x["span_count"] for x in listed] == [2, 1]
     assert tracer.get_trace("nope") is None
+
+
+def test_an_explicit_end_inside_trace_is_not_overwritten(tracer):
+    # /query's planner-error branch closes the trace as an error and returns;
+    # the context manager must not then record the run as ok
+    with tracer.trace("run") as tid:
+        tracer.end_trace(tid, status="error", decided_by="policy")
+    t = tracer.get_trace(tid)
+    assert t["status"] == "error" and t["attrs"]["decided_by"] == "policy"
+    assert tracer._runs_since_prune == 1   # closed once, counted once

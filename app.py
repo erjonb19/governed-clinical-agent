@@ -177,6 +177,21 @@ _STATE: dict[str, Any] = {"runtime": None, "planner": None, "planner_error": Non
 _LOCK = threading.Lock()
 
 
+class _ServiceAuditLogger(AuditLogger):
+    """The service's audit log records that a query ran, never what it returned.
+
+    AgentRuntime logs the tool output after `redact_data`, which masks secrets,
+    not data values -- so the rows of a FHIR query would land in the file
+    verbatim. Drop them here; row_count and columns stay.
+    """
+
+    def log_tool_execution(self, *args, result=None, **kwargs):
+        out = result.get("output") if isinstance(result, dict) else None
+        if isinstance(out, dict) and "rows" in out:
+            result = {**result, "output": {k: v for k, v in out.items() if k != "rows"}}
+        return super().log_tool_execution(*args, result=result, **kwargs)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # The runtime's audit logger was only ever attached by the demo scripts, so
@@ -184,7 +199,7 @@ async def lifespan(app: FastAPI):
     audit = None
     if AUDIT_LOG_DIR:
         try:
-            audit = AuditLogger(log_dir=Path(AUDIT_LOG_DIR), agent_id="api",
+            audit = _ServiceAuditLogger(log_dir=Path(AUDIT_LOG_DIR), agent_id="api",
                                 max_buffer_size=1, enable_console=False)
         except Exception as e:
             print(f"WARNING: audit log disabled ({e})")
@@ -557,7 +572,7 @@ def metrics() -> dict:
 def list_traces(request: Request, limit: int = 50, offset: int = 0) -> dict:
     tracer = tracing.get_tracer()
     return {"traces": tracer.list_traces(limit=limit, offset=offset),
-            "total": tracer.count(), "db": tracer.db_path, "max_runs": tracer.max_runs,
+            "total": tracer.count(), "max_runs": tracer.max_runs,
             "note": "the trace store lives on the instance disk and resets on redeploy"}
 
 

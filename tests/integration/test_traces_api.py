@@ -99,3 +99,28 @@ def test_audit_log_is_written_by_the_service(client, tmp_path):
     files = list((tmp_path / "audit").glob("audit_api_*.jsonl"))
     assert files, "the runtime's audit logger is attached on the service path"
     assert files[0].read_text().strip()
+
+
+def _keys(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _keys(v)
+
+
+def test_the_audit_log_never_holds_result_rows(client, tmp_path):
+    import json
+
+    r = client.post("/raw-sql", json={"sql": "SELECT 1 AS n"}, headers=H)
+    assert r.json().get("rows"), "the caller still gets the rows"
+    for f in (tmp_path / "audit").glob("audit_api_*.jsonl"):
+        for line in f.read_text().splitlines():
+            if line.strip():
+                assert "rows" not in set(_keys(json.loads(line)))
+
+
+def test_traces_list_does_not_expose_the_server_path(client):
+    assert "db" not in client.get("/traces", headers=H).json()
