@@ -403,12 +403,13 @@ that names it.
 
 ## CI
 
-Seven GitHub Actions workflows:
+Eight GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **659 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
+- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **665 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
 - **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
+- **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay`, `replay.py`): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
 - **MCP end to end on every push** (`mcp-e2e.yml`) — a real MCP client connects over stdio, standalone Streamable HTTP and `/mcp` in the API; on each it lists tools, runs one allowed and one blocked query, and over HTTP checks the 401 and both key headers. No LLM, $0.
 - **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.

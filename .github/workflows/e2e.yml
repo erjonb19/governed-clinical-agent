@@ -1,0 +1,50 @@
+# .github/workflows/e2e.yml
+# The API and the UI end to end in Chromium, on every push (PLAN v2 7a).
+# PLANNER_PROVIDER=replay: every LLM call is answered from the committed
+# recordings, and a miss fails the job. No secrets, no provider, $0.
+
+name: e2e (API + UI)
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ui-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements-e2e.txt') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt -r requirements.txt -r requirements-e2e.txt
+          python -m playwright install --with-deps chromium
+
+      - name: API + UI scenarios (replayed LLM)
+        env:
+          RUN_E2E: "1"
+        run: >
+          pytest -q tests/e2e/test_ui_e2e.py
+          --screenshot only-on-failure --tracing retain-on-failure --output e2e-artifacts
+
+      - name: Upload screenshots and Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-artifacts
+          path: e2e-artifacts/
+          if-no-files-found: ignore
