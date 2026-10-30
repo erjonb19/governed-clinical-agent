@@ -47,6 +47,7 @@ Run the demo (needs the planner key + the hospital Gold):
     python agent_graph.py
 """
 
+import contextlib
 import os
 import sys
 from typing import Any, Optional, TypedDict
@@ -61,7 +62,9 @@ except ImportError:
     pass
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.sqlite import SqliteSaver
 
+import tracing
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
@@ -69,6 +72,7 @@ import schema_check
 
 GOLD_DB = os.environ.get("HOSPITAL_GOLD_DB", "medallion/hospital_gold.duckdb")
 POLICY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "medicare_policy.yaml")
+CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "logs/checkpoints.sqlite")
 CAPABILITY = "analytics.query_aggregate"
 
 MAX_ATTEMPTS = 3          # bounded retries: cost/latency runaway is a real failure mode
@@ -77,6 +81,7 @@ MAX_ATTEMPTS = 3          # bounded retries: cost/latency runaway is a real fail
 class AgentState(TypedDict, total=False):
     """State carried through the graph. Every node reads and updates this."""
     question: str
+    trace_id: str                   # names the trace AND the checkpoint thread
     sql: Optional[str]              # the SQL from the latest plan step
     attempts: int                   # how many plan->execute cycles so far
     last_error: Optional[str]       # why the previous attempt failed (fed back into plan)
@@ -97,21 +102,48 @@ class GovernedAgentGraph:
     """Builds and runs the stateful agent graph over the governed runtime."""
 
     def __init__(self, db_path: str = GOLD_DB, max_attempts: int = MAX_ATTEMPTS,
-                 provider: Optional[str] = None):
+                 provider: Optional[str] = None, runtime: Optional[AgentRuntime] = None,
+                 planner: Any = None, checkpoint_db: Optional[str] = None,
+                 tracer: Optional[tracing.Tracer] = None):
         self.max_attempts = max_attempts
-        self.runtime = AgentRuntime()
-        self.runtime.load_policy(POLICY_PATH)
-        tool = AnalyticsQueryTool(db_path=db_path, seed_demo=False)
-        self.runtime.register_tool(tool)
-        self.planner = NLToSQLPlanner(provider=provider) if provider else NLToSQLPlanner()
-        # Fail loudly if PLANNER_SCHEMA does not match the connected database.
-        # A mismatch makes every query fail against tables that do not exist --
-        # silent, misleading, and it looks like the agent is broken when the
-        # configuration is.
-        schema_check.verify(SCHEMA_DOC, tool._con,
-                            schema_label=os.environ.get("PLANNER_SCHEMA", "hospital"),
-                            db_label=db_path)
+        if runtime is not None:
+            # injected (tests, the API): the caller owns the tool registration
+            self.runtime = runtime
+            tool = None
+        else:
+            self.runtime = AgentRuntime()
+            self.runtime.load_policy(POLICY_PATH)
+            tool = AnalyticsQueryTool(db_path=db_path, seed_demo=False)
+            self.runtime.register_tool(tool)
+        if planner is not None:
+            self.planner = planner
+        else:
+            self.planner = NLToSQLPlanner(provider=provider) if provider else NLToSQLPlanner()
+        if tool is not None:
+            # Fail loudly if PLANNER_SCHEMA does not match the connected database.
+            # A mismatch makes every query fail against tables that do not exist --
+            # silent, misleading, and it looks like the agent is broken when the
+            # configuration is.
+            schema_check.verify(SCHEMA_DOC, tool._con,
+                                schema_label=os.environ.get("PLANNER_SCHEMA", "hospital"),
+                                db_label=db_path)
+        self.tracer = tracer or tracing.get_tracer()
+        # The checkpointer is what lets a run be inspected after the fact and
+        # resumed after a failure: every node's output is saved under the
+        # thread id, which is also the trace id (tracing.py).
+        self.checkpoint_db = checkpoint_db or CHECKPOINT_DB
+        os.makedirs(os.path.dirname(self.checkpoint_db) or ".", exist_ok=True)
+        self._cm = SqliteSaver.from_conn_string(self.checkpoint_db)
+        self.checkpointer = self._cm.__enter__()
         self.graph = self._build()
+
+    def _traced(self, state: AgentState):
+        """Nodes may run on a worker thread without the request's context; attach
+        the run's trace from the state so their spans land in the right place."""
+        tid = state.get("trace_id")
+        if tid and tracing.current_trace_id() != tid:
+            return self.tracer.attach(tid)
+        return contextlib.nullcontext(tid)
 
     # ---------------- nodes ----------------
 
@@ -131,7 +163,13 @@ class GovernedAgentGraph:
                 f"allowed table and columns from the schema."
             )
 
-        sql, metrics = self.planner.generate_sql_with_metrics(prompt)
+        with self._traced(state), self.tracer.span(
+                "plan", attempt=attempt, retry_context=bool(last_error)) as sp:
+            sql, metrics = self.planner.generate_sql_with_metrics(prompt)
+            sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
+                   provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
+                   completion_tokens=metrics.completion_tokens,
+                   est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
         step = {
             "step": "plan",
             "attempt": attempt,
@@ -153,33 +191,40 @@ class GovernedAgentGraph:
     def _execute(self, state: AgentState) -> dict:
         """Run the SQL through the SAME governed runtime. Guard is unchanged."""
         sql = state.get("sql") or ""
-        result = self.runtime.execute_tool(CAPABILITY, {"sql": sql})
+        with self._traced(state), self.tracer.span(
+                "guard", attempt=state.get("attempts"), sql_sha256=tracing.sql_sha256(sql)) as g:
+            result = self.runtime.execute_tool(CAPABILITY, {"sql": sql})
 
-        # policy-level denial
-        if not getattr(result, "allowed", False):
-            reason = getattr(result, "explanation", None) or "not permitted"
-            decided_by = "guard" if "guard" in reason.lower() else "policy"
-            step = {"step": "execute", "attempt": state.get("attempts"),
-                    "outcome": "denied", "decided_by": decided_by, "reason": reason[:200]}
-            return {
-                "allowed": False, "decided_by": decided_by, "reason": reason,
-                "last_error": reason,
-                "trajectory": state.get("trajectory", []) + [step],
-            }
+            # policy-level denial
+            if not getattr(result, "allowed", False):
+                reason = getattr(result, "explanation", None) or "not permitted"
+                decided_by = "guard" if "guard" in reason.lower() else "policy"
+                g.set(allowed=False, decided_by=decided_by, reason=reason[:500])
+                step = {"step": "execute", "attempt": state.get("attempts"),
+                        "outcome": "denied", "decided_by": decided_by, "reason": reason[:200]}
+                return {
+                    "allowed": False, "decided_by": decided_by, "reason": reason,
+                    "last_error": reason,
+                    "trajectory": state.get("trajectory", []) + [step],
+                }
 
-        tool_result = result.result
-        if tool_result is None or not getattr(tool_result, "success", False):
-            err = getattr(tool_result, "error", "no tool result") if tool_result else "no tool result"
-            decided_by = "guard" if "guard" in (err or "").lower() else "sql_error"
-            step = {"step": "execute", "attempt": state.get("attempts"),
-                    "outcome": "failed", "decided_by": decided_by, "reason": err[:200]}
-            return {
-                "allowed": False, "decided_by": decided_by, "reason": err,
-                "last_error": err,
-                "trajectory": state.get("trajectory", []) + [step],
-            }
+            tool_result = result.result
+            if tool_result is None or not getattr(tool_result, "success", False):
+                err = getattr(tool_result, "error", "no tool result") if tool_result else "no tool result"
+                decided_by = "guard" if "guard" in (err or "").lower() else "sql_error"
+                g.set(allowed=False, decided_by=decided_by, reason=(err or "")[:500])
+                step = {"step": "execute", "attempt": state.get("attempts"),
+                        "outcome": "failed", "decided_by": decided_by, "reason": err[:200]}
+                return {
+                    "allowed": False, "decided_by": decided_by, "reason": err,
+                    "last_error": err,
+                    "trajectory": state.get("trajectory", []) + [step],
+                }
 
-        out = tool_result.output or {}
+            out = tool_result.output or {}
+            g.set(allowed=True, decided_by="executed")
+            self.tracer.event("execute", attempt=state.get("attempts"),
+                              row_count=out.get("row_count"), backend=out.get("backend"))
         step = {"step": "execute", "attempt": state.get("attempts"),
                 "outcome": "success", "row_count": out.get("row_count")}
         return {
@@ -191,7 +236,13 @@ class GovernedAgentGraph:
 
     def _finish(self, state: AgentState) -> dict:
         """Terminal node. If we exhausted retries, say so explicitly."""
-        if not state.get("allowed") and state.get("attempts", 0) >= self.max_attempts:
+        exhausted = not state.get("allowed") and state.get("attempts", 0) >= self.max_attempts
+        with self._traced(state):
+            self.tracer.event("answer", outcome="exhausted" if exhausted
+                              else ("answered" if state.get("allowed") else "failed"),
+                              attempts=state.get("attempts"), decided_by=state.get("decided_by"),
+                              row_count=state.get("row_count"))
+        if exhausted:
             step = {"step": "finish", "outcome": "exhausted",
                     "attempts": state.get("attempts")}
             return {
@@ -209,6 +260,9 @@ class GovernedAgentGraph:
         if state.get("allowed"):
             return "finish"
         if state.get("attempts", 0) < self.max_attempts:
+            with self._traced(state):
+                self.tracer.event("retry", attempt=state.get("attempts"),
+                                  reason=(state.get("last_error") or "")[:500])
             return "plan"          # self-correct: loop back with last_error in state
         return "finish"            # bounded: give up gracefully
 
@@ -223,14 +277,70 @@ class GovernedAgentGraph:
         g.add_edge("plan", "execute")
         g.add_conditional_edges("execute", self._route, {"plan": "plan", "finish": "finish"})
         g.add_edge("finish", END)
-        return g.compile()
+        return g.compile(checkpointer=self.checkpointer)
 
-    def run(self, question: str) -> AgentState:
-        initial: AgentState = {
-            "question": question, "attempts": 0, "trajectory": [],
-            "total_latency_ms": 0, "total_tokens": 0, "total_cost_usd": 0.0,
+    # ---------------- public API ----------------
+
+    def state(self, trace_id: str) -> dict:
+        """What the checkpoint says about a run: where it stopped and why."""
+        snap = self.graph.get_state({"configurable": {"thread_id": trace_id}})
+        values = getattr(snap, "values", None) or {}
+        if not values:
+            return {"trace_id": trace_id, "exists": False}
+        nxt = list(getattr(snap, "next", ()) or ())
+        return {
+            "trace_id": trace_id, "exists": True, "finished": not nxt, "next": nxt,
+            "attempts": values.get("attempts", 0), "last_error": values.get("last_error"),
+            "decided_by": values.get("decided_by"), "allowed": values.get("allowed"),
+            "steps": len(values.get("trajectory") or []),
         }
-        return self.graph.invoke(initial)
+
+    def run(self, question: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:
+        """Run a question through the graph, or resume a run by its trace id.
+
+        A new run gets a fresh trace id, which is also the checkpoint thread id.
+        Passing the id of a run that stopped part-way (a node raised) continues it
+        from the last checkpoint without repeating the steps that completed. The
+        id of a finished run returns its saved state without running anything.
+        """
+        tid = trace_id or tracing.new_id()
+        cfg = {"configurable": {"thread_id": tid}}
+        existing = self.state(tid) if trace_id else {"exists": False}
+        if existing.get("exists") and existing.get("finished"):
+            snap = self.graph.get_state(cfg)
+            return {**snap.values, "trace_id": tid}
+        resume = bool(existing.get("exists"))
+        if resume:
+            self.tracer.start_trace("run", trace_id=tid)   # no-op if it exists
+            ctx = self.tracer.attach(tid)
+        else:
+            if question is None:
+                raise ValueError("a new run needs a question")
+            ctx = self.tracer.attach(self.tracer.start_trace(
+                "run", trace_id=tid, question=question, mode="graph",
+                max_attempts=self.max_attempts))
+        with ctx:
+            if resume:
+                self.tracer.event("resume", from_node=existing.get("next"),
+                                  attempts=existing.get("attempts"))
+                payload = None
+            else:
+                payload: Any = {
+                    "question": question, "trace_id": tid, "attempts": 0, "trajectory": [],
+                    "total_latency_ms": 0, "total_tokens": 0, "total_cost_usd": 0.0,
+                }
+            try:
+                final = self.graph.invoke(payload, cfg)
+            except BaseException as exc:
+                self.tracer.end_trace(tid, status="error",
+                                      error=f"{type(exc).__name__}: {exc}"[:500])
+                raise
+            self.tracer.end_trace(
+                tid, status="ok", decided_by=final.get("decided_by"),
+                attempts=final.get("attempts"), total_tokens=final.get("total_tokens"),
+                total_cost_usd=final.get("total_cost_usd"), row_count=final.get("row_count"))
+        final["trace_id"] = tid
+        return final
 
 
 # ---------------------------------------------------------------------------

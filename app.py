@@ -30,6 +30,7 @@ import json
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Security, status
@@ -60,6 +61,8 @@ from nl_to_sql_planner import (NLToSQLPlanner, SCHEMA_DOC,
                                SCHEMA_DOC_HOSPITAL, SCHEMA_DOC_FHIR)
 import cost_tracker
 import schema_check
+import tracing
+from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
 
@@ -140,6 +143,8 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 # storage_uri defaults to in-memory; point it at Redis for multi-instance.
 RATE_LIMIT_QUERY = os.environ.get("RATE_LIMIT_QUERY", "20/minute")   # LLM-backed
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
+AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
+
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
 
 
@@ -174,7 +179,16 @@ _LOCK = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    runtime = AgentRuntime()
+    # The runtime's audit logger was only ever attached by the demo scripts, so
+    # the deployed service wrote no audit log. Buffer size 1: every event lands.
+    audit = None
+    if AUDIT_LOG_DIR:
+        try:
+            audit = AuditLogger(log_dir=Path(AUDIT_LOG_DIR), agent_id="api",
+                                max_buffer_size=1, enable_console=False)
+        except Exception as e:
+            print(f"WARNING: audit log disabled ({e})")
+    runtime = AgentRuntime(audit_logger=audit)
     runtime.load_policy(POLICY_PATH)
     _analytics = AnalyticsQueryTool(
         db_path=GOLD_DB, seed_demo=False,
@@ -290,6 +304,7 @@ class GovernedResponse(BaseModel):
     dataset: Optional[str] = None            # which dataset answered
     unanswerable: Optional[str] = None       # set when the dataset cannot answer
     suggest_dataset: Optional[str] = None    # a dataset that might answer instead
+    trace_id: Optional[str] = None           # look the run up at /traces/{trace_id}
 
 
 # ---------------------------------------------------------------------------
@@ -356,9 +371,18 @@ def run_governed_sql(sql: str, backend: Optional[str] = None,
         params["backend"] = backend
     if dataset:
         params["dataset"] = dataset
-    with _LOCK:
-        result = runtime.execute_tool(CAPABILITY, params)
-    return interpret_result(result, sql)
+    tracer = tracing.get_tracer()
+    with tracer.span("guard", sql_sha256=tracing.sql_sha256(sql), backend=backend,
+                     dataset=dataset) as g:
+        with _LOCK:
+            result = runtime.execute_tool(CAPABILITY, params)
+        out = interpret_result(result, sql)
+        g.set(allowed=out.get("allowed"), decided_by=out.get("decided_by"),
+              reason=(out.get("reason") or "")[:500] or None)
+        if out.get("decided_by") == "executed":
+            tracer.event("execute", row_count=out.get("row_count"), backend=out.get("backend"),
+                         dataset=out.get("dataset"))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +483,15 @@ def datasets(dataset: Optional[str] = None) -> dict:
 @app.post("/raw-sql", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def raw_sql(request: Request, req: SqlRequest) -> dict:
-    return run_governed_sql(req.sql, req.backend, _dataset(req.dataset))
+    tracer = tracing.get_tracer()
+    with tracer.trace("run", mode="raw-sql", dataset=_dataset(req.dataset),
+                      sql=req.sql[:500]) as tid:
+        out = run_governed_sql(req.sql, req.backend, _dataset(req.dataset))
+        tracer.event("answer", outcome="answered" if out.get("allowed") else "refused",
+                     decided_by=out.get("decided_by"))
+        tracer.end_trace(tid, decided_by=out.get("decided_by"), row_count=out.get("row_count"))
+    out["trace_id"] = tid
+    return out
 
 
 @app.post("/query", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
@@ -472,22 +504,40 @@ def query(request: Request, req: QueryRequest) -> dict:
             "decided_by": "policy",
             "reason": f"planner not configured: {_STATE.get('planner_error')}",
         }
-    try:
-        ds = _dataset(req.dataset)
-        sql, metrics = planner.generate_sql_with_metrics(
-            req.question, schema_doc=DATASETS[ds]["schema_doc"])
-    except Exception as e:
-        return {"allowed": False, "decided_by": "policy", "reason": f"planner error: {e}"}
-    out = run_governed_sql(sql, req.backend, ds)
-    note = _unanswerable(out)
-    if note:
-        out["unanswerable"] = note
-        other = next((k for k in DATASETS
-                      if k != ds and os.path.exists(DATASETS[k]["db"])), None)
-        out["suggest_dataset"] = other
-        out["rows"], out["columns"], out["row_count"] = [], [], 0
-    out["planner_metrics"] = metrics.as_dict()
-    cost_tracker.record(metrics.as_dict(), question=req.question)
+    ds = _dataset(req.dataset)
+    tracer = tracing.get_tracer()
+    # /query is single-shot (one plan, one guard decision); PLAN v2 D2 moves it
+    # onto the checkpointed graph. Either way the run is a trace.
+    with tracer.trace("run", mode="single", question=req.question, dataset=ds) as tid:
+        try:
+            with tracer.span("plan", attempt=1) as sp:
+                sql, metrics = planner.generate_sql_with_metrics(
+                    req.question, schema_doc=DATASETS[ds]["schema_doc"])
+                sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
+                       provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
+                       completion_tokens=metrics.completion_tokens,
+                       est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
+        except Exception as e:
+            tracer.event("answer", outcome="planner_error")
+            tracer.end_trace(tid, status="error", decided_by="policy")
+            return {"allowed": False, "decided_by": "policy",
+                    "reason": f"planner error: {e}", "trace_id": tid}
+        out = run_governed_sql(sql, req.backend, ds)
+        note = _unanswerable(out)
+        if note:
+            out["unanswerable"] = note
+            other = next((k for k in DATASETS
+                          if k != ds and os.path.exists(DATASETS[k]["db"])), None)
+            out["suggest_dataset"] = other
+            out["rows"], out["columns"], out["row_count"] = [], [], 0
+        out["planner_metrics"] = metrics.as_dict()
+        cost_tracker.record(metrics.as_dict(), question=req.question)
+        tracer.event("answer", outcome="unanswerable" if note else
+                     ("answered" if out.get("allowed") else "refused"),
+                     decided_by=out.get("decided_by"), row_count=out.get("row_count"))
+        tracer.end_trace(tid, decided_by=out.get("decided_by"), row_count=out.get("row_count"),
+                         est_cost_usd=metrics.est_cost_usd, total_tokens=metrics.total_tokens)
+    out["trace_id"] = tid
     return out
 
 
@@ -495,6 +545,36 @@ def query(request: Request, req: QueryRequest) -> dict:
 def metrics() -> dict:
     """Aggregate cost and latency across all planner calls (optimization view)."""
     return cost_tracker.summarize()
+
+
+# ---------------------------------------------------------------------------
+# Traces: every run (/query, /raw-sql, /propose and its decisions) as spans.
+# Read-only, behind the API key. Spans hold SQL and counts, never rows.
+# ---------------------------------------------------------------------------
+
+@app.get("/traces", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def list_traces(request: Request, limit: int = 50, offset: int = 0) -> dict:
+    tracer = tracing.get_tracer()
+    return {"traces": tracer.list_traces(limit=limit, offset=offset),
+            "total": tracer.count(), "db": tracer.db_path, "max_runs": tracer.max_runs,
+            "note": "the trace store lives on the instance disk and resets on redeploy"}
+
+
+@app.get("/traces/{trace_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def get_trace(request: Request, trace_id: str) -> dict:
+    trace = tracing.get_tracer().get_trace(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail=f"no trace {trace_id}")
+    # An approval trace's id is its checkpoint thread: say where the graph stands.
+    agent = _STATE.get("approval_agent")
+    if trace.get("name") == "approval" and agent is not None:
+        try:
+            trace["checkpoint"] = agent.state(trace_id)
+        except Exception as e:
+            trace["checkpoint"] = {"error": str(e)[:200]}
+    return trace
 
 
 # ---------------------------------------------------------------------------
