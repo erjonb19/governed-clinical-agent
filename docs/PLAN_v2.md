@@ -108,6 +108,26 @@ What it means for this plan:
 - The baseline for 7c is now 100% on both banks on the graph path. A
   Haiku 5.5 run below that is a model difference, not a graph regression.
 
+**The critic (item 4) against §10, measured 2026-10-30.** The banks were run on
+Groq `openai/gpt-oss-120b`, 1 run per case, graph path with the critic. Gemini's
+free daily quota was exhausted that day, so Groq was used; Gemini confirmation
+follows when its quota resets.
+
+| Critic mode | Hospital (42) | FHIR (28) | Verdicts |
+|---|---|---|---|
+| record-only (`CRITIC_ROUTING=0`) | 42/42 | 28/28 | 70 approve, 2 revise (hospital) |
+| routing (default) | **42/42** | **19/19 completed** (9 x Groq 429) | 60 approve, 2 revise, 1 unavailable |
+
+In record-only mode the critic said `revise` twice to SQL that was in fact
+correct:
+- a `facility_id` tie-break inside an aggregate;
+- a `LIMIT` on a per-state list.
+
+With routing on, those two re-planned and still answered correctly, and every
+completed routed run was correct. **The critic does not lower accuracy on the
+banks, so it routes (the default).** If the Gemini confirmation shows
+otherwise, `CRITIC_ROUTING=0` is the §10 fallback.
+
 ---
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`

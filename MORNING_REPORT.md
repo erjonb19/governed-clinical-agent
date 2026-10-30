@@ -62,3 +62,44 @@ this build session against the $3.00 cap.
 - **You need to (optional):** set `MCP_API_KEY` on Render for a separate,
   rotatable MCP key. Without it, `/mcp` uses `API_KEY`. The MCP URL is
   `https://governed-clinical-agent.onrender.com/mcp`.
+
+## PR 4 (item 4 + D2) — the critic in both graphs; `/query` on the graph (#32)
+
+- **What merged:**
+  - **The critic.** `critic.py` makes one model call between plan and execute,
+    in both graphs.
+    - `revise` re-plans and costs an attempt.
+    - Any error is `unavailable` and goes on to execute (D4).
+    - It never informs or skips the guard; a test shows the guard still denies
+      what the critic approved.
+    - Each verdict is recorded in the trajectory, a `critic` span and an audit
+      `critic_review` event.
+    - `CRITIC_ENABLED` and `CRITIC_ROUTING` switch it.
+  - **`/query` runs on the graph** (`QUERY_MODE=graph`, the default; `single`
+    keeps the old path).
+    - The response shape is the same, plus `attempts`, `critic` and `trajectory`.
+    - Every plan and critic call goes into the cost log.
+- **§10 measurement:** recorded in PLAN_v2 §0.3. It ran on Groq, because
+  Gemini's daily quota was gone.
+  - Routing on: hospital 42/42, FHIR 19/19 completed (9 runs were Groq 429s).
+  - Record-only: 70/70.
+  - The critic does not lower accuracy, so routing stays on. I'll confirm on
+    Gemini after its quota resets.
+- **Reviews:** 4 rounds. They found:
+  - **(blocker)** the critic didn't know the `unanswerable` refusal shape;
+  - **(blocker)** DuckDB execution errors quoted data values (a FHIR birth date
+    through `strptime`, a city in a DATE cast) into checkpoints, traces and the
+    retry prompt sent to the LLM. Now any data-value error is reduced to its
+    class plus target type. Checked against about 120 crafted queries on the
+    real FHIR Gold;
+  - a value that looked like a type name;
+  - Databricks SQLSTATE 22 errors;
+  - planner and SQL failures shown as guard refusals;
+  - cost of failed runs not recorded.
+  All fixed, each with a test that fails without the fix.
+- **Tests:** 635 passed, 1 skipped (`pytest`). MCP E2E 7/7.
+- **Evals:** Gemini's gates are unchanged (single-shot). The graph numbers are
+  in §0.3 above.
+- **Anthropic spend so far:** $0.00. There is still no key.
+- **Render:** no new env var. **Latency:** a graph `/query` makes at least two
+  paced Gemini calls, so expect 5–10 s or more per answer on the free tier.
