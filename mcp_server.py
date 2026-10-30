@@ -277,6 +277,28 @@ def _refusal(error: str, findings, dataset: str) -> str:
 # (Claude Desktop, VS Code, the Inspector) can call. Each one maps to a
 # capability and is mediated by your policy engine.
 # ---------------------------------------------------------------------------
+def offloaded_tool(fn):
+    """Register `fn` as an MCP tool that runs on a worker thread.
+
+    FastMCP runs a sync tool on the event loop itself. Mounted in the API, a
+    tool waits on the API's DuckDB lock, which /propose holds across an LLM
+    call -- so a sync tool would freeze every request, /health included, for
+    that long. The registered tool is an async wrapper that hands the call to a
+    thread; its schema comes from `fn`'s signature (functools.wraps). The module
+    keeps the plain sync function for in-process callers and tests.
+    """
+    import functools
+
+    import anyio
+
+    @functools.wraps(fn)
+    async def run_in_thread(*args, **kwargs):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    mcp.tool()(run_in_thread)
+    return fn
+
+
 # Stateless JSON responses: every tool here is a single request/response, so no
 # session state or SSE stream is needed, and any instance can answer any call.
 # FastMCP's own Host-header check is off because it only admits localhost and
@@ -289,7 +311,7 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+@offloaded_tool
 def analytics_schema(
     dataset: Annotated[
         str,
@@ -327,7 +349,7 @@ def analytics_schema(
     )
 
 
-@mcp.tool()
+@offloaded_tool
 def query_analytics(
     sql: Annotated[
         str,
@@ -392,7 +414,7 @@ def query_analytics(
     return _refusal(error, findings, ds)
 
 
-@mcp.tool()
+@offloaded_tool
 def echo(
     text: Annotated[str, Field(description="Text to echo back.", max_length=4_000)],
 ) -> str:
@@ -400,7 +422,7 @@ def echo(
     return guarded("demo.echo", {"text": text})
 
 
-@mcp.tool()
+@offloaded_tool
 def fetch_url(
     url: Annotated[str, Field(description="Absolute http(s) URL to fetch.")],
 ) -> str:
@@ -409,7 +431,7 @@ def fetch_url(
     return guarded("http.fetch", {"url": url})
 
 
-@mcp.tool()
+@offloaded_tool
 def git_push(
     remote: Annotated[str, Field(description="Git remote name.")] = "origin",
     branch: Annotated[str, Field(description="Branch to push.")] = "main",
@@ -513,7 +535,10 @@ class MCPAuth:
             if given is None or not hmac.compare_digest(given.encode(), self.key.encode()):
                 return await _json(send, 401, {"detail": "missing or invalid API key"},
                                    [(b"www-authenticate", b"Bearer")])
-        client = given or str((scope.get("client") or ("?",))[0])
+        # keyed: one bucket per (valid) key. Open access: the peer address, since
+        # an unchecked header would let a caller mint a fresh bucket per request.
+        peer = str((scope.get("client") or ("?",))[0])
+        client = given if self.key is not None else peer
         if not self.limit.allow(client):
             return await _json(send, 429, {"detail": "rate limit exceeded"},
                                [(b"retry-after", b"60")])

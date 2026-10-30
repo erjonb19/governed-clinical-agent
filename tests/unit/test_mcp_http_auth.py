@@ -153,3 +153,48 @@ def test_mounted_calls_use_the_host_lock(monkeypatch):
         assert seen == [True] and M.runtime.audit_logger == "AUDIT"
     finally:
         M._EXEC_LOCK = None
+
+
+def test_under_open_access_the_limit_keys_on_the_peer_not_a_header():
+    limit = M.RateLimit(per_minute=2)
+    app = Starlette(routes=[Route("/mcp", endpoint=M.MCPAuth(_ok, None, [], limit), methods=["POST"])])
+    c = TestClient(app)
+    codes = [c.post("/mcp", headers={"X-API-Key": f"made-up-{i}"}).status_code for i in range(3)]
+    assert codes == [200, 200, 429]
+
+
+@pytest.mark.anyio
+async def test_a_tool_waiting_on_the_host_lock_does_not_freeze_the_event_loop(anyio_backend):
+    # /propose holds the API's lock across an LLM call. A tool waiting on it
+    # must wait on a worker thread, not on the loop that serves /health.
+    import threading
+    import time
+    import anyio
+
+    lock = threading.Lock()
+    lock.acquire()
+    threading.Timer(0.6, lock.release).start()
+    M.attach_host(lock=lock)
+    try:
+        ticks = []
+
+        async def ticker():
+            for _ in range(10):
+                t = time.monotonic()
+                await anyio.sleep(0.02)
+                ticks.append(time.monotonic() - t)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(ticker)              # ticking first, so a blocked loop shows
+            await anyio.sleep(0.05)
+            tg.start_soon(M.mcp.call_tool, "echo", {"text": "hi"})
+        assert max(ticks) < 0.3, ticks          # the loop kept turning while the tool waited
+    finally:
+        M.attach_host()
+        if lock.locked():
+            lock.release()
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"

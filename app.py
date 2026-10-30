@@ -252,6 +252,8 @@ async def lifespan(app: FastAPI):
             _STATE["mcp_error"] = type(e).__name__
             print(f"WARNING: MCP over HTTP disabled ({type(e).__name__}: {e})")
         yield
+    if "mcp_server" in sys.modules:
+        sys.modules["mcp_server"].attach_host()     # detach: no logger or lock outlives the app
     _STATE.clear()
 
 
