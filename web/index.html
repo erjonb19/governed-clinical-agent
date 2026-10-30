@@ -85,6 +85,20 @@
   .tblwrap{overflow:auto;max-height:430px;border:1px solid var(--rule);border-radius:9px;margin-top:14px}
   .foot{display:flex;gap:20px;flex-wrap:wrap;padding:12px 22px;border-top:1px solid var(--rule);color:var(--ink-3);font-size:12px;background:var(--paper-2);border-radius:0 0 12px 12px}
   .foot b{color:var(--ink-2)}
+  .trace-list{width:100%;border-collapse:collapse;font-size:13px}
+  .trace-list th,.trace-list td{padding:8px 10px;border-bottom:1px solid var(--rule);text-align:left;white-space:nowrap}
+  .trace-list td.q{white-space:normal;max-width:420px}
+  .trace-list tr.row{cursor:pointer} .trace-list tr.row:hover{background:var(--paper-2)}
+  .trace-list tr.on{background:var(--green-wash)}
+  .wf{font-size:12.5px;margin-top:14px}
+  .wf .sp{display:grid;grid-template-columns:150px 1fr 70px;gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--rule)}
+  .wf .sp .n{font-family:var(--mono,monospace);color:var(--ink-2)} .wf .sp .n.err{color:var(--red)}
+  .wf .bar{position:relative;height:10px;background:var(--paper-2);border-radius:4px}
+  .wf .bar i{position:absolute;top:0;height:100%;background:var(--green);border-radius:4px;min-width:2px;opacity:.75}
+  .wf .bar i.err{background:var(--red)}
+  .wf .sp .ms{text-align:right;color:var(--ink-3)}
+  .wf details{margin:4px 0 8px 150px} .wf pre{font-size:11.5px;margin:6px 0 0;white-space:pre-wrap}
+  .status-ok{color:var(--green-2)} .status-error{color:var(--red)} .status-pending_approval{color:var(--amber)} .status-running{color:var(--ink-3)}
   details.audit{margin:0;border-top:1px solid var(--rule)}
   details.audit summary{padding:12px 22px;cursor:pointer;font-size:13px;color:var(--green-2);font-weight:600;list-style:none}
   details.audit summary::-webkit-details-marker{display:none}
@@ -174,6 +188,7 @@
     <button data-v="uses">Guide</button>
     <button data-v="trust">Trust</button>
     <button data-v="usage">Usage</button>
+    <button data-v="traces">Traces</button>
   </nav>
   <button class="gear" id="gearBtn"><span class="dot" id="connDot"></span><span id="connTxt">Connect</span></button>
 </div></div>
@@ -330,6 +345,15 @@
     </div>
     <div id="reviewBody"><div class="card pad muted">Loading…</div></div>
   </section>
+
+  <!-- ============ TRACES (every run, step by step) ============ -->
+  <section class="view" id="v-traces">
+    <div class="hero">
+      <h2>Traces</h2>
+      <p>Every run this service has handled, step by step: what was planned, what the security layer decided, what ran, and what it cost. Spans hold the question, the SQL and row <b>counts</b>, never the data itself. <span class="small muted">The trace store lives on the instance disk and resets on each deploy.</span></p>
+    </div>
+    <div id="tracesBody"><div class="card pad muted">Loading…</div></div>
+  </section>
 </main>
 
 <div class="scrim" id="scrim"></div>
@@ -418,6 +442,7 @@ function show(v){
   if(v==="data"&&!loaded.data){loaded.data=1;loadData();}
   if(v==="usage")loadUsage();
   if(v==="review")loadReview();
+  if(v==="traces")loadTraces();
   window.scrollTo({top:0,behavior:"smooth"});
 }
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.v));
@@ -566,9 +591,11 @@ function renderAnswer(d){
       <span>Source <b>${esc(d.backend||BACKEND)}</b></span>
       <span>Decision <b>${esc(d.decided_by||"—")}</b></span>
       ${m?`<span>Model <b>${esc(m.model)}</b></span><span>Time <b>${esc(m.latency_ms)} ms</b></span><span>Cost <b>$${esc(m.est_cost_usd??0)}</b></span>`:""}
+      ${d.trace_id?`<span><a href="#" id="toTrace" data-tid="${esc(d.trace_id)}">View trace</a></span>`:""}
     </div></div>`;
   el.innerHTML=h;
   const t=$("toTrust"); if(t)t.onclick=e=>{e.preventDefault();show("trust");};
+  const tl=$("toTrace"); if(tl)tl.onclick=e=>{e.preventDefault();show("traces");openTrace(tl.dataset.tid);};
   el.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
 
@@ -660,6 +687,58 @@ async function loadUsage(){
       </div>
       <div class="card pad" style="margin-top:16px"><details class="audit" style="border:none"><summary>Detailed metrics</summary><pre style="margin:10px 0 0">${esc(JSON.stringify(m,null,2))}</pre></details></div>`;
   }catch(e){ $("usageBody").innerHTML=`<div class="card pad">Could not load: ${esc(e.message||e)}</div>`; }
+}
+
+/* ---------- traces view: every run as spans ----------
+   One trace per run (/query, /raw-sql, /propose and its later decisions), one
+   span per step. The id in the Ask footer is the same id here, and for an
+   approval it is also the checkpoint thread the Review view resumes.         */
+const when=ts=>ts?new Date(ts*1000).toLocaleString():"—";
+const short=s=>s&&s.length>90?s.slice(0,88)+"…":(s||"");
+async function loadTraces(){
+  const body=$("tracesBody");
+  try{
+    const r=await fetch("/traces?limit=50",{headers:authHdrs()});
+    if(r.status===401){ body.innerHTML=`<div class="card pad"><span class="pill deny">Key needed</span><p style="margin:12px 0 0">Enter your access key to see traces.</p></div>`; return; }
+    const d=await r.json();
+    if(!d.traces.length){ body.innerHTML=`<div class="card pad muted">No runs recorded yet. Ask a question, then return here.</div>`; return; }
+    body.innerHTML=`<div class="card pad"><div class="eyebrow">${d.total} run${d.total===1?"":"s"} recorded (newest ${d.traces.length})</div>
+      <div class="tblwrap" style="max-height:none"><table class="trace-list"><thead><tr><th>When</th><th>Kind</th><th>Question or SQL</th><th>Decision</th><th>Steps</th><th>Status</th><th>Time</th></tr></thead>
+      <tbody>${d.traces.map(t=>`<tr class="row" data-tid="${esc(t.trace_id)}"><td>${esc(when(t.start_ts))}</td><td>${esc(t.name)}${t.attrs.mode?" · "+esc(t.attrs.mode):""}</td>
+        <td class="q">${esc(short(t.attrs.question||t.attrs.sql||""))}</td><td>${esc(t.attrs.decided_by||"—")}</td><td>${t.span_count}</td>
+        <td class="status-${esc(t.status)}">${esc(t.status)}</td><td>${t.latency_ms??"—"} ms</td></tr>`).join("")}</tbody></table></div></div>
+      <div id="traceDetail"></div>`;
+    body.querySelectorAll("tr.row").forEach(tr=>tr.onclick=()=>openTrace(tr.dataset.tid));
+  }catch(e){ body.innerHTML=`<div class="card pad">Could not load: ${esc(e.message||e)}</div>`; }
+}
+async function openTrace(tid){
+  if(!$("traceDetail")){ await loadTraces(); }
+  const det=$("traceDetail"); if(!det) return;
+  document.querySelectorAll("tr.row").forEach(tr=>tr.classList.toggle("on",tr.dataset.tid===tid));
+  det.innerHTML=`<div class="card pad muted" style="margin-top:16px">Loading trace…</div>`;
+  try{
+    const r=await fetch("/traces/"+encodeURIComponent(tid),{headers:authHdrs()});
+    if(!r.ok){ det.innerHTML=`<div class="card pad" style="margin-top:16px">No trace <b>${esc(tid)}</b> on this server.</div>`; return; }
+    const t=await r.json();
+    const t0=t.start_ts, span=Math.max(0.001,(t.end_ts||Date.now()/1000)-t0);
+    const a=t.attrs||{};
+    const summary=[["Status",t.status],["Decision",a.decided_by],["Attempts",a.attempts],["Rows",a.row_count],
+                   ["Tokens",a.total_tokens],["Cost",a.est_cost_usd??a.total_cost_usd],["Model",a.model]].filter(([,v])=>v!==undefined&&v!==null);
+    const cp=t.checkpoint;
+    det.innerHTML=`<div class="card pad" style="margin-top:16px">
+      <div class="eyebrow">Trace ${esc(tid)} · ${esc(t.name)}${a.mode?" · "+esc(a.mode):""} · ${esc(when(t.start_ts))}</div>
+      ${a.question?`<div style="font-family:var(--serif);font-size:17px;margin:4px 0 10px">${esc(a.question)}</div>`:""}
+      <div class="foot" style="border:none;border-radius:8px">${summary.map(([k,v])=>`<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}
+        ${cp&&cp.exists?`<span>Checkpoint <b>${cp.finished?"finished":"parked at "+esc((cp.next||[]).join(", "))}</b></span>`:""}</div>
+      <div class="wf">${(t.spans||[]).map(s=>{
+        const l=((s.start_ts-t0)/span*100).toFixed(2), w=Math.max(0.5,((s.end_ts||s.start_ts)-s.start_ts)/span*100).toFixed(2);
+        const at=Object.assign({},s.attrs||{}); const sql=at.sql; delete at.sql;
+        const err=s.status==="error";
+        return `<div class="sp"><span class="n ${err?"err":""}">${s.parent_id?"&nbsp;&nbsp;↳ ":""}${esc(s.name)}</span>
+          <div class="bar"><i class="${err?"err":""}" style="left:${l}%;width:${w}%"></i></div><span class="ms">${s.latency_ms??0} ms</span></div>
+          ${(sql||Object.keys(at).length)?`<details><summary class="small muted">${esc(Object.entries(at).filter(([k,v])=>v!==null&&v!==undefined&&["attempt","allowed","decided_by","outcome","decision","row_count","model","est_cost_usd","reason"].includes(k)).map(([k,v])=>k+"="+String(v)).join("  "))||"details"}</summary>
+            ${sql?`<pre>${esc(sql)}</pre>`:""}<pre>${esc(JSON.stringify(at,null,1))}</pre></details>`:""}`;}).join("")}</div></div>`;
+  }catch(e){ det.innerHTML=`<div class="card pad" style="margin-top:16px">Could not load: ${esc(e.message||e)}</div>`; }
 }
 
 /* ---------- review view: the human-in-the-loop approval queue ----------
