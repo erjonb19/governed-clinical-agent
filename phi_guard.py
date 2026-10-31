@@ -914,6 +914,11 @@ class _Analysis:
         result: Any = False
         if scope.union_scopes:
             result = False if not any(self.person_rows(s)[0] for s in scope.union_scopes) else None
+            if result is None and self._selects_keys(scope) and                     all(self.person_rows(s)[0] for s in scope.union_scopes):
+                # every branch is a bare patient key of patient rows (patients
+                # with X INTERSECT patients with Y): the set's one column IS the
+                # key, so an outer count(DISTINCT key) >= 11 holds it to 11 people
+                result = [self.outputs(scope)[0][0]]
         elif isinstance(scope.expression, exp.Select) and _is_aggregate(scope.expression) \
                 and self._person_group_refs(scope):
             # grouped by patient (decision 4): one row per patient, and the

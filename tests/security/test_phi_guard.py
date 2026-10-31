@@ -980,3 +980,17 @@ ELEVENTH_REVIEW_ALLOWED = {
 def test_eleventh_review_legitimate_shapes_still_pass(name):
     d = validate_query(ELEVENTH_REVIEW_ALLOWED[name])
     assert d.allowed, f"{name}: {d.reason}"
+
+
+def test_a_count_over_an_intersect_of_patient_key_sets_runs_held_to_11():
+    # Groq wrote f4_chemoradiation_and_cisplatin this way: a correct, safe query
+    # the guard refused ("without a patient key") until the set kept its key
+    base = ("WITH a AS (SELECT DISTINCT patient_id FROM gold_procedure WHERE procedure_name = 'X'), "
+            "b AS (SELECT DISTINCT patient_id FROM gold_medication WHERE medication_name LIKE '%C%') ")
+    d = validate_query(base + "SELECT count(*) AS n FROM (SELECT patient_id FROM a "
+                              "INTERSECT SELECT patient_id FROM b) t")
+    assert d.allowed, d.reason
+    assert "COUNT(DISTINCT t.patient_id) >= 11" in d.safe_sql
+    bad = validate_query(base + "SELECT count(*) AS n FROM (SELECT patient_id FROM a "
+                                "INTERSECT SELECT 'p1') t")
+    assert not bad.allowed                         # a constant is not a key set
