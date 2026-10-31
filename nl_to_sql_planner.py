@@ -96,6 +96,13 @@ PROVIDERS = {
         "api_key_env": "GEMINI_API_KEY",
         "model": os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest"),
     },
+    # Recorded responses for the E2E suite (replay.py, PLAN v2 7a). No network,
+    # no key; a request with no recording fails loudly.
+    "replay": {
+        "sdk": "replay",
+        "api_key_env": None,
+        "model": "replay",
+    },
 }
 # One line to switch providers, or set PLANNER_PROVIDER in the environment.
 # The guard, policy, eval suite, and API are all unchanged by this choice --
@@ -408,6 +415,21 @@ Rules:
 class NLToSQLPlanner:
     def __init__(self, provider: str = ACTIVE_PROVIDER):
         cfg = PROVIDERS[provider]
+        if cfg.get("sdk") == "replay":
+            # Test-only. Without an explicit opt-in a deploy with
+            # PLANNER_PROVIDER=replay would start keyless, look healthy, and
+            # answer only the recorded questions. Refuse, like a missing key.
+            if os.environ.get("ALLOW_REPLAY") != "1":
+                raise SystemExit("PLANNER_PROVIDER=replay is for the E2E suite only; "
+                                 "set ALLOW_REPLAY=1 to use it")
+            import replay
+            self._sdk, self._model, self.provider = "replay", cfg["model"], provider
+            self._replay = replay.ReplayStore.from_env()
+            # record mode only: the real provider that answers misses
+            src = os.environ.get("REPLAY_SOURCE_PROVIDER")
+            self._source = (NLToSQLPlanner(provider=src)
+                            if self._replay.record and src and src != "replay" else None)
+            return
         key = os.environ.get(cfg["api_key_env"])
         if not key:
             raise SystemExit(f"set {cfg['api_key_env']} in your environment first")
@@ -446,7 +468,7 @@ class NLToSQLPlanner:
         LLM cost: read tokens from the response, multiply by a configurable rate.
         """
         system = build_system_prompt(schema_doc) if schema_doc else SYSTEM_PROMPT
-        text, metrics = self._complete(system, question)
+        text, metrics = self._complete(system, question, role="plan")
         return self._extract_sql(text), metrics
 
     def critique(self, question: str, sql: str, schema_doc: str | None = None):
@@ -457,11 +479,13 @@ class NLToSQLPlanner:
         """
         system = build_critic_prompt(schema_doc or SCHEMA_DOC)
         user = f"Question:\n{question}\n\nProposed SQL:\n{sql}"
-        return self._complete(system, user)
+        return self._complete(system, user, role="critic")
 
-    def _complete(self, system: str, user: str):
+    def _complete(self, system: str, user: str, role: str = "plan"):
         """One paced model call. Returns (text, CallMetrics)."""
         import time
+        if self._sdk == "replay":
+            return self._complete_replay(system, user, role)
         _pace_call()                     # respect provider rate limits, if configured
         t0 = time.perf_counter()
         if self._sdk == "anthropic":
@@ -498,6 +522,22 @@ class NLToSQLPlanner:
             model=self._model,
             provider=self.provider,
         )
+        return text, metrics
+
+    def _complete_replay(self, system: str, user: str, role: str):
+        """A recorded response (replay.py); in record mode a miss asks the source."""
+        import time
+        t0 = time.perf_counter()
+
+        def source():
+            text, m = self._source._complete(system, user, role)
+            return text, m.prompt_tokens, m.completion_tokens, m.model
+
+        text, pt, ct, model = self._replay.lookup(
+            role, system, user, source=source if self._source is not None else None)
+        metrics = CallMetrics(latency_ms=int((time.perf_counter() - t0) * 1000),
+                              prompt_tokens=pt, completion_tokens=ct,
+                              model=model, provider="replay")
         return text, metrics
 
     def _call_anthropic(self, system: str, question: str) -> tuple[str, int, int]:
