@@ -126,6 +126,34 @@ def _is_year(node: exp.Expression) -> bool:
     return False
 
 
+_DIFFS = (exp.DateDiff, exp.DatetimeDiff, exp.TimestampDiff)
+_DATE_LITERAL = re.compile(r"\d{4}-\d")
+
+
+def _interval_operands(node: exp.Expression) -> Optional[list]:
+    """If `node` is a difference between two dates -- date_diff(unit, a, b) in
+    any unit, or a - b -- its two operands; else None."""
+    if isinstance(node, _DIFFS):
+        ops = [node.this, node.expression]
+    elif isinstance(node, exp.Anonymous) and (node.name or "").lower() in ("date_diff", "datediff",
+                                                                        "date_sub", "datesub"):
+        ops = list(node.expressions[1:3])
+    elif isinstance(node, exp.Sub):
+        ops = [node.this, node.expression]
+    else:
+        return None
+    if len(ops) != 2 or any(o is None for o in ops):
+        return None
+    # both sides must be columns (cast at most): a literal on either side turns
+    # the difference into the date itself, shifted
+    for o in ops:
+        while isinstance(o, _TRANSPARENT):
+            o = o.this
+        if not isinstance(o, exp.Column):
+            return None
+    return ops
+
+
 # Nodes that change a value's type, not what it says. A reduction counts only
 # when nothing else sits between the column and the reducing function: YEAR()
 # around arithmetic on a date smuggles the month and day out, and COUNT around
@@ -167,6 +195,10 @@ def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
         if isinstance(anc, exp.Count):
             return True
         if is_date and _is_year(anc):
+            return True
+        if is_date and _interval_operands(anc) is not None:
+            # owner's decision 2 (2026-10-31): days between two dates is not a
+            # date. The analysis checks both operands really are date columns.
             return True
         return False
     return False
@@ -563,6 +595,8 @@ class _Analysis:
                     continue
                 if self._key_join(scope, col, s):
                     continue
+                if s.is_date and self._date_comparison(scope, col, clause):
+                    continue
                 if isinstance(col.parent, exp.Is) and isinstance(col.parent.expression, exp.Null) \
                         and s.base:
                     continue                    # presence of a real column, not its value
@@ -584,6 +618,74 @@ class _Analysis:
                 if s.cls != SAFE and not reduced(col, order, s.is_date):
                     self.findings.append(f"{s.cls} {s.base or col.name} used to ORDER BY")
 
+    def intervals(self, scope: Scope) -> None:
+        """A date difference counts as an interval only between two real date
+        columns: a CTE holding a constant date would otherwise read a birth date
+        back to the day as an 'interval' from it."""
+        for node in _own_nodes(scope.expression, exp.Expression):
+            ops = _interval_operands(node)
+            if ops is None:
+                continue
+            cols = [next(o.find_all(exp.Column)) for o in ops]
+            sens = [self.resolve(scope, c) for c in cols]
+            if not any(x.cls != SAFE for x in sens):
+                continue                                    # no patient dates involved
+            if not all(x.is_date and x.base for x in sens):
+                self.findings.append("a date difference must be between two date columns, "
+                                     "not a date and a constant")
+
+    def _date_comparison(self, scope: Scope, col: exp.Column, clause: exp.Expression) -> bool:
+        """Owner's decision 2: a filter may compare two date columns (b.start >
+        a.end, b.start BETWEEN a.end AND a.end + INTERVAL 30 DAY). Not a date
+        against a literal more specific than the year."""
+        node = col
+        while node.parent is not None and node is not clause:
+            parent = node.parent
+            if isinstance(parent, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)):
+                break
+            if isinstance(parent, _TRANSPARENT):
+                node = parent
+                continue
+            if isinstance(parent, (exp.Add, exp.Sub)) and \
+                    isinstance(parent.expression, exp.Interval):
+                node = parent                                # a.end + INTERVAL 30 DAY
+                continue
+            return False
+        else:
+            return False
+        cmp = node.parent
+        cols = list(_own_nodes(cmp, exp.Column))
+        for c in cols:
+            r = self.resolve(scope, c)
+            if not (r.is_date and r.base):
+                return False
+        if len({(c.table, c.name) for c in cols}) < 2:
+            return False
+        for lit in cmp.find_all(exp.Literal):
+            if lit.is_string and _DATE_LITERAL.search(lit.this or "") and \
+                    not isinstance(lit.parent, exp.Interval):
+                return False
+        return True
+
+    def aggregate_only(self, scopes: list) -> None:
+        """Owner's decision 1 (2026-10-31): patient data is aggregate-only. The
+        result must be an aggregate (each row covering 11+ people, by the
+        small-cell rule); row-level results are refused even of safe columns."""
+        root = scopes[-1]
+        branches = root.union_scopes or [root]
+        stack = list(branches)
+        while stack:
+            sc = stack.pop()
+            if sc.union_scopes:
+                stack.extend(sc.union_scopes)
+                continue
+            if isinstance(sc.expression, exp.Select) and self._person_source(sc)[0] and \
+                    not _is_aggregate(sc.expression):
+                self.findings.append("returns patient records row by row; patient data is "
+                                     "returned only as aggregates (counts, averages, rates) "
+                                     f"covering {MIN_CELL} or more people")
+                return
+
     def _key_join(self, scope: Scope, col: exp.Column, s: "Sens") -> bool:
         """A join, not a filter: a key of a protected table equated to another
         such key, or tested against a set of them (key IN (SELECT key ...)).
@@ -594,7 +696,7 @@ class _Analysis:
         node, parent = col, col.parent
         while isinstance(parent, (exp.Cast, exp.TryCast, exp.Paren)):
             node, parent = parent, parent.parent
-        if isinstance(parent, exp.EQ):
+        if isinstance(parent, (exp.EQ, exp.NEQ)):
             other = parent.expression if parent.this is node else parent.this
             while isinstance(other, (exp.Cast, exp.TryCast, exp.Paren)):
                 other = other.this
@@ -771,6 +873,9 @@ class _Analysis:
                 self.windows(scope)
                 self.predicates(scope)
                 self.per_patient_outputs(scope)
+                self.intervals(scope)
+        if scopes:
+            self.aggregate_only(scopes)
         # A query nested anywhere but FROM -- WHERE, HAVING, ON, a LIMIT, a
         # function's or table function's argument -- hands its value straight
         # into the outer query, where it can be compared, counted or turned into

@@ -136,6 +136,32 @@ BLOCKED = {
     "a boolean cast inside SUM": ("SELECT sum(CAST(condition_name = 'Rare' AS INT)) AS n "
                                   "FROM gold_condition"),
     "count_if": "SELECT count_if(condition_name = 'Rare') AS n FROM gold_condition",
+    # --- owner's decision 1 (2026-10-31): aggregate-only ---
+    "row-level safe columns": "SELECT gender, age_years FROM gold_patient LIMIT 5",
+    "row-level rows of a rare cohort": (
+        "SELECT p.gender FROM gold_patient p WHERE p.patient_id IN "
+        "(SELECT c.patient_id FROM gold_condition c WHERE c.condition_name = 'Rare')"),
+    "DISTINCT safe columns": "SELECT DISTINCT gender, age_years FROM gold_patient",
+    "row-level rows in a UNION branch": ("SELECT count(*) AS n FROM gold_patient UNION ALL "
+                                         "SELECT age_years FROM gold_patient"),
+    # --- owner's decision 2 (2026-10-31): dates ---
+    "a filter on an exact date literal": ("SELECT count(*) AS n FROM gold_encounter "
+                                          "WHERE CAST(start_date AS DATE) >= DATE '2020-01-01'"),
+    "a date range by literals": ("SELECT count(*) AS n FROM gold_encounter WHERE start_date "
+                                 "BETWEEN '2020-01-01' AND '2020-03-31'"),
+    "a date compared to today": ("SELECT count(*) AS n FROM gold_encounter "
+                                 "WHERE CAST(start_date AS DATE) > current_date - 30"),
+    "a day offset from a literal date": (
+        "SELECT avg(date_diff('day', DATE '1900-01-01', CAST(birth_date AS DATE))) AS d "
+        "FROM gold_patient"),
+    "a day offset from a constant in a CTE": (
+        "WITH x AS (SELECT DATE '1900-01-01' AS d) SELECT avg(date_diff('day', x.d, "
+        "CAST(p.birth_date AS DATE))) AS v FROM gold_patient p, x"),
+    "a date shifted then output": ("SELECT max(CAST(start_date AS DATE) + INTERVAL 1 DAY) AS d "
+                                   "FROM gold_encounter"),
+    "the month of a date in a filter": ("SELECT count(*) AS n FROM gold_encounter "
+                                        "WHERE month(CAST(start_date AS DATE)) = 3"),
+    "a date column in the output": "SELECT max(start_date) AS d FROM gold_encounter",
     # --- sixth adversarial review ---
     "a zip read back through range()": (
         "SELECT count(*) AS n FROM range((SELECT CAST(q.postal_code AS INT) FROM gold_patient q "
@@ -259,7 +285,6 @@ ALLOWED = {
                            "count(*) AS n FROM gold_patient GROUP BY 1"),
     "count of distinct cities": "SELECT count(DISTINCT city) AS n FROM gold_patient",
     "grouped safe column": "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender",
-    "row-level safe columns": "SELECT gender, age_years FROM gold_patient LIMIT 5",
     "filter on an identifier": ("SELECT round(avg(o.value_num), 2) AS v FROM gold_observation o "
                                 "WHERE o.patient_id IN (SELECT patient_id FROM gold_condition "
                                 "WHERE condition_name = 'Prediabetes')"),
@@ -292,6 +317,23 @@ ALLOWED = {
     "a semi-join through a derived key": (
         "SELECT count(*) AS n FROM gold_condition c WHERE c.patient_id IN "
         "(SELECT t.patient_id FROM (SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER') t)"),
+    # owner's decision 2: intervals between two dates, aggregated
+    "30-day readmission count": (
+        "SELECT count(DISTINCT a.patient_id) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND b.encounter_id <> a.encounter_id "
+        "AND CAST(b.start_date AS DATE) > CAST(a.end_date AS DATE) "
+        "AND date_diff('day', CAST(a.end_date AS DATE), CAST(b.start_date AS DATE)) <= 30 "
+        "WHERE a.class_code = 'IMP'"),
+    "30-day readmission with BETWEEN and INTERVAL": (
+        "SELECT count(DISTINCT a.patient_id) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND CAST(b.start_date AS DATE) BETWEEN "
+        "CAST(a.end_date AS DATE) AND CAST(a.end_date AS DATE) + INTERVAL 30 DAY"),
+    "average days from onset to abatement": (
+        "SELECT round(avg(date_diff('day', CAST(onset_date AS DATE), CAST(abatement_date AS DATE))), 1) "
+        "AS d FROM gold_condition WHERE abatement_date IS NOT NULL"),
+    "a condition after an encounter": (
+        "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_encounter e "
+        "ON c.patient_id = e.patient_id WHERE CAST(c.onset_date AS DATE) >= CAST(e.start_date AS DATE)"),
     "a scalar count in WHERE": ("SELECT count(*) AS n FROM gold_encounter WHERE length_of_stay_days > "
                                 "(SELECT avg(length_of_stay_days) FROM gold_encounter)"),
     "EXISTS on the key": ("SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "

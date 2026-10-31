@@ -180,7 +180,8 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients |
 
   The dialysis cases have no safe level: 5 people is under the floor at any
-  grain. So they keep their shape and change subject. A test
+  grain. So they keep their shape and change subject (agreed by the owner,
+  2026-10-31). A test
   (`test_every_fhir_eval_answer_is_reachable_through_the_guard`) now pins
   that every FHIR reference answer comes back through the guard unchanged and
   unsuppressed.
@@ -241,19 +242,38 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   - quantiles, `median`, `bit_or` and similar over per-patient values picked
     out one patient's value. Only COUNT, SUM, AVG, STDDEV and VARIANCE are
     now allowed over them (an allowlist).
-- **⚠ Owner's call: small counts through rows.** A row-level query of safe
-  columns, filtered by a key semi-join (`gender FROM gold_patient WHERE
-  patient_id IN (<patients with a rare condition>)`), returns one row per person,
-  so its row count can be under 11. No aggregate means no HAVING. Closing it
-  means suppressing row-level results over patient data below 11 rows (or
-  refusing row-level patient results entirely). Not done: it changes what the
-  stated rules allow.
-- **Trade-offs decision 3 implies (for the owner to know):** date ranges and
-  comparisons between dates (`onset_date >= '2020-01-01'`,
-  `onset_date >= start_date`) are refused, because only the year may be used.
-  Sequence questions ("a condition after a visit", "within 30 days") cannot be
-  asked. The FHIR schema notes now tell the planner the privacy rules, so it
-  writes allowed SQL the first time.
+- **Owner's decisions 1–3 (2026-10-31).**
+  1. **Aggregate-only.** On the FHIR tables every result must be an
+     aggregate; each row covers 11+ people by the small-cell rule. Row-level
+     results are refused even of safe columns: a `UNION` branch, `DISTINCT`,
+     or rows of a rare cohort through a key semi-join. Results over
+     already-grouped data, such as a share-of-total window over a grouped
+     CTE, still pass. The hospital tables are unchanged. No FHIR eval case
+     returned rows, so none needed the owner.
+  2. **Dates, narrowed.** These are now allowed when only an aggregate leaves
+     the query:
+     - comparisons between two date columns (`b.start > a.end`,
+       `BETWEEN a.end AND a.end + INTERVAL 30 DAY`);
+     - differences in days between two date columns (`date_diff('day', a, b)`,
+       `a - b`);
+     - 30-day windows built from those.
+
+     Still refused:
+     - a date literal more specific than the year (`>= DATE '2020-01-01'`, a
+       range of literals);
+     - a date against `current_date`;
+     - a difference between a date and a constant, including one hidden in a
+       CTE, which would read a birth date back to the day;
+     - month or day functions;
+     - any date value in the output.
+
+     Readmission self-joins may also compare two record keys with `<>`
+     ("another encounter"). Tests cover the 30-day readmission shapes
+     (allowed) and exact-date filters (refused).
+  3. **Dialysis cases.** Replacing them with chemotherapy with radiation is
+     agreed.
+- The FHIR schema notes tell the planner these rules, so it writes allowed SQL
+  the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total
   minus a visible part), and `ORDER BY <date-derived value> LIMIT 1` over safe
   columns to single out one person.

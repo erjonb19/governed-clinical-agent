@@ -224,9 +224,17 @@ In plain terms, for the clinical (FHIR) data:
   conditions"), as long as the answer itself covers 11 or more people.
 - **No filtering on who someone is.** A query cannot pick rows by name, ID,
   address, phone, email, exact date or geography smaller than a state, anywhere
-  in the query. Filtering by birth year, or by age in whole years, is fine.
-- **Dates only to the year.** "How many patients were born in 1960" works.
-  "Patients born on 5 March 1960" does not.
+  in the query, and cannot sort people by them. Filtering by birth year, or by
+  age in whole years, is fine.
+- **Answers, never records.** Every answer about patients is a count, an
+  average, a rate or a similar summary covering at least 11 people. A list of
+  patients is refused, even one showing only harmless details like sex and age.
+- **Dates only to the year, but time between dates is fine.** "How many
+  patients were born in 1960" works. "Patients born on 5 March 1960" does not,
+  and neither does filtering on a specific day or month. Comparing two dates in
+  the records is fine, as long as the answer is a summary. For example: "how
+  many patients came back within 30 days of leaving hospital", or "the average
+  number of days from diagnosis to recovery". No date itself is ever shown.
 - **No small groups.** Any group of fewer than 11 people is left out of a
   result. That is the rule Medicare uses for its own public data. A count that
   would describe fewer than 11 people is not shown at all.
