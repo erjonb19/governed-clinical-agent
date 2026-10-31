@@ -168,3 +168,33 @@ this build session against the $3.00 cap.
 - **Tests:** 692 passed, 1 skipped.
 - **Anthropic spend so far:** $0.00.
 - **Render:** no new env var.
+
+## Checkpoint (paused for restart) — PHI guard #36, not yet merged
+
+- **State:** `feat/phi-guard` at `44806b8` is pushed; CI is green on that
+  commit (tests, quick eval, MCP E2E). #37 is merged (`1866b74`) and merged
+  into this branch.
+- **Done on #36 since the first version:**
+  - your decisions 2–4 of 2026-10-30: the 7 FHIR cases rewritten (old vs new
+    table in the PR and PLAN_v2 §0.4), no filtering on identity, and
+    per-patient grouping inside an aggregate;
+  - your decisions 1–3 of 2026-10-31: FHIR results aggregate-only, date
+    comparisons and day-differences between two date columns (30-day
+    readmission works), chemoradiation agreed;
+  - adversarial reviews 5–7, every bypass closed with tests that fail on the
+    earlier code.
+- **Tests:** 890 passed, 1 skipped. All 28 FHIR reference answers come back
+  through the guard unchanged and unsuppressed.
+- **Left before merging #36:**
+  1. A static review of decisions 1–2 was running at pause. Rerun it on
+     `44806b8`: `validate_query` only, no database, from a `git archive`
+     snapshot (the brief that avoids the safety stop).
+  2. The live FHIR eval on Gemini after the quota reset (about 07:00 UTC):
+     `EVAL_DATASET=fhir python eval_harness.py`, plus the hospital eval.
+  3. Merge with a merge commit, and add this report's merge entry.
+- **Then, in order:** #35 (replay E2E: CI green, needs a fresh review and a
+  rebase), PR 8 (the leadership Overview, local branch
+  `feat/leadership-overview`, unpushed: needs a rebase, screenshots and a
+  PR), and the follow-ups PR. PR 9 and the Haiku eval are skipped, by your
+  decision.
+- **Anthropic spend:** $0.00. **Render:** no new env var.
