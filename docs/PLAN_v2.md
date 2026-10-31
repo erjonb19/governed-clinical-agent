@@ -350,9 +350,40 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
 
   One false refusal was fixed: `FILTER (WHERE b.key IS NOT NULL)`, a presence
   test, for the readmission rate.
-  **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
-  group) over a safe column return one person's value, such as the oldest age
-  in a group of 11+. They are allowed, because one bank case uses `MAX`.
+- **MIN / MAX / MEDIAN and ages (owner's decision, 2026-10-31).** One-argument
+  `MIN` / `MAX` / `MEDIAN` over a safe column stay allowed. Ages, though, are
+  capped at **90+** (HIPAA Safe Harbor) wherever one person's age could
+  surface. The four age columns (`age_years`, `age_at_encounter`,
+  `age_at_onset`, `age_at_observation`) are flagged `age: true` in
+  `phi_columns.yaml`.
+  - Before the query runs, every reference to one becomes `LEAST(col, 90)`:
+    returned values, `MIN` / `MAX` / `MEDIAN`, `GROUP BY` keys, filters and
+    **means**. So everyone 90 or older falls into one group, and
+    `WHERE age_years > 100` finds nobody.
+  - A query with ages always executes the guard's analysed copy, with the
+    original result-column names restored.
+  - In the result, an age of 90 shows as `"90+"`. A UNION position is labelled
+    only where every branch is an age.
+  - **Why means are capped too.** The first version left `AVG` / `SUM` exact.
+    Two reviews of #40 then got one person's exact 90+ age out of a single
+    query five ways, all through that exemption:
+    - `sum - sum FILTER`;
+    - `sum(DISTINCT)` under a narrowing WHERE;
+    - a sum over `WHERE age = 50 OR age >= 90` beside counts;
+    - a second mean;
+    - a cap placed on the wrong column.
+
+    So means use capped ages as well, as the owner asked ("everywhere ages
+    appear").
+  - **Eval impact, for the owner:** `f1_avg_age` changes from **48.4** to
+    **48.1**, and it is the only one of 28 FHIR answers that changes.
+    `test_every_fhir_eval_answer_is_reachable_through_the_guard` fails on it
+    until the owner approves the new expected value. The case has not been
+    edited.
+  - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
+    `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
+    that implies 90+ the same way. The de-identified views of §0.6 fix this at
+    the source.
 - The FHIR schema notes tell the planner these rules, so it writes allowed SQL
   the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total

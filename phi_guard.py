@@ -75,20 +75,32 @@ def _load(path: str = CONFIG_PATH):
     with open(path, encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     tables: dict[str, dict[str, tuple[str, bool]]] = {}
+    ages: set[str] = set()
     for t, cols in (doc.get("tables") or {}).items():
         tables[t.lower()] = {}
         for c, label in cols.items():
             if isinstance(label, dict):
                 cls, is_date = label.get("class"), bool(label.get("date"))
+                if label.get("age"):
+                    ages.add(f"{t.lower()}.{c.lower()}")
             else:
                 cls, is_date = label, False
             if cls not in _RANK:
                 raise ValueError(f"phi_columns.yaml: {t}.{c} has unknown class {cls!r}")
             tables[t.lower()][c.lower()] = (cls, is_date)
-    return tables, doc.get("person_key", "patient_id"), int(doc.get("min_cell_size", 11))
+    return (tables, doc.get("person_key", "patient_id"), int(doc.get("min_cell_size", 11)),
+            ages, int(doc.get("age_cap", 90)))
 
 
-TABLES, PERSON_KEY, MIN_CELL = _load()
+TABLES, PERSON_KEY, MIN_CELL, AGE_COLUMNS, AGE_CAP = _load()
+AGE_NAMES = {a.split(".", 1)[1] for a in AGE_COLUMNS}
+# Every reference to an age is capped at AGE_CAP before the query runs, means
+# included (HIPAA Safe Harbor: ages over 89 fall into one "90 or older"
+# category). _MEAN_AGGS only decides which result columns are labelled "90+":
+# an average is not itself an age.
+_MEAN_AGGS = {"avg", "mean", "sum", "stddev", "stddev_samp", "stddev_pop", "variance",
+              "var_samp", "var_pop", "variance_pop", "variance_samp", "count", "count_star",
+              "fsum", "sumkahan", "kahan_sum", "sum_no_overflow"}
 PROTECTED = set(TABLES)
 # for qualify(): expand * and qualify columns of the protected tables
 SCHEMA = {t: {c: "VARCHAR" for c in cols} for t, cols in TABLES.items()}
@@ -425,6 +437,7 @@ class PhiDecision:
     analysed_sql: Optional[str] = None     # the qualified ORIGINAL query, for check_output
     analysed_names: list = field(default_factory=list)   # its result columns, in order
     aggregate_root: bool = False           # an ungrouped aggregate at the root
+    age_outputs: list = field(default_factory=list)   # result positions that ARE ages
     suppressed_scopes: int = 0
 
 
@@ -1209,6 +1222,22 @@ def check(tree: exp.Expression) -> PhiDecision:
         # (an unaliased derived table: only the qualified copy has the name the
         # rewrite refers to)
         out_tree, o_selects = q, q_selects
+    # Ages capped at AGE_CAP wherever one person's age could surface (before the
+    # FILTER gates below copy their WHERE clauses, so the copies are capped too).
+    age_refs, age_outputs = _age_refs(a, q)
+    if age_refs and out_tree is not q:
+        # Execute the analysed copy whenever there are ages to cap: matching
+        # the original's columns to the copy's by walk order put the cap on the
+        # wrong column once qualify() re-nested a scalar subquery (review 2 of
+        # #40). The result columns get back the original query's names.
+        out_tree, o_selects = q, q_selects
+    try:
+        _cap_ages(age_refs, q, out_tree)
+    except _AgeCapError as e:
+        return PhiDecision(False, f"PHI rule: {e} (fail closed)", findings=[str(e)], protected=True)
+    if out_tree is q and age_refs:
+        _restore_output_names(tree, q)            # after capping
+
     def _enough(keys):
         return sqlglot.parse_one(" AND ".join(f"count(DISTINCT {k}) >= {MIN_CELL}" for k in keys),
                                  read=DIALECT)
@@ -1236,7 +1265,139 @@ def check(tree: exp.Expression) -> PhiDecision:
     return PhiDecision(True, tree=out_tree, protected=True, analysed_sql=analysed, analysed_names=names,
                        aggregate_root=bool(root_sel is not None and _is_aggregate(root_sel)
                                            and not root_sel.args.get("group")),
-                       suppressed_scopes=len(a.rewrites))
+                       suppressed_scopes=len(a.rewrites), age_outputs=age_outputs)
+
+
+class _AgeCapError(Exception):
+    pass
+
+
+def _age_refs(a: "_Analysis", q: exp.Expression):
+    """(age column references in the qualified tree that must be capped, root
+    result positions whose value is an age)."""
+    # EVERY reference, means included (owner: "cap ages at 90 everywhere ages
+    # appear"). Two review rounds showed an exact mean is always one narrowing
+    # WHERE, DISTINCT or second aggregate away from one person's exact age.
+    refs = []
+    for sc in a.scopes:
+        for col in sc.columns:
+            if (col.name or "").lower() in AGE_NAMES and                     a.resolve(sc, col).base in AGE_COLUMNS:
+                refs.append(col)
+    outputs, branches = None, _select_branches(q)
+    for branch in branches:
+        mine = set()
+        root = next((sc for sc in a.scopes if sc.expression is branch), None)
+        if root is None:
+            continue
+        for i, proj in enumerate(branch.expressions):
+            node = proj.this if isinstance(proj, exp.Alias) else proj
+            while isinstance(node, _TRANSPARENT):
+                node = node.this
+            if is_agg(node) and _agg_name(node) not in _MEAN_AGGS:
+                node = node.this
+                while isinstance(node, _TRANSPARENT):
+                    node = node.this
+            if isinstance(node, exp.Column) and a.resolve(root, node).base in AGE_COLUMNS:
+                mine.add(i)
+        outputs = mine if outputs is None else outputs & mine
+    return refs, sorted(outputs or ())
+
+
+def _select_branches(node: exp.Expression) -> list:
+    """The SELECTs whose rows form the result (every branch of a UNION)."""
+    if isinstance(node, exp.SetOperation):
+        return _select_branches(node.this) + _select_branches(node.expression)
+    if isinstance(node, exp.Subquery):
+        return _select_branches(node.this)
+    return [node] if isinstance(node, exp.Select) else []
+
+
+def _age_cols(tree: exp.Expression) -> list:
+    return [c for c in tree.find_all(exp.Column) if (c.name or "").lower() in AGE_NAMES]
+
+
+def _same_age_columns(q: exp.Expression, out_tree: exp.Expression) -> bool:
+    return [c.name.lower() for c in _age_cols(q)] == [c.name.lower() for c in _age_cols(out_tree)]
+
+
+def _restore_output_names(tree: exp.Expression, q: exp.Expression) -> None:
+    """Executing the analysed copy: give its result columns the names the
+    original query's would have had (an alias, a bare column's name, or the
+    expression's own text, as the database names an unaliased one)."""
+    orig, mine = _select_branches(tree), _select_branches(q)
+    if not orig or not mine or len(orig[0].expressions) != len(mine[0].expressions):
+        return
+    projs = []
+    for o, m in zip(orig[0].expressions, mine[0].expressions):
+        if isinstance(o, exp.Alias):
+            name = o.alias
+        elif isinstance(o, exp.Column):
+            name = o.name
+        else:
+            name = o.sql(dialect=DIALECT)
+        # renamed IN PLACE: the FILTER / HAVING rewrites find these nodes by identity
+        if isinstance(m, exp.Alias):
+            m.set("alias", exp.to_identifier(name, quoted=True))
+            projs.append(m)
+        else:
+            projs.append(exp.Alias(this=m, alias=exp.to_identifier(name, quoted=True)))
+    mine[0].set("expressions", projs)
+
+
+def _cap_ages(refs: list, q: exp.Expression, out_tree: exp.Expression) -> None:
+    """Wrap each reference as LEAST(col, AGE_CAP) in the tree that executes.
+    The original tree's age columns are matched to the qualified copy's by
+    position among same-named columns; if the two disagree, refuse."""
+    if not refs:
+        return
+    if out_tree is q:
+        targets = refs
+    else:
+        q_cols, o_cols = _age_cols(q), _age_cols(out_tree)
+        if [c.name.lower() for c in q_cols] != [c.name.lower() for c in o_cols]:
+            raise _AgeCapError("could not apply the 90+ age cap to this query's shape")
+        pos = {id(c): i for i, c in enumerate(q_cols)}
+        targets = [o_cols[pos[id(c)]] for c in refs]
+    # 1. Before changing anything: the unaliased result column each mention
+    #    sits in, and the name it has now (max(age_years) keeps that name, not
+    #    max(least(age_years, 90))).
+    rename = {}
+    for col in targets:
+        node = col
+        while node.parent is not None and not (isinstance(node.parent, exp.Select)
+                                               and node in node.parent.expressions):
+            node = node.parent
+        if node is not col and isinstance(node.parent, exp.Select) \
+                and not isinstance(node, exp.Alias):
+            rename[id(node)] = (node, node.sql(dialect=DIALECT))
+    # 2. Cap every mention in place (all of them: the nodes stay in the tree).
+    for col in targets:
+        capped = exp.func("LEAST", col.copy(), exp.Literal.number(AGE_CAP))
+        parent = col.parent
+        if isinstance(parent, exp.Select) and col in parent.expressions:
+            capped = exp.alias_(capped, col.name)        # keep the result column's name
+        col.replace(capped)
+    # 3. Then name the result columns.
+    for node, text in rename.values():
+        node.replace(exp.alias_(node.copy(), text, quoted=True))
+
+
+def cap_age_values(decision: Any, columns: list[str], rows: list[dict]) -> list[dict]:
+    """Show an age of AGE_CAP or more as "90+" in the result columns that are ages."""
+    idx = getattr(decision, "phi_age_outputs", None) or []
+    names = [columns[i] for i in idx if i < len(columns)]
+    if not names:
+        return rows
+    label = f"{AGE_CAP}+"
+    out = []
+    for r in rows:
+        r = dict(r)
+        for n in names:
+            v = r.get(n)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= AGE_CAP:
+                r[n] = label
+        out.append(r)
+    return out
 
 
 # ---------------------------------------------------------------------------
