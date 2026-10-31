@@ -86,3 +86,20 @@ def test_escape_is_denied(name):
 def test_legitimate_cte_still_passes(name):
     d = validate_query(STILL_FINE[name])
     assert d.allowed, (name, d.reason)
+
+
+def test_the_reference_backend_and_the_tool_share_a_database_file(tmp_path):
+    """The eval harness and scheduled runs hold a LocalDuckDBBackend and the
+    (read-only) query tool on the same Gold file in one process. DuckDB refuses
+    that unless both connections are opened the same way."""
+    import duckdb
+    from analytics_query_tool import AnalyticsQueryTool
+    from data_backends import LocalDuckDBBackend
+    db = str(tmp_path / "gold.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE TABLE gold_hospital_profile AS SELECT 1 AS facility_id")
+    con.close()
+    tool = AnalyticsQueryTool(db_path=db, seed_demo=False)
+    ref = LocalDuckDBBackend(db)
+    assert ref.execute("SELECT count(*) AS n FROM gold_hospital_profile")[1] == [{"n": 1}]
+    assert tool.execute({"sql": "SELECT count(*) AS n FROM gold_hospital_profile"}).success

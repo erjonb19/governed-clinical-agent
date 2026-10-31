@@ -160,6 +160,11 @@ this build session against the $3.00 cap.
   the read-only connection.
 - **Open, not introduced here:** a non-terminating recursive CTE can hang the
   connection. There is no statement timeout yet.
-- **Tests:** 691 passed, 1 skipped.
+- **CI caught one I missed:** the read-only connection broke the eval harness.
+  DuckDB refuses a read-write and a read-only connection to the same file in
+  one process, and the harness's reference backend held the read-write one.
+  `LocalDuckDBBackend` now opens files read-only too. A test opens both
+  connections on one file and fails without the fix.
+- **Tests:** 692 passed, 1 skipped.
 - **Anthropic spend so far:** $0.00.
 - **Render:** no new env var.
