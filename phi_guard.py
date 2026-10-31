@@ -94,10 +94,10 @@ def _load(path: str = CONFIG_PATH):
 
 TABLES, PERSON_KEY, MIN_CELL, AGE_COLUMNS, AGE_CAP = _load()
 AGE_NAMES = {a.split(".", 1)[1] for a in AGE_COLUMNS}
-# Aggregates that summarise ages without returning anyone's: an age column
-# directly inside one of these is NOT capped, so averages stay exact. Everywhere
-# else (returned, MIN/MAX/MEDIAN, grouped, filtered) an age is capped at AGE_CAP
-# (HIPAA Safe Harbor: ages over 89 fall into one "90 or older" category).
+# Every reference to an age is capped at AGE_CAP before the query runs, means
+# included (HIPAA Safe Harbor: ages over 89 fall into one "90 or older"
+# category). _MEAN_AGGS only decides which result columns are labelled "90+":
+# an average is not itself an age.
 _MEAN_AGGS = {"avg", "mean", "sum", "stddev", "stddev_samp", "stddev_pop", "variance",
               "var_samp", "var_pop", "variance_pop", "variance_samp", "count", "count_star",
               "fsum", "sumkahan", "kahan_sum", "sum_no_overflow"}
@@ -1225,11 +1225,11 @@ def check(tree: exp.Expression) -> PhiDecision:
     # Ages capped at AGE_CAP wherever one person's age could surface (before the
     # FILTER gates below copy their WHERE clauses, so the copies are capped too).
     age_refs, age_outputs = _age_refs(a, q)
-    if age_refs and out_tree is not q and not _same_age_columns(q, out_tree):
-        # GROUP BY an alias or a position, a star, a UNION: qualify() expanded
-        # them, so the original's age columns no longer line up with the
-        # analysed copy's. Execute the analysed copy instead (as above), with
-        # the result columns given back the names the original query had.
+    if age_refs and out_tree is not q:
+        # Execute the analysed copy whenever there are ages to cap: matching
+        # the original's columns to the copy's by walk order put the cap on the
+        # wrong column once qualify() re-nested a scalar subquery (review 2 of
+        # #40). The result columns get back the original query's names.
         out_tree, o_selects = q, q_selects
     try:
         _cap_ages(age_refs, q, out_tree)
@@ -1275,27 +1275,17 @@ class _AgeCapError(Exception):
 def _age_refs(a: "_Analysis", q: exp.Expression):
     """(age column references in the qualified tree that must be capped, root
     result positions whose value is an age)."""
-    refs, means, filtered = [], [], False
+    # EVERY reference, means included (owner: "cap ages at 90 everywhere ages
+    # appear"). Two review rounds showed an exact mean is always one narrowing
+    # WHERE, DISTINCT or second aggregate away from one person's exact age.
+    refs = []
     for sc in a.scopes:
         for col in sc.columns:
-            if (col.name or "").lower() not in AGE_NAMES:
-                continue
-            if a.resolve(sc, col).base not in AGE_COLUMNS:
-                continue
-            agg = next((x for x in _ancestors(col, sc.expression) if is_agg(x)), None)
-            if agg is not None and _agg_name(agg) in _MEAN_AGGS:
-                if agg.name.lower() != "count" and _agg_name(agg) not in ("count", "count_star"):
-                    means.append(col)
-                    filtered = filtered or isinstance(agg.parent, exp.Filter)
-                continue                      # a mean: exact, nobody's own age
-            refs.append(col)
-    # One exact age mean per query, unfiltered. Two (or a FILTERed one) can be
-    # differenced -- sum(age) - sum(age) FILTER (WHERE age < 90) is the one
-    # 90+ person's exact age -- so then every age mean is capped too.
-    if len(means) > 1 or filtered:
-        refs.extend(means)
-    outputs = set()
-    for branch in _select_branches(q):
+            if (col.name or "").lower() in AGE_NAMES and                     a.resolve(sc, col).base in AGE_COLUMNS:
+                refs.append(col)
+    outputs, branches = None, _select_branches(q)
+    for branch in branches:
+        mine = set()
         root = next((sc for sc in a.scopes if sc.expression is branch), None)
         if root is None:
             continue
@@ -1308,8 +1298,9 @@ def _age_refs(a: "_Analysis", q: exp.Expression):
                 while isinstance(node, _TRANSPARENT):
                     node = node.this
             if isinstance(node, exp.Column) and a.resolve(root, node).base in AGE_COLUMNS:
-                outputs.add(i)
-    return refs, sorted(outputs)
+                mine.add(i)
+        outputs = mine if outputs is None else outputs & mine
+    return refs, sorted(outputs or ())
 
 
 def _select_branches(node: exp.Expression) -> list:

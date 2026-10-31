@@ -1030,9 +1030,12 @@ def test_an_age_that_could_be_one_persons_is_capped_before_the_query_runs(sql):
     "SELECT gender, stddev(age_at_onset) AS d FROM gold_condition GROUP BY gender",
     "SELECT count(age_years) AS n FROM gold_patient",
 ])
-def test_means_use_the_exact_ages(sql):
+def test_means_are_capped_too(sql):
+    # owner: "cap ages at 90 everywhere ages appear". An exact mean was one
+    # narrowing WHERE, DISTINCT or second aggregate away from one person's age
+    # (review 2 of #40), so means use capped ages as well.
     d = validate_query(sql)
-    assert d.allowed and "LEAST(" not in d.safe_sql.upper(), d.safe_sql
+    assert d.allowed and "LEAST(" in d.safe_sql.upper(), d.safe_sql
 
 
 @pytest.fixture
@@ -1068,9 +1071,9 @@ def test_an_exact_age_over_90_cannot_be_filtered_on(old_tool):
     assert r.success and r.output["rows"] in ([], [{"n": 0}]), r.output
 
 
-def test_the_average_age_stays_exact(old_tool):
+def test_the_average_age_uses_capped_ages(old_tool):
     r = old_tool.execute({"sql": "SELECT avg(age_years) AS a FROM gold_patient"})
-    assert r.success and r.output["rows"] == [{"a": 107.0}], r.output   # 100..114, uncapped
+    assert r.success and r.output["rows"] == [{"a": 90.0}], r.output   # 100..114 -> all 90
 
 
 # review of the age cap (PR #40): two leaks and five false refusals, fixed
@@ -1120,10 +1123,15 @@ def test_a_group_by_alias_keeps_its_names_and_shows_90_plus(old_tool):
     assert r.output["rows"] == [{"a": "90+", "n": 15}]
 
 
-def test_every_branch_of_a_union_labels_its_ages(old_tool):
-    r = old_tool.execute({"sql": "SELECT count(*) AS m FROM gold_patient UNION ALL "
-                                 "SELECT max(age_years) FROM gold_patient"})
-    assert r.success and {"m": "90+"} in r.output["rows"], r.output
+def test_a_union_labels_only_positions_that_are_ages_in_every_branch(old_tool):
+    both = old_tool.execute({"sql": "SELECT max(age_years) AS m FROM gold_patient UNION ALL "
+                                    "SELECT min(age_years) FROM gold_patient"})
+    assert both.success and both.output["rows"] == [{"m": "90+"}, {"m": "90+"}], both.output
+    # a count of 15 beside a max age: the count must not be relabelled, and the
+    # age is still capped (shown as 90)
+    mixed = old_tool.execute({"sql": "SELECT count(*) AS m FROM gold_patient UNION ALL "
+                                     "SELECT max(age_years) FROM gold_patient"})
+    assert mixed.success and sorted(r["m"] for r in mixed.output["rows"]) == [15, 90], mixed.output
 
 
 def test_a_filtered_count_beside_a_positional_age_group_runs(old_tool):
@@ -1133,3 +1141,24 @@ def test_a_filtered_count_beside_a_positional_age_group_runs(old_tool):
                                  "FROM gold_patient GROUP BY 1"})
     assert r.success and r.output["columns"] == ["age_years", "f"], (r.error, r.output)
     assert r.output["rows"][0]["age_years"] == "90+"
+
+
+
+# review 2 of #40: three single-query routes to an exact 90+ age, all through
+# the old exact-mean exemption, and a cap placed on the wrong column
+
+@pytest.mark.parametrize("sql", [
+    "SELECT (SELECT sum(age_years) FROM gold_patient) AS s, coalesce(max(age_years), 0) + 0 AS m "
+    "FROM gold_patient",
+    "SELECT sum(DISTINCT age_years) AS s FROM gold_patient WHERE age_years = 50 OR age_years >= 90",
+    "SELECT sum(age_years) AS s, count(*) AS n, count(*) FILTER (WHERE age_years = 50) AS n50 "
+    "FROM gold_patient WHERE age_years = 50 OR age_years >= 90",
+])
+def test_every_age_reference_is_capped_in_what_runs(sql):
+    import sqlglot as _sg
+    from sqlglot import exp as _exp
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+    for col in _sg.parse_one(d.safe_sql, read="duckdb").find_all(_exp.Column):
+        if col.name.lower() in phi_guard.AGE_NAMES:
+            assert isinstance(col.parent, _exp.Least), f"uncapped in {d.safe_sql}"

@@ -356,24 +356,30 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   surface. The four age columns (`age_years`, `age_at_encounter`,
   `age_at_onset`, `age_at_observation`) are flagged `age: true` in
   `phi_columns.yaml`.
-  - Before the query runs, every reference to one becomes
-    `LEAST(col, 90)`: returned values, `MIN` / `MAX` / `MEDIAN`, `GROUP BY`
-    keys and filters. So everyone 90 or older falls into one group, and
+  - Before the query runs, every reference to one becomes `LEAST(col, 90)`:
+    returned values, `MIN` / `MAX` / `MEDIAN`, `GROUP BY` keys, filters and
+    **means**. So everyone 90 or older falls into one group, and
     `WHERE age_years > 100` finds nobody.
-  - In the result, an age of 90 shows as `"90+"`.
-  - An age directly inside `AVG` / `SUM` / `STDDEV` / `VAR` / `COUNT` is **not**
-    capped, so averages stay exact: `f1_avg_age` is 48.4. Capping inside means
-    too would make it 48.1, and that case would have to change.
-  - **One exact age mean per query, and unfiltered.** With two age means, or a
-    FILTERed one, every age mean in the query is capped too. The review of
-    #40 showed why: `sum(age) - sum(age) FILTER (WHERE age < 90)` returned the
-    one 90+ person's exact age.
-    - A mean passed through a CTE is capped as well: the CTE's column is a plain
-      age.
-    - **Still open:** differencing across two separate queries. That is the
-      general limit of cell suppression, and stored capped ages close it
-      (§0.6).
-  - A mean of a 90+ subgroup (11 or more people) is still exact.
+  - A query with ages always executes the guard's analysed copy, with the
+    original result-column names restored.
+  - In the result, an age of 90 shows as `"90+"`. A UNION position is labelled
+    only where every branch is an age.
+  - **Why means are capped too.** The first version left `AVG` / `SUM` exact.
+    Two reviews of #40 then got one person's exact 90+ age out of a single
+    query five ways, all through that exemption:
+    - `sum - sum FILTER`;
+    - `sum(DISTINCT)` under a narrowing WHERE;
+    - a sum over `WHERE age = 50 OR age >= 90` beside counts;
+    - a second mean;
+    - a cap placed on the wrong column.
+
+    So means use capped ages as well, as the owner asked ("everywhere ages
+    appear").
+  - **Eval impact, for the owner:** `f1_avg_age` changes from **48.4** to
+    **48.1**, and it is the only one of 28 FHIR answers that changes.
+    `test_every_fhir_eval_answer_is_reachable_through_the_guard` fails on it
+    until the owner approves the new expected value. The case has not been
+    edited.
   - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
     `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
     that implies 90+ the same way. The de-identified views of §0.6 fix this at
