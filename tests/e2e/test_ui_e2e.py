@@ -9,6 +9,8 @@ provider. Chromium (pytest-playwright) drives the UI.
                       (plan -> critic -> guard -> execute)
     2 guard denial    a question whose recorded SQL reads a bronze table: the
                       refusal names the rule, and the retries are in the trace
+    4 overview        the landing view: findings with numbers, the definitions,
+                      the limits, and the raw controls hidden until Advanced
     3 approval        Review: draft & pause -> pending -> approve as a named
                       reviewer -> committed, the decision in the trace
       escalation      escalate -> still pending, now owned by someone else
@@ -78,6 +80,7 @@ def server(tmp_path_factory):
 
 def _ask(page, base, question):
     page.goto(base + "/ui")
+    page.click("nav button[data-v='ask']")     # /ui lands on the Overview
     page.wait_for_selector("#q")
     page.fill("#q", question)
     page.click("#go")
@@ -86,6 +89,8 @@ def _ask(page, base, question):
 
 
 def _open_trace(page):
+    if page.get_attribute("#advBtn", "aria-pressed") != "true":
+        page.click("#advBtn")                   # trace links are an Advanced control
     page.click("#toTrace")
     page.wait_for_selector("#traceDetail .wf .sp", timeout=30_000)
     return [t.strip().lstrip("↳").strip() for t in page.locator("#traceDetail .wf .sp .n").all_inner_texts()]
@@ -174,3 +179,23 @@ def test_6_every_recorded_critic_call_is_replayed(server):
                    timeout=60).json()
     verdicts = [s.get("verdict") for s in r.get("trajectory") or [] if s.get("step") == "critic"]
     assert verdicts and "unavailable" not in verdicts, verdicts
+
+
+def test_7_overview_is_the_landing_view_for_leaders(page, server):
+    page.goto(server + "/ui")
+    assert page.locator("#v-overview").is_visible()
+    page.wait_for_selector("#ovFindings .ovcard .metric", timeout=30_000)
+    cards = page.locator("#ovFindings .ovcard")
+    assert cards.count() >= 3
+    for i in range(cards.count()):
+        text = cards.nth(i).inner_text()
+        assert any(ch.isdigit() for ch in text) and "Unavailable" not in text
+    assert page.locator("#ovDefs dt").count() >= 6
+    assert "limits" in page.locator("#ovHow").inner_text().lower()
+    # the raw controls are hidden until Advanced is switched on
+    page.click("nav button[data-v='ask']")
+    assert not page.locator("#segBackend").is_visible()
+    page.click("#advBtn")
+    assert page.locator("#segBackend").is_visible()
+    page.click("#advBtn")
+    assert not page.locator("#segBackend").is_visible()

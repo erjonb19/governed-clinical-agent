@@ -711,6 +711,56 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
     return out
 
 
+_FINDINGS_LOCK = threading.Lock()
+
+
+def _vintage() -> tuple[Optional[str], tuple]:
+    """(data vintage, cache key). The vintage is the CMS refresh date the build
+    stamped in REFRESH.json; the key adds the Gold file's mtime so a rebuild
+    without a new stamp still invalidates the cache."""
+    refresh = os.path.join(os.path.dirname(GOLD_DB) or ".", "REFRESH.json")
+    vintage, raw = None, ""
+    try:
+        with open(refresh, encoding="utf-8") as f:
+            raw = f.read()
+        vintage = json.loads(raw).get("last_refreshed")
+    except Exception:
+        pass
+    try:
+        mtime = os.path.getmtime(GOLD_DB)
+    except OSError:
+        mtime = None
+    return vintage, (raw, mtime)
+
+
+@app.get("/findings", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def get_findings(request: Request) -> dict:
+    """The Overview's plain-English findings (PLAN v2 item 6, D7).
+
+    Fixed, reviewed SQL through the guarded path, filled into templates: no LLM,
+    $0. Cached per data vintage; a set with any unavailable finding is not cached,
+    so a transient failure is retried on the next load.
+    """
+    import findings
+    vintage, key = _vintage()
+    cached = _STATE.get("findings_cache")
+    if cached and cached[0] == key:
+        return cached[1]
+    with _FINDINGS_LOCK:                      # simultaneous first loads compute once
+        cached = _STATE.get("findings_cache")
+        if cached and cached[0] == key:
+            return cached[1]
+        # Read the LOCAL Gold: the vintage and the cache key describe that file,
+        # so the numbers must come from it even when DATA_BACKEND=databricks.
+        with tracing.get_tracer().trace("findings", vintage=vintage):
+            cards = findings.compute(lambda sql: run_governed_sql(sql, "local", "hospital"), vintage)
+        out = {"dataset": "hospital", "backend": "local", "vintage": vintage, "findings": cards}
+        if all(c["status"] == "ok" for c in cards):
+            _STATE["findings_cache"] = (key, out)
+        return out
+
+
 @app.get("/metrics")
 def metrics() -> dict:
     """Aggregate cost and latency across all planner calls (optimization view)."""

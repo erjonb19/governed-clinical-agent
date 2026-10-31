@@ -67,7 +67,7 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### Service and observability
 
-- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/traces` (every run, step by step). API-key auth on the data routes.
+- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes.
 - **Tracing** (`tracing.py`) — one trace per run, one span per step (`plan`, `guard`, `execute`, `retry`, `approval.propose`, `approval.decision`, `answer`), with OpenTelemetry-shaped fields in local SQLite (`TRACE_DB`, default `logs/traces.sqlite`, newest `TRACE_MAX_RUNS` kept). Every `/query`, `/raw-sql` and `/propose` response carries a `trace_id`; `GET /traces` lists runs and `GET /traces/{id}` returns the span tree, and the **Traces** view in the UI draws it as a waterfall. For an approval the trace id is the checkpoint thread id, so a decision submitted hours later appends to the same trace. Spans store the question, the SQL, its hash and row **counts**, never result rows (a test pins that). Best effort: a tracer never fails a request. The store sits on the instance disk, so on Render it resets with each deploy.
 - **Cost tracking** (`cost_tracker.py`) — per-call token counts and estimated cost in every response; aggregate totals, averages, and latency p50/p95 at `/metrics`. Percentiles rather than averages, because the average hides the slow tail.
 - **Audit log** — the runtime's `AuditLogger` is attached on the service path (`AUDIT_LOG_DIR`, default `logs`; empty disables), so every policy decision and tool execution the deployed service makes lands in `logs/audit_api_*.jsonl`, which is what the AIOps panel reads.
@@ -432,7 +432,11 @@ Then open **http://localhost:8000/ui** — a self-contained web UI to ask questi
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
 The API's Swagger docs remain at `/docs`.
 
-The UI has seven views. Most are read-only, but **Review** is the human-in-the-loop
+The UI has eight views and opens on **Overview**: four plain-English findings about the
+current data for leadership (from `/findings`, each with a "How we know" showing its
+exact query; a finding that cannot be computed says so and shows no number), what
+the measures mean, and the limits. Raw controls (SQL mode, backend, trace links) sit
+behind **Advanced**. Most views are read-only, but **Review** is the human-in-the-loop
 surface: it shows the approval queue, drafts a proposal into it (`/propose`), and
 submits any of the four decisions — approve, reject, escalate, approve with edits
 — which **resumes the paused agent** on the server. Queue depth, average wait,
