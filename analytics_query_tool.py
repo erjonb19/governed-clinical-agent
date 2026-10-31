@@ -230,6 +230,8 @@ class AnalyticsQueryTool(BaseTool):
                     return ToolResult(success=False,
                                       output={"safe_sql": decision.safe_sql, "backend": backend},
                                       error=f"DENIED by sql_guard: {refusal}")
+                # Safe Harbor: an age of 90 or more is shown as "90+"
+                rows = phi_guard.cap_age_values(decision, cols, rows)
                 if decision.phi_suppressed:
                     phi_note = (f"groups of fewer than {phi_guard.MIN_CELL} people are not "
                                 f"shown (CMS small-cell rule)")

@@ -350,9 +350,25 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
 
   One false refusal was fixed: `FILTER (WHERE b.key IS NOT NULL)`, a presence
   test, for the readmission rate.
-  **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
-  group) over a safe column return one person's value, such as the oldest age
-  in a group of 11+. They are allowed, because one bank case uses `MAX`.
+- **MIN / MAX / MEDIAN and ages (owner's decision, 2026-10-31).** One-argument
+  `MIN` / `MAX` / `MEDIAN` over a safe column stay allowed. Ages, though, are
+  capped at **90+** (HIPAA Safe Harbor) wherever one person's age could
+  surface. The four age columns (`age_years`, `age_at_encounter`,
+  `age_at_onset`, `age_at_observation`) are flagged `age: true` in
+  `phi_columns.yaml`.
+  - Before the query runs, every reference to one becomes
+    `LEAST(col, 90)`: returned values, `MIN` / `MAX` / `MEDIAN`, `GROUP BY`
+    keys and filters. So everyone 90 or older falls into one group, and
+    `WHERE age_years > 100` finds nobody.
+  - In the result, an age of 90 shows as `"90+"`.
+  - An age directly inside `AVG` / `SUM` / `STDDEV` / `VAR` / `COUNT` is **not**
+    capped, so averages stay exact: `f1_avg_age` is 48.4. Capping inside means
+    too would make it 48.1, and that case would have to change.
+  - A mean of a 90+ subgroup (11 or more people) is still exact.
+  - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
+    `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
+    that implies 90+ the same way. The de-identified views of §0.6 fix this at
+    the source.
 - The FHIR schema notes tell the planner these rules, so it writes allowed SQL
   the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total

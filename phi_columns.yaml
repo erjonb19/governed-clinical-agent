@@ -31,7 +31,7 @@ tables:
     city: quasi_identifier
     state: safe
     postal_code: quasi_identifier
-    age_years: safe              # whole years
+    age_years: {class: safe, age: true}              # whole years, shown capped at 90+
 
   gold_encounter:
     encounter_id: identifier
@@ -43,7 +43,7 @@ tables:
     start_date: {class: quasi_identifier, date: true}
     end_date: {class: quasi_identifier, date: true}
     length_of_stay_days: safe    # a duration, not a date
-    age_at_encounter: safe       # whole years
+    age_at_encounter: {class: safe, age: true}       # whole years, shown capped at 90+
 
   gold_condition:
     condition_id: identifier
@@ -58,7 +58,7 @@ tables:
     is_active: safe
     gender: safe
     state: safe
-    age_at_onset: safe           # whole years
+    age_at_onset: {class: safe, age: true}           # whole years, shown capped at 90+
 
   gold_observation:
     observation_id: identifier
@@ -73,7 +73,7 @@ tables:
     effective_date: {class: quasi_identifier, date: true}
     gender: safe
     state: safe
-    age_at_observation: safe     # whole years
+    age_at_observation: {class: safe, age: true}     # whole years, shown capped at 90+
 
   gold_procedure:
     procedure_id: identifier

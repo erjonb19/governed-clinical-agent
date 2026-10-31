@@ -994,3 +994,79 @@ def test_a_count_over_an_intersect_of_patient_key_sets_runs_held_to_11():
     bad = validate_query(base + "SELECT count(*) AS n FROM (SELECT patient_id FROM a "
                                 "INTERSECT SELECT 'p1') t")
     assert not bad.allowed                         # a constant is not a key set
+
+
+# --- ages capped at 90+ (HIPAA Safe Harbor; owner's decision 2026-10-31) ---------
+# MIN / MAX / MEDIAN are allowed over ages, but an age of 90 or more is never
+# shown: wherever one person's age could surface it is capped at 90 before the
+# query runs, and the result shows it as "90+". Means (AVG, SUM, STDDEV...) use
+# the exact ages, so an average is unchanged.
+
+def test_every_age_column_is_flagged():
+    assert phi_guard.AGE_COLUMNS == {"gold_patient.age_years", "gold_encounter.age_at_encounter",
+                                     "gold_condition.age_at_onset",
+                                     "gold_observation.age_at_observation"}
+    assert phi_guard.AGE_CAP == 90
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT max(age_years) AS m FROM gold_patient",
+    "SELECT min(age_at_onset) AS m FROM gold_condition",
+    "SELECT median(age_at_encounter) AS m FROM gold_encounter",
+    "SELECT age_years, count(*) AS n FROM gold_patient GROUP BY age_years",
+    "SELECT count(*) AS n FROM gold_patient WHERE age_years > 95",
+    "WITH t AS (SELECT patient_id, age_years FROM gold_patient) SELECT max(age_years) AS m FROM t",
+])
+def test_an_age_that_could_be_one_persons_is_capped_before_the_query_runs(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+    assert "LEAST(" in d.safe_sql.upper() and ", 90)" in d.safe_sql
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT avg(age_years) AS a FROM gold_patient",
+    "SELECT round(avg(age_years), 1) AS v FROM gold_patient",
+    "SELECT sum(age_at_onset) AS s, stddev(age_at_onset) AS d FROM gold_condition",
+    "SELECT count(age_years) AS n FROM gold_patient",
+])
+def test_means_use_the_exact_ages(sql):
+    d = validate_query(sql)
+    assert d.allowed and "LEAST(" not in d.safe_sql.upper(), d.safe_sql
+
+
+@pytest.fixture
+def old_tool(tmp_path):
+    """The fixture's 15 patients, aged 100 to 114."""
+    import duckdb
+    path = build(str(tmp_path / "fhir.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("UPDATE gold_patient SET age_years = age_years + 60")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+def test_max_age_is_shown_as_90_plus(old_tool):
+    r = old_tool.execute({"sql": "SELECT max(age_years) AS m FROM gold_patient"})
+    assert r.success and r.output["rows"] == [{"m": "90+"}], (r.error, r.output)
+
+
+def test_an_unaliased_max_keeps_its_column_name(old_tool):
+    r = old_tool.execute({"sql": "SELECT max(age_years) FROM gold_patient"})
+    assert r.success and list(r.output["rows"][0].values()) == ["90+"]
+    assert "least" not in r.output["columns"][0].lower()
+
+
+def test_ages_over_90_group_into_one_90_plus_row(old_tool):
+    r = old_tool.execute({"sql": "SELECT age_years, count(*) AS n FROM gold_patient "
+                                 "GROUP BY age_years"})
+    assert r.success and r.output["rows"] == [{"age_years": "90+", "n": 15}], r.output
+
+
+def test_an_exact_age_over_90_cannot_be_filtered_on(old_tool):
+    r = old_tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient WHERE age_years > 100"})
+    assert r.success and r.output["rows"] in ([], [{"n": 0}]), r.output
+
+
+def test_the_average_age_stays_exact(old_tool):
+    r = old_tool.execute({"sql": "SELECT avg(age_years) AS a FROM gold_patient"})
+    assert r.success and r.output["rows"] == [{"a": 107.0}], r.output   # 100..114, uncapped
