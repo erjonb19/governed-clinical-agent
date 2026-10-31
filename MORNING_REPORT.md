@@ -140,3 +140,31 @@ this build session against the $3.00 cap.
 - **Tests:** 659 passed, 1 skipped.
 - **Anthropic spend so far:** $0.00. There is still no key.
 - **You need to:** decide the quasi-identifier gap (above).
+
+## Guard hotfix — escapes around the whole guard (#37)
+
+- **Why a second guard PR:** the PHI reviews found holes that bypassed the
+  entire guard, not just the PHI rules. You approved closing them separately.
+  They are recorded in PLAN_v2 §0.5 and CLAUDE.md.
+  - SQL-string runners: `query()`, `query_table()`, `json_execute_serialized_sql`.
+  - File and metadata readers: FROM-clause table functions are now an
+    allowlist, and reader families are denied by prefix.
+  - CTE shadowing, including `WITH RECURSIVE`.
+  - Checkpoint writes: denied, and the connection is now read-only.
+- **Reviews:** 2 rounds. The second found `json_serialize_plan('<sql>')`, a
+  string binder that leaked bronze schemas, reached files, and worked as a
+  statistics oracle. Fixed by denying the whole `json_serialize*` /
+  `json_deserialize*` family, with 2 tests that fail without the fix. About 75
+  other probes held.
+- **Evals:** all 70 reference queries (42 hospital + 28 FHIR) pass the guard on
+  the read-only connection.
+- **Open, not introduced here:** a non-terminating recursive CTE can hang the
+  connection. There is no statement timeout yet.
+- **CI caught one I missed:** the read-only connection broke the eval harness.
+  DuckDB refuses a read-write and a read-only connection to the same file in
+  one process, and the harness's reference backend held the read-write one.
+  `LocalDuckDBBackend` now opens files read-only too. A test opens both
+  connections on one file and fails without the fix.
+- **Tests:** 692 passed, 1 skipped.
+- **Anthropic spend so far:** $0.00.
+- **Render:** no new env var.

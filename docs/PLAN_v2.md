@@ -131,6 +131,36 @@ completed routed run was correct. **The critic does not lower accuracy on the
 banks, so it routes (the default).** If the Gemini confirmation shows
 otherwise, `CRITIC_ROUTING=0` is the §10 fallback.
 
+### 0.5 Guard hotfix beyond the PHI scope (owner-approved, 2026-10-30, #37)
+
+The PHI work (§0.4) was authorised as one `sql_guard` change and "no other
+guard rules". The adversarial reviews of it found holes that had nothing to do
+with PHI columns. They went **around the whole guard**, past the table allowlist
+and the SELECT-only rule, so the PHI rules could not hold either. The owner
+approved closing them in a separate PR (#37):
+
+- **SQL-string runners.** `query('<sql>')`, `query_table('<name>')`,
+  `json_execute_serialized_sql`, and the `json_serialize*` /
+  `json_deserialize*` family run or bind a string the guard never parses.
+  `json_serialize_plan` (found in #37's second review) leaked bronze schemas,
+  reached the filesystem, and with `optimize := true` was a statistics oracle.
+- **File and metadata readers.** FROM-clause table functions now come from an
+  **allowlist** (`range`, `generate_series`, `unnest`), not a denylist. Whole
+  families are denied by prefix wherever they appear (`read_`, `parquet_`,
+  `pragma_`, `duckdb_`, `sqlite_`, `iceberg_`, `delta_`, `sniff_`, `glob`, …),
+  plus `current_setting`, `getvariable`, `getenv` and `which_secret`.
+- **CTE shadowing.** A CTE named like a non-allowlisted table now resolves per
+  reference, and a `WITH RECURSIVE` CTE sees itself only in its recursive term,
+  as DuckDB binds it.
+- **Checkpoint writes.** `checkpoint()` / `force_checkpoint()` are denied, and
+  the query tool's connection is now **read-only** (unless it seeds demo
+  tables), so a write cannot happen even if a function slips through.
+
+Each fix has a test in `tests/security/test_guard_escapes.py`. All 70 eval
+reference queries still pass the guard. One issue is open and not introduced
+here: a non-terminating recursive CTE can hang the connection (no statement
+timeout). That is an availability issue for later.
+
 ---
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
