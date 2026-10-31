@@ -391,6 +391,208 @@ timeout). That is an availability issue for later.
 
 ---
 
+### 0.6 Plan: a de-identified FHIR layer enforced by the database (owner's option 3, 2026-10-31) — FOR APPROVAL
+
+**Why.** The PHI guard (§0.4) reads free-form SQL and decides what it may
+return. Static reviews 8 to 11 each found a new way around it. The eleventh
+was critical: a correlated `range()` argument leaked a named person's birth
+date as a row count. Every hole is closed and pinned by a test, but
+"the parser must anticipate all of SQL" is not a guarantee. #36 merged as a
+strict improvement (owner's option 1). This section is the real fix: the
+FHIR agent's connection **cannot see** identifiers, full dates, zips or the
+raw tables at all, because the database it opens does not contain them.
+
+**Two facts found while planning:**
+- **The raw tables share a file with Gold.** `medallion/fhir_gold.duckdb`
+  holds the `bronze_*` tables (names, addresses, birth dates) next to
+  `gold_*`. The agent's read-only connection opens that same file; only the
+  guard's allowlist keeps it off bronze.
+- **That file is downloadable by anyone.** Render downloads it at build
+  (`scripts/fetch_fhir_gold.py`) from the GitHub release `fhir-gold-20260901`,
+  and the repo and release are **public**. The data is synthetic (Synthea), so
+  nothing real is exposed. With real data, the published artifact alone would
+  be a breach. The plan fixes this first (PR A).
+
+#### 0.6.1 The isolation boundary: the database, not the parser
+
+**DuckDB (local and Render)** has no users, roles or GRANTs. Its equivalent
+is a separate database file plus a locked connection:
+- **A separate file.** The build writes a second file,
+  `medallion/fhir_deid.duckdb`, containing **only** the de-identified tables
+  (§0.6.2). It has no `bronze_*` and no `gold_*`.
+- **A locked connection.** The FHIR query tool opens only that file, with
+  `read_only=True`, `enable_external_access=false`, then
+  `SET lock_configuration=true`.
+- **Verified on DuckDB 1.5.4.** On such a connection:
+  - `ATTACH 'fhir_gold.duckdb'` is refused (PermissionException);
+  - `read_parquet` and `read_csv` are refused;
+  - `COPY ... TO` is refused;
+  - `INSTALL httpfs` is refused;
+  - `SET enable_external_access = true` and `SET lock_configuration = false`
+    are both refused ("the configuration has been locked");
+  - `SELECT * FROM bronze_patient` fails with *table does not exist*.
+- **What changes for an attacker.** A guard bypass on this connection reaches
+  only de-identified data.
+- **Deploy.** Render downloads **only** `fhir_deid.duckdb`. The release
+  holding `fhir_gold.duckdb` (with bronze) is deleted and replaced by a
+  de-identified release. The raw file exists only on the machine that builds
+  it.
+
+**Databricks** has real grants (Unity Catalog):
+- **A schema.** `workspace.fhir_deid` holds the same de-identified tables.
+- **A principal.** The agent's FHIR queries run as their own service principal
+  (`fhir-agent`). It is granted `USE CATALOG`, `USE SCHEMA` and `SELECT` on
+  `workspace.fhir_deid` only, with no grant on `workspace.gold` or bronze.
+  Any query outside that schema returns `PERMISSION_DENIED` from the
+  warehouse.
+- **To verify first:** that Free Edition allows a second service principal
+  and schema-level grants. If it does not, PR C documents that Databricks
+  FHIR stays disabled. FHIR on Databricks is not deployed today.
+
+**The current guard stays as a second layer**, unchanged in spirit:
+- **Labels move to the new tables.** `phi_columns.yaml` lists the `deid_*`
+  tables instead of `gold_*`. Almost every column is `safe`; the surrogate
+  key (§0.6.2) is the one identifier.
+- **The rules keep applying.** Aggregate-only results, the small-cell
+  HAVING, no filtering on the key, and the age cap all keep running on every
+  query.
+- **Each layer covers the other's failure.** If the parser is fooled, the
+  database still holds nothing identifying. If a view is wrong, the guard
+  still refuses rows and small cells.
+
+#### 0.6.2 What the de-identified tables contain
+
+Built from Gold by a new `build_fhir_deid.py`, as **tables** (DuckDB views
+cannot point into another file). The rules follow HIPAA Safe Harbor:
+
+| Gold has | De-identified table has |
+|---|---|
+| `patient_id`, `encounter_id` and the other `*_id` columns | **removed**. See the key question below. |
+| `given_name`, `family_name` | removed |
+| `city`, `postal_code` | removed; `state` stays (geography reduced to state) |
+| `birth_date` | `birth_year`, and NULL when the person is 90 or older (Safe Harbor: a birth year implying 90+ is aggregated) |
+| every other date (`start_date`, `onset_date`, `effective_date`, ...) | its **year** only |
+| intervals the analyses need | computed **in the build** from the full dates, then the dates are dropped: `length_of_stay_days`, `days_to_next_encounter` and `readmitted_30d` per encounter, `days_from_onset_to_abatement` per condition |
+| `age_years`, `age_at_*` | capped at 90 (stored as 90, labelled "90+") |
+| `measure_name`, `value_num`, `condition_name`, `medication_name`, ... | unchanged |
+
+**The key question, your decision.** You asked for no patient-level IDs.
+Two things need a way to tell patients apart:
+- counting *distinct* patients, which 14 of the 28 FHIR eval cases do;
+- the 11-person floor itself, which counts distinct people.
+
+Two ways to do it:
+- **(K) A random surrogate key** (`pid`). Assigned at random per patient in
+  each build and never stored anywhere the agent can reach, so it cannot be
+  joined back to the source or to a previous build. Safe Harbor allows
+  exactly this: a re-identification code "not derived from or related to
+  information about the individual" (§164.514(c)). It keeps every current
+  analysis possible, and the 11-person floor keeps a person to count.
+  **Recommended.**
+- **(N) Truly no key.** One extra table, `deid_patient_facts`, with one row
+  per patient and precomputed features (has hypertension, latest BMI band,
+  number of encounters, and so on). There is no key, so tables cannot be
+  joined per patient.
+  - "How many patients have X and Y" works only for features precomputed in
+    the build.
+  - The floor has no person to count on the event tables (encounters,
+    observations). It can be enforced only on `deid_patient_facts`, whose
+    rows are people.
+  - 14 cases must be rewritten, and new cross-table questions need a build
+    change.
+
+#### 0.6.3 How the 11-person floor is enforced in that layer
+
+With row-level tables, a view cannot know how a later query will group its
+rows. So the floor needs one of these:
+
+| Option | How | For | Against |
+|---|---|---|---|
+| **F1. Guard rewrite (as now) on the de-identified tables** | the HAVING `count(DISTINCT pid) >= 11` added by `phi_guard` | free questions keep working; no new code | the floor still depends on the parser; a parser miss now leaks a small count of *de-identified* data, not names or birth dates |
+| **F2. Approved query shapes** | the planner fills a small set of parameterised templates (count patients with X [and Y], average a measure by dimension, top-N with 11+, rate with FILTER, per-patient average, 30-day readmission rate); the floor is written into each template, and free SQL on FHIR is turned off (`/raw-sql` and MCP accept only templates there) | the floor no longer depends on parsing; every shape is reviewed once; easy to audit | fewer questions answerable; each new kind of question needs a reviewed template; planner and eval change from SQL to structured output |
+| **F3. Pre-aggregated views only** | the build publishes count cubes by dimension with cells under 11 already removed; no row-level tables at all | strongest; nothing to parse | far less flexible; complementary suppression across marginals (differencing) has to be designed; most eval questions need new cubes |
+
+**Recommendation: F1 now (PRs A–B), then F2 (PR D).**
+- F1 delivers the main gain at once: identifiers, dates, zips and raw tables
+  stop being reachable at all.
+- F2 then removes the floor's dependence on the parser for the agent path.
+- F3 is only worth it if FHIR becomes a published dashboard rather than a
+  question box.
+
+#### 0.6.4 Eval and adversarial changes
+
+**FHIR bank (28 cases).**
+- **Under (K)** (all of this is mechanical):
+  - Reference SQL moves from `gold_*` to `deid_*` and from `patient_id` to
+    `pid`.
+  - `SCHEMA_DOC_FHIR` is rewritten for the new tables, with
+    `PLANNER_SCHEMA`, the guard labels and the schema check in the same
+    commit (rule 6).
+  - Expected answers are recomputed and must equal today's, with one
+    exception. `f1_avg_age` becomes **48.1** instead of 48.4, because stored
+    ages are capped at 90, so the mean is capped too. I am stating this for
+    approval; it is not a silent edit. Under #40 (the current guard) means
+    stay exact.
+  - `f3_patients_90_plus` (`age_years >= 90`, 53) is unchanged.
+- **Under (N):** the 14 cases that count distinct patients or join across
+  tables are rewritten against `deid_patient_facts`: `f2_count_hypertension_patients`,
+  `f2_count_prediabetes`, `f2_count_chemoradiation`, `f3_top_medications`,
+  `f3_top_procedures`, `f4_htn_and_obesity`, `f4_avg_encounters_per_patient`,
+  `f4_emer_patient_count`, `f4_avg_glucose_prediabetic`,
+  `f4_chemoradiation_and_cisplatin`, `f5_grain_patients`, `f5_above_avg_bmi_patients`,
+  `f5_elderly_active_conditions`, `f5_condition_burden_15plus`. Each old-versus-new pair
+  is listed for approval in the PR, as in §0.4.
+- **Under F2:** cases also record which template and parameters are expected,
+  and the trajectory scorer checks the template choice.
+
+**Adversarial: the proof that the role cannot reach the raw tables.** A new
+`tests/security/test_deid_isolation.py` runs on **the FHIR connection itself
+with the guard switched off** (the backend called directly). It must refuse:
+- `ATTACH` of `fhir_gold.duckdb`, by absolute and relative path;
+- `read_parquet`, `read_csv`, `read_json` and `glob` on the medallion files;
+- `COPY ... TO`;
+- `INSTALL` / `LOAD` of extensions;
+- `SET` of any locked option;
+- `SELECT` from every `bronze_*` and `gold_*` name;
+- `information_schema` / `duckdb_tables()` listing anything but `deid_*`.
+
+It also checks the built file:
+- **Schema scan.** `build_fhir_deid.py` fails the build if any column is
+  named like an identifier (`*_name` except clinical names, `*_id` other than
+  `pid`, `city`, `postal_code`, `*_date`).
+- **Value scan.** The build also fails if any string value equals a bronze
+  name or postal code, or matches a full-date or zip pattern.
+
+The same checks run against the deployed file in CI (`tests.yml`). The
+adversarial eval cases (`eval_bank_adversarial.py`) gain three
+"database refuses" cases:
+- the planner told to ATTACH the raw file;
+- the planner told to read the parquet;
+- a re-identification attempt through `pid`.
+
+These run with the guard on, and the trajectory must show a refusal. For
+Databricks, PR C adds the same isolation test as the `fhir-agent` principal
+(`SELECT` on `workspace.gold.gold_patient` must return `PERMISSION_DENIED`).
+
+#### 0.6.5 Delivery, done criteria and dates
+
+| PR | Content | Done when | Target |
+|---|---|---|---|
+| **A. Stop shipping raw data** | `build_fhir_deid.py`; the de-identified file with its schema and value scans; a de-identified release replaces `fhir-gold-20260901` (deleted, with your go-ahead); `fetch_fhir_gold.py` and `render.yaml` fetch only the de-identified file | the release and the Render disk hold no `bronze_*` / `gold_*` FHIR tables; the scans pass; nightly builds both files | **Fri 2026-11-06** |
+| **B. The agent uses only the de-identified layer** | the FHIR tool connection is locked (§0.6.1); guard labels, `SCHEMA_DOC_FHIR`, the schema check and reference SQL move to `deid_*`; `test_deid_isolation.py`; three adversarial cases | isolation suite green with the guard off; 28/28 FHIR references reachable; FHIR eval ≥ 80% gate on Gemini (3 runs) and the 10 adversarial cases at 100% on guard + stopping; live `/ui` and `/raw-sql` checks on Render | **Wed 2026-11-11** |
+| **C. Databricks** | `workspace.fhir_deid` and the `fhir-agent` principal with schema-only grants; or a documented "not supported on Free Edition" | the isolation test as the principal shows `PERMISSION_DENIED` outside the schema, or a recorded limitation with Databricks FHIR left disabled | **Wed 2026-11-18** |
+| **D. Floor without the parser (F2)** | approved query shapes for FHIR; free SQL off for FHIR on `/raw-sql` and MCP | every FHIR eval case answered through a template; the guard's HAVING rewrite becomes a redundant second check | **Wed 2026-11-25** |
+
+The dates assume one PR in review at a time and no change of direction. If
+(N) is chosen over (K), PR B moves by about a week, for the 14 case rewrites.
+
+**Decisions this needs from you:**
+1. **(K) or (N):** a random surrogate key, or no key at all.
+2. **F1 then F2 (recommended), or F2 straight away, or F3.**
+3. **Releases:** deleting the public `fhir-gold-20260901` release once PR A
+   is live.
+4. **`f1_avg_age`:** 48.4 becomes 48.1 under capped stored ages.
+
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
 
 **Change** (`nl_to_sql_planner.py`):
