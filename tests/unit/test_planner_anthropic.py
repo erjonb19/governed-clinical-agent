@@ -197,3 +197,27 @@ def test_unlisted_claude_model_is_never_priced_below_listed_ones():
     dearest = max(planner_mod.MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
     assert rate == dearest
     assert rate["output"] > planner_mod.PROVIDER_RATES["anthropic"]["output"]
+
+
+@pytest.mark.parametrize("resp", [
+    _response(text=None, stop_reason="refusal"),
+    _response(text="SELECT facility_name FROM gold_hos", stop_reason="max_tokens"),
+    _response(text=None),
+], ids=["refusal", "truncated", "thinking-only"])
+def test_a_planner_error_carries_the_billed_usage(planner, resp):
+    # the call completed and was billed; the caller must be able to record it
+    p, stub = planner
+    stub.response = resp
+    with pytest.raises(planner_mod.PlannerError) as ei:
+        p.generate_sql_with_metrics("q")
+    m = ei.value.metrics
+    assert (m.prompt_tokens, m.completion_tokens) == (1200, 300)
+    assert m.model == p._model and m.provider == "anthropic" and m.est_cost_usd > 0
+
+
+def test_a_dated_snapshot_is_priced_as_its_alias():
+    for alias, rate in planner_mod.MODEL_RATES.items():
+        assert planner_mod.rate_for("anthropic", f"{alias}-20261001") == rate
+    # only an 8-digit date suffix is stripped; anything else stays unlisted (dearest)
+    dearest = max(planner_mod.MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
+    assert planner_mod.rate_for("anthropic", "claude-haiku-5-5-fast") == dearest

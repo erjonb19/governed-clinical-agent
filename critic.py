@@ -97,8 +97,11 @@ def review(planner: Any, question: str, sql: str, schema_doc: Optional[str] = No
         out["metrics"] = metrics.as_dict() if metrics is not None else None
         return out
     except Exception as e:
+        # A call that completed but was unusable (PlannerError) was still billed:
+        # keep its metrics so the trajectory and the cost log count it.
+        m = getattr(e, "metrics", None)
         return {"verdict": UNAVAILABLE, "reason": f"critic error: {type(e).__name__}: {e}"[:500],
-                "issues": [], "metrics": None}
+                "issues": [], "metrics": m.as_dict() if m is not None else None}
 
 
 def audit(runtime: Any, capability: str, verdict: dict, sql_sha256: Optional[str]) -> None:

@@ -178,3 +178,31 @@ def test_single_mode_names_a_database_failure_as_such(make_client):
     assert body["allowed"] is False and body["decided_by"] == "sql_error"
     assert "withheld" in body["reason"]
 
+
+
+def _billed_refusal():
+    """A PlannerError as the Anthropic adapter raises it: the call completed and
+    was billed (refusal / truncation / thinking-only), so it carries metrics."""
+    from nl_to_sql_planner import CallMetrics, PlannerError
+    e = PlannerError("model declined the request (refusal: unspecified)", (900, 400))
+    e.metrics = CallMetrics(latency_ms=5, prompt_tokens=900, completion_tokens=400,
+                            model="claude-haiku-5-5", provider="anthropic")
+    return e
+
+
+@pytest.mark.parametrize("mode", ["graph", "single"])
+def test_a_billed_planner_error_still_reaches_the_cost_log(make_client, mode):
+    c, tmp = make_client({"refuse": [("raise", _billed_refusal())]}, mode=mode)
+    body = c.post("/query", json={"question": "refuse this"}, headers=H).json()
+    assert body["decided_by"] == "planner_error"
+    lines = [json.loads(l) for l in (tmp / "metrics.jsonl").read_text().splitlines()]
+    assert [(l["prompt_tokens"], l["completion_tokens"]) for l in lines] == [(900, 400)]
+
+
+def test_a_billed_critic_error_is_counted_and_the_run_goes_on(make_client):
+    c, tmp = make_client({"how many": [("sql", COUNT), ("raise", _billed_refusal())]})
+    body = c.post("/query", json={"question": "how many hospitals?"}, headers=H).json()
+    assert body["allowed"] and body["critic"] == "unavailable"     # D4: fail open to the guard
+    assert body["planner_metrics"]["calls"] == 2
+    lines = (tmp / "metrics.jsonl").read_text().splitlines()
+    assert len(lines) == 2

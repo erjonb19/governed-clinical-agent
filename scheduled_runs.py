@@ -360,6 +360,20 @@ def issue_actions(results: list[dict], open_issues: dict[str, int],
     return actions
 
 
+def open_issues_by_title(listed: list[dict]) -> dict[str, int]:
+    """{title: number} of the open scheduled-run issues, whatever their labels.
+
+    If two are open under one title, the oldest (lowest number) is the one we
+    keep updating, so the thread stays in one place.
+    """
+    out: dict[str, int] = {}
+    for i in listed:
+        t = i.get("title") or ""
+        if t.startswith(ISSUE_PREFIX) and (t not in out or i["number"] < out[t]):
+            out[t] = i["number"]
+    return out
+
+
 def _gh(*args: str) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
@@ -370,9 +384,11 @@ def file_issues(summary_path: str) -> None:
         summary = json.load(f)
     _gh("label", "create", ISSUE_LABEL, "--force", "--color", "D93F0B",
         "--description", "Opened by the scheduled-runs workflow")
-    listed = json.loads(_gh("issue", "list", "--label", ISSUE_LABEL, "--state", "open",
-                            "--limit", "200", "--json", "number,title"))
-    open_issues = {i["title"]: i["number"] for i in listed}
+    # Find our issues by TITLE, not by label: a label removed by hand would hide
+    # the open issue and the next failure would open a duplicate.
+    listed = json.loads(_gh("issue", "list", "--state", "open",
+                            "--limit", "1000", "--json", "number,title"))
+    open_issues = open_issues_by_title(listed)
     run_url = ""
     if os.environ.get("GITHUB_RUN_ID"):
         run_url = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"

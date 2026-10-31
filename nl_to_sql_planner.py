@@ -138,9 +138,15 @@ def rate_for(provider: str, model: str) -> dict:
     An Anthropic model with no MODEL_RATES row is priced at the dearest listed
     Claude rate, not at the provider rate (which is Haiku's): an unlisted model
     then over-reports cost instead of under-reporting it 40x.
+
+    A dated snapshot id (`claude-haiku-5-5-20261001`) is priced as its alias:
+    without this, pinning a snapshot priced Haiku at Opus rates.
     """
     if model in MODEL_RATES:
         return MODEL_RATES[model]
+    base = re.sub(r"-\d{8}$", "", model or "")
+    if base in MODEL_RATES:
+        return MODEL_RATES[base]
     if provider == "anthropic" and model:
         return max(MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
     return PROVIDER_RATES.get(provider, _DEFAULT_RATE)
@@ -151,7 +157,16 @@ class PlannerError(RuntimeError):
 
     Distinct from transport errors (rate limit, 5xx), which the SDKs raise
     themselves and the eval harness scores as provider_error, not regression.
+
+    The call that raises it was still billed. `usage` is its (input, output)
+    tokens when known; `metrics` is the CallMetrics the planner builds from it,
+    so a caller that catches the error can still record the cost.
     """
+
+    def __init__(self, message: str, usage: tuple[int, int] | None = None):
+        super().__init__(message)
+        self.usage = usage
+        self.metrics: "CallMetrics | None" = None
 
 
 # --- optional call pacing --------------------------------------------------
@@ -450,7 +465,17 @@ class NLToSQLPlanner:
         _pace_call()                     # respect provider rate limits, if configured
         t0 = time.perf_counter()
         if self._sdk == "anthropic":
-            text, prompt_tokens, completion_tokens = self._call_anthropic(system, user)
+            try:
+                text, prompt_tokens, completion_tokens = self._call_anthropic(system, user)
+            except PlannerError as e:
+                # The call completed and was billed; only its answer was unusable.
+                # Carry its cost so callers can record it (e.metrics).
+                if e.usage is not None:
+                    e.metrics = CallMetrics(
+                        latency_ms=int((time.perf_counter() - t0) * 1000),
+                        prompt_tokens=e.usage[0], completion_tokens=e.usage[1],
+                        model=self._model, provider=self.provider)
+                raise
         else:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -490,18 +515,22 @@ class NLToSQLPlanner:
             messages=[{"role": "user", "content": question}],
             output_config={"effort": self._effort},
         )
+        u = getattr(resp, "usage", None)
+        usage = ((getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0)
+                 if u is not None else None)
         if resp.stop_reason == "refusal":
             details = getattr(resp, "stop_details", None)
             category = getattr(details, "category", None) if details else None
-            raise PlannerError(f"model declined the request (refusal: {category or 'unspecified'})")
+            raise PlannerError(f"model declined the request (refusal: {category or 'unspecified'})",
+                               usage)
         if resp.stop_reason == "max_tokens":
             # Partial SQL is worse than none: it might even pass the guard.
-            raise PlannerError(f"model output truncated at max_tokens={self._max_tokens}")
+            raise PlannerError(f"model output truncated at max_tokens={self._max_tokens}", usage)
         text = "".join(b.text for b in resp.content if b.type == "text")
         if not text.strip():
             # Thinking with no answer. Empty SQL would reach the guard and be
             # scored as a guard denial, hiding a model problem in guard stats.
-            raise PlannerError("model returned no answer text (thinking only)")
+            raise PlannerError("model returned no answer text (thinking only)", usage)
         return text, resp.usage.input_tokens, resp.usage.output_tokens
 
     def generate_sql(self, question: str, schema_doc: str | None = None) -> str:
