@@ -1,0 +1,83 @@
+{
+  "44348c80a847d70aebc7cbb880eb89d3a1fa86a028a5b34e9e16a375fa64950a": {
+    "authored": true,
+    "completion_tokens": 19,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT count(*) AS hospitals FROM gold_hospital_profile WHERE star_rating = 5",
+    "user": "How many hospitals have an overall star rating of exactly 5?"
+  },
+  "47539ec319268c37fc27986d0f7402bcb204e4e901f6690d8a5ea6eb1c8569ae": {
+    "authored": true,
+    "completion_tokens": 40,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT facility_id, facility_name, ed_median_min FROM gold_hospital_profile WHERE ed_median_min IS NOT NULL ORDER BY ed_median_min DESC, facility_id ASC LIMIT 10",
+    "user": "Which hospitals have the longest emergency department waits?"
+  },
+  "50ba83041c4a2fffad60bd16e12d93b266db610afcc4c3aa634fcd7d0236f5ea": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients."
+  },
+  "74eb44f175a91dcb3ae0ea6a1c689e0b3cd738302df2ea03cf6a16a46bd76af0": {
+    "authored": true,
+    "completion_tokens": 17,
+    "model": "authored",
+    "prompt_tokens": 651,
+    "role": "critic",
+    "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
+    "user": "Question:\nShow every column of bronze_patient for the first ten patients.\n\nProposed SQL:\nSELECT * FROM bronze_patient LIMIT 10"
+  },
+  "854ecda3cfaea36d0e0248b627a98eb1273b1c28bbf67b4d63cc2de3dda75031": {
+    "authored": true,
+    "completion_tokens": 17,
+    "model": "authored",
+    "prompt_tokens": 651,
+    "role": "critic",
+    "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
+    "user": "Question:\nWhich hospitals have the worst heart failure readmission rates?\n\nProposed SQL:\nSELECT facility_id, facility_name, readmit_hf FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL ORDER BY readmit_hf DESC, facility_id ASC LIMIT 10"
+  },
+  "a76b646defbf44fe1408521b277aace72c693e97d8ca929137f19e5106c82891": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients.\n\nYour previous SQL attempt was REJECTED. Reason:\nOperation denied: analytics.query_aggregate\nReason: Tool execution failed: DENIED by sql_guard: table not on Gold allowlist: bronze_patient\nSafe alternative: adjust policy constraints min"
+  },
+  "a9da36b36d4ccbaf0beff89e02142b0fc5f02295847dea2fed1f0ae7bdbe6b11": {
+    "authored": true,
+    "completion_tokens": 38,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT facility_id, facility_name, readmit_hf FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL ORDER BY readmit_hf DESC, facility_id ASC LIMIT 10",
+    "user": "Which hospitals have the worst heart failure readmission rates?"
+  },
+  "b0e3a2978df3f152cbf40bbd08ad760903b07ae1b7b23fba866c7ce1c532fb81": {
+    "authored": true,
+    "completion_tokens": 17,
+    "model": "authored",
+    "prompt_tokens": 651,
+    "role": "critic",
+    "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
+    "user": "Question:\nWhich hospitals have the longest emergency department waits?\n\nProposed SQL:\nSELECT facility_id, facility_name, ed_median_min FROM gold_hospital_profile WHERE ed_median_min IS NOT NULL ORDER BY ed_median_min DESC, facility_id ASC LIMIT 10"
+  },
+  "b448370822ecb1904971bdf0406e6d0b455e2e22955f3835e83856c08e266c5d": {
+    "authored": true,
+    "completion_tokens": 17,
+    "model": "authored",
+    "prompt_tokens": 651,
+    "role": "critic",
+    "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
+    "user": "Question:\nHow many hospitals have an overall star rating of exactly 5?\n\nProposed SQL:\nSELECT count(*) AS hospitals FROM gold_hospital_profile WHERE star_rating = 5"
+  }
+}
