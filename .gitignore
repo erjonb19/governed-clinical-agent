@@ -12,3 +12,6 @@ medallion/fhir_gold.duckdb
 medallion/*.parquet
 srv_err.log
 srv_out.log
+
+# Local working notes (owner: not committed)
+MORNING_REPORT.md
