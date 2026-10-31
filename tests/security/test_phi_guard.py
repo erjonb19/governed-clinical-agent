@@ -775,3 +775,84 @@ def test_a_correlated_exists_semi_join_runs_and_is_suppressed(tool):
     r = tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
                              "(SELECT 1 FROM gold_condition c WHERE c.patient_id = p.patient_id)"})
     assert r.success, r.error
+
+
+# --- ninth review (static, of the eighth-review fixes) ---------------------------
+# Each was ALLOWED on c7ed05c (and ran on a toy table, passing check_output).
+
+NINTH_REVIEW_BYPASSES = {
+    # B1: a per-patient group in a VALUE IN-set skipped the 11-person rule
+    "per-patient MAX in a value IN-set": (
+        "SELECT count(*) AS n FROM range(0, 130) r WHERE r.range >= 100 AND r.range IN "
+        "(SELECT max(p.age_years) FROM gold_patient p GROUP BY p.patient_id)"),
+    "per-patient value IN-set under a hospital root": (
+        "SELECT count(*) AS n FROM gold_hospital_profile h WHERE h.state IN "
+        "(SELECT max(c.condition_name) FROM gold_condition c GROUP BY c.patient_id)"),
+    # B2: a list of fractions lists every member
+    "quantile_cont with a list of fractions": (
+        "SELECT gender, quantile_cont(age_years, [0.0, 0.25, 0.5, 0.75, 1.0]) AS q "
+        "FROM gold_patient GROUP BY gender"),
+    "percentile_cont WITHIN GROUP with a list": (
+        "SELECT gender, percentile_cont([0.0, 0.5, 1.0]) WITHIN GROUP (ORDER BY age_years) AS q "
+        "FROM gold_patient GROUP BY gender"),
+    # B3: a condition hidden in an aggregate's argument without a predicate node
+    "AVG of NULLIF(GREATEST(...))": (
+        "SELECT gender, avg(nullif(greatest(age_years - 100, 0), 0)) + 100 AS m, count(*) AS n "
+        "FROM gold_patient GROUP BY gender"),
+    "MAX of NULLIF": "SELECT gender, max(nullif(age_years, 34)) AS m FROM gold_patient GROUP BY gender",
+    "SUM of a step function": (
+        "SELECT gender, sum(floor(age_years / 107)) AS n FROM gold_patient GROUP BY gender"),
+    "sums of powers (moments rebuild every value)": (
+        "SELECT gender, sum(age_years * age_years * age_years) AS m3 FROM gold_patient GROUP BY gender"),
+    # B4: MIN/MAX over a record returns one member's whole record
+    "MAX of a struct": (
+        "SELECT gender, max(struct_pack(a := age_years, m := marital_status)) AS r "
+        "FROM gold_patient GROUP BY gender"),
+    "MAX of a concatenation": (
+        "SELECT gender, max(age_years || '|' || marital_status) AS r FROM gold_patient GROUP BY gender"),
+    "MIN of a list": "SELECT gender, min([age_years, 1]) AS r FROM gold_patient GROUP BY gender",
+}
+
+
+@pytest.mark.parametrize("name", list(NINTH_REVIEW_BYPASSES))
+def test_ninth_review_bypasses_are_refused(name):
+    d = validate_query(NINTH_REVIEW_BYPASSES[name])
+    assert not d.allowed, f"{name}: {d.safe_sql}"
+    assert "PHI rule" in d.reason
+
+
+NINTH_REVIEW_ALLOWED = {
+    # F2: the same date column on two aliases of a self-join is two dates
+    "readmission measured start to start": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date > a.start_date AND b.start_date <= a.start_date + INTERVAL 30 DAY"),
+    # F3: EXISTS discards its select list
+    "correlated EXISTS selecting the key": (
+        "SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
+        "(SELECT c.patient_id FROM gold_condition c WHERE c.patient_id = p.patient_id)"),
+    # aggregates of plain columns, years and day differences still pass
+    "plain-column summaries": (
+        "SELECT gender, avg(age_years) AS a, count(DISTINCT patient_id) AS n, "
+        "avg(year(CAST(birth_date AS DATE))) AS y FROM gold_patient GROUP BY gender"),
+    "average days between two dates": (
+        "SELECT avg(date_diff('day', CAST(start_date AS DATE), CAST(end_date AS DATE))) AS d "
+        "FROM gold_encounter"),
+    "a per-patient key semi-join with HAVING inside": (
+        "SELECT count(*) AS n FROM gold_patient WHERE patient_id IN (SELECT patient_id "
+        "FROM gold_encounter GROUP BY patient_id HAVING count(*) >= 5)"),
+}
+
+
+@pytest.mark.parametrize("name", list(NINTH_REVIEW_ALLOWED))
+def test_ninth_review_legitimate_shapes_still_pass(name):
+    d = validate_query(NINTH_REVIEW_ALLOWED[name])
+    assert d.allowed, f"{name}: {d.reason}"
+
+
+def test_a_key_semi_join_through_a_cte_runs(tool):
+    # F1: the HAVING was added on the CTE's key, which the root does not select
+    r = tool.execute({"sql": "WITH x AS (SELECT c.patient_id FROM gold_condition c) "
+                             "SELECT count(*) AS n FROM gold_patient p "
+                             "WHERE p.patient_id IN (SELECT x.patient_id FROM x)"})
+    assert r.success, r.error

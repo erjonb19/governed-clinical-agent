@@ -300,6 +300,27 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
 
   Two false refusals were fixed: `rank()` over grouped counts, and the 30-day
   window written as `a.end_date + 30` or `+ to_days(30)`.
+- **Ninth review (static, of the eighth-review fixes).** Four more were closed,
+  each pinned by tests that fail on the earlier code:
+  - a per-patient group in a VALUE `IN`-set (`x IN (SELECT max(age) ... GROUP BY
+    patient_id)`) skipped the 11-person rule: its "consumer" aggregated range
+    or hospital rows, not the patients. Only a key semi-join now counts as
+    aggregating over a per-patient group.
+  - `quantile_cont(x, [list])` and `percentile_cont([list]) WITHIN GROUP`
+    listed every member's value.
+  - `nullif`, `greatest`, `floor(age / 107)` or sums of powers inside an
+    aggregate singled people out without a CASE. An aggregate over patient
+    rows now takes only a plain argument: a column, `*`, a number, a year, or
+    days between two date columns.
+  - `max(struct_pack(...))`, a concatenation or a list returned one member's
+    whole record (the plain-argument rule closes this too).
+
+  Three false refusals were fixed: a key semi-join through a CTE (its HAVING
+  named a table the root did not select, so it failed at run time),
+  start-to-start readmission (`b.start_date > a.start_date`), and a correlated
+  `EXISTS (SELECT c.patient_id ...)`. The live FHIR eval showed the planner
+  writing `SUM(CASE WHEN ...)` for a rate, which the guard refuses. The FHIR
+  notes now tell it to use `count(*) FILTER (WHERE ...)`.
   **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
   group) over a safe column return one person's value, such as the oldest age
   in a group of 11+. They are allowed, because one bank case uses `MAX`.

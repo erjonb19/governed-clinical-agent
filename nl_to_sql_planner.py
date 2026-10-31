@@ -307,8 +307,11 @@ Notes:
     places or full dates (joining on patient_id / encounter_id is fine); per-patient
     figures go in a subquery grouped by patient_id that the outer query
     COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
-    Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV, never LIST,
-    ARRAY_AGG, STRING_AGG or ARG_MAX; a subquery in SELECT or WHERE must
+    Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV of a plain
+    column, never LIST, ARRAY_AGG, STRING_AGG or ARG_MAX, and never a CASE,
+    NULLIF or other expression inside the aggregate: for a share or a
+    conditional count write count(*) FILTER (WHERE ...) / count(*), not
+    SUM(CASE WHEN ...). A subquery in SELECT or WHERE must
     aggregate too, except patient_id IN (SELECT patient_id ...) or EXISTS
     correlated on patient_id.
 """

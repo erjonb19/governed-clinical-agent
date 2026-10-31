@@ -247,6 +247,35 @@ _PATIENT_ROW_AGGS = _PER_PATIENT_AGGS | {
     "regr_sxy", "regr_syy", "count_if", "countif"}   # *_if is refused as conditional below
 
 
+def _plain_agg_arg(node: Optional[exp.Expression]) -> bool:
+    """An argument an aggregate over patient rows may take: a column (cast or
+    DISTINCT at most), *, a scalar literal, a date reduced to the year, or the
+    days between two date columns. Nothing computed (ninth review)."""
+    while isinstance(node, (exp.Cast, exp.TryCast, exp.Paren, exp.Ordered)):
+        node = node.this
+    if isinstance(node, exp.Distinct):
+        return all(_plain_agg_arg(e) for e in node.expressions)
+    if node is None or isinstance(node, (exp.Column, exp.Star, exp.Null, exp.Boolean)):
+        return True
+    if isinstance(node, exp.Literal):
+        return True
+    if isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal):
+        return True
+    if _is_year(node):
+        if isinstance(node, exp.Anonymous):
+            inner = node.expressions[1] if len(node.expressions) > 1 else None
+        elif isinstance(node, exp.Extract):
+            inner = node.expression
+        else:
+            inner = node.this
+        if isinstance(node, (exp.DateDiff, exp.DatetimeDiff, exp.TimestampDiff)):
+            return _interval_operands(node) is not None
+        while isinstance(inner, _TRANSPARENT):
+            inner = inner.this
+        return isinstance(inner, exp.Column)
+    return _interval_operands(node) is not None       # days between two date columns
+
+
 def _agg_name(node: exp.Expression) -> str:
     return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
 
@@ -531,9 +560,12 @@ class _Analysis:
         node = scope.expression.parent
         if isinstance(node, exp.Subquery):
             node = node.parent
-        # a semi-join (key IN (SELECT ...)) reads it as a set; a scalar subquery
-        # would hand one patient's row straight back, so it has no consumer
-        if isinstance(node, exp.In) and scope.parent is not None:
+        # a KEY semi-join (key IN (SELECT key ...)) reads it as a set of patients
+        # the outer query counts; a value IN-set (x IN (SELECT max(age) ...
+        # GROUP BY patient_id)) or a scalar subquery hands one patient's value
+        # straight back, so it has no consumer (ninth review)
+        if isinstance(node, exp.In) and scope.parent is not None and \
+                self._selects_keys(scope) and self._key_on_left(scope.parent, node):
             return [scope.parent]
         return []
 
@@ -723,7 +755,9 @@ class _Analysis:
         if not isinstance(node, exp.Column):
             return None
         r = self.resolve(scope, node)
-        return r.base if (r.is_date and r.base) else None
+        # identified by alias AND column: a.start_date and b.start_date of a
+        # self-join are two dates (readmission measured start to start)
+        return f"{node.table}.{node.name}".lower() if (r.is_date and r.base and node.table) else None
 
     def aggregate_only(self, scopes: list) -> None:
         """Owner's decision 1 (2026-10-31): patient data is aggregate-only. The
@@ -774,7 +808,7 @@ class _Analysis:
         where = sel.args.get("where") if isinstance(sel, exp.Select) else None
         if where is None:
             return False
-        own = {a.lower() for a in scope.sources}
+        own = {a.lower() for a in scope.selected_sources}
         stack = [where.this]
         while stack:
             c = stack.pop()
@@ -870,7 +904,10 @@ class _Analysis:
         with AND, or None if any of them has none). Every source counts: a
         cross join to an unrelated patient table must not pad a group's count."""
         found, keys, missing = False, [], False
-        for alias, src in scope.sources.items():
+        # SELECTED sources only: a CTE that is merely visible here (read by a
+        # nested semi-join) is not a row of this scope, and a HAVING on its key
+        # would not even bind (ninth review)
+        for alias, (_, src) in scope.selected_sources.items():
             if isinstance(src, exp.Table):
                 t = (src.name or "").lower()
                 if t in PROTECTED:
@@ -904,12 +941,27 @@ class _Analysis:
             if not is_agg(agg) or isinstance(agg.parent, exp.Window):
                 continue
             name = _agg_name(agg)
-            n_args = len([a for a in agg.iter_expressions() if not isinstance(a, exp.Window)])
-            if name not in _PATIENT_ROW_AGGS or (name in ("min", "max") and n_args > 1):
+            args = [a for a in agg.iter_expressions() if not isinstance(a, exp.Window)]
+            if isinstance(agg.parent, exp.WithinGroup):
+                order = agg.parent.args.get("expression")
+                args += list(order.expressions) if order is not None else []
+            if name not in _PATIENT_ROW_AGGS or (name in ("min", "max") and len(args) > 1):
                 self.findings.append(
                     f"{name.upper()} over patient rows can return members' own values "
                     "(a list, a record, or one person's value); use COUNT, SUM, AVG, MEDIAN "
                     "or another summary")
+                continue
+            bad = next((a for a in args if not _plain_agg_arg(a)), None)
+            if bad is not None:
+                # ninth review: anything computed inside an aggregate can single
+                # people out -- nullif/greatest carve a subgroup, floor(age/107)
+                # flags one person, sums of powers rebuild every value, and
+                # max(struct_pack(...)) returns one member's record
+                self.findings.append(
+                    f"{name.upper()}({bad.sql(dialect=DIALECT)[:40]}) over patient rows: an "
+                    "aggregate over patient rows takes a plain column (or *, a number, a year, "
+                    "or days between two dates); compute outside the aggregate, or use FILTER "
+                    "(WHERE ...) or GROUP BY")
                 continue
             conditional =isinstance(agg, exp.CountIf) or \
                 (isinstance(agg, exp.Anonymous) and (agg.name or "").lower().endswith("_if"))
@@ -1015,6 +1067,8 @@ class _Analysis:
                 node = node.parent
             if isinstance(node, exp.In) and self._selects_keys(scope) and                     self._key_on_left(scope.parent, node):
                 continue
+            if isinstance(node, exp.Exists):
+                continue          # EXISTS discards the values; aggregate_only checks its rows
             for name, sens in self.outputs(scope):
                 if sens.cls != SAFE:
                     self.findings.append(f"a nested query returns {sens.cls} {sens.base or name} "
