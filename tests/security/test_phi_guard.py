@@ -1026,7 +1026,8 @@ def test_an_age_that_could_be_one_persons_is_capped_before_the_query_runs(sql):
 @pytest.mark.parametrize("sql", [
     "SELECT avg(age_years) AS a FROM gold_patient",
     "SELECT round(avg(age_years), 1) AS v FROM gold_patient",
-    "SELECT sum(age_at_onset) AS s, stddev(age_at_onset) AS d FROM gold_condition",
+    "SELECT sum(age_at_onset) AS s FROM gold_condition",
+    "SELECT gender, stddev(age_at_onset) AS d FROM gold_condition GROUP BY gender",
     "SELECT count(age_years) AS n FROM gold_patient",
 ])
 def test_means_use_the_exact_ages(sql):
@@ -1070,3 +1071,65 @@ def test_an_exact_age_over_90_cannot_be_filtered_on(old_tool):
 def test_the_average_age_stays_exact(old_tool):
     r = old_tool.execute({"sql": "SELECT avg(age_years) AS a FROM gold_patient"})
     assert r.success and r.output["rows"] == [{"a": 107.0}], r.output   # 100..114, uncapped
+
+
+# review of the age cap (PR #40): two leaks and five false refusals, fixed
+
+@pytest.mark.parametrize("sql", [
+    # every mention of an age in one result column is capped, not just the first
+    "SELECT 0*min(p.age_years) + max(age_years) FROM gold_patient p",
+    "SELECT max(age_years) - min(age_years) FROM gold_patient",
+    # two age means, or a FILTERed one, can be differenced: all are capped then
+    "SELECT sum(age_years) - sum(age_years) FILTER (WHERE age_years < 90) AS d FROM gold_patient",
+    "SELECT sum(age_years) AS s, sum(age_years) FILTER (WHERE state <> 'XX') AS s2 FROM gold_patient",
+])
+def test_no_mention_of_an_age_escapes_the_cap(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+    import sqlglot as _sg
+    from sqlglot import exp as _exp
+    tree = _sg.parse_one(d.safe_sql, read="duckdb")
+    for col in tree.find_all(_exp.Column):
+        if col.name.lower() in phi_guard.AGE_NAMES:
+            assert isinstance(col.parent, _exp.Least), f"uncapped: {col.parent.sql()} in {d.safe_sql}"
+
+
+def test_one_query_cannot_difference_an_exact_age_out(old_tool):
+    # 15 people aged 100-114: the total minus everyone-but-one would be one age
+    r = old_tool.execute({"sql": "SELECT sum(age_years) - sum(age_years) FILTER "
+                                 "(WHERE age_years < 114) AS d FROM gold_patient"})
+    assert r.success, r.error
+    assert r.output["rows"][0]["d"] in (None, 0), r.output     # capped: 90*15 - 90*14 or gated
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT age_years AS a, count(*) AS n FROM gold_patient GROUP BY a",
+    "SELECT age_years, count(*) AS n FROM gold_patient GROUP BY 1",
+    "SELECT age_years // 10 AS dec, count(*) AS n FROM gold_patient GROUP BY dec",
+    "WITH t AS (SELECT * FROM gold_patient) SELECT gender, max(age_years) AS m FROM t GROUP BY gender",
+    "SELECT max(age_years) AS m FROM gold_patient UNION ALL SELECT max(age_at_onset) FROM gold_condition",
+])
+def test_ordinary_shapes_around_ages_still_run(old_tool, sql):
+    r = old_tool.execute({"sql": sql})
+    assert r.success, r.error
+
+
+def test_a_group_by_alias_keeps_its_names_and_shows_90_plus(old_tool):
+    r = old_tool.execute({"sql": "SELECT age_years AS a, count(*) AS n FROM gold_patient GROUP BY a"})
+    assert r.success and r.output["columns"] == ["a", "n"], r.output
+    assert r.output["rows"] == [{"a": "90+", "n": 15}]
+
+
+def test_every_branch_of_a_union_labels_its_ages(old_tool):
+    r = old_tool.execute({"sql": "SELECT count(*) AS m FROM gold_patient UNION ALL "
+                                 "SELECT max(age_years) FROM gold_patient"})
+    assert r.success and {"m": "90+"} in r.output["rows"], r.output
+
+
+def test_a_filtered_count_beside_a_positional_age_group_runs(old_tool):
+    # executing the analysed copy renames its outputs; doing that by copying the
+    # projections lost the FILTER nodes the 11-person gate looks up (StopIteration)
+    r = old_tool.execute({"sql": "SELECT age_years, count(*) FILTER (WHERE gender = 'female') AS f "
+                                 "FROM gold_patient GROUP BY 1"})
+    assert r.success and r.output["columns"] == ["age_years", "f"], (r.error, r.output)
+    assert r.output["rows"][0]["age_years"] == "90+"

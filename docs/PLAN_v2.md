@@ -364,6 +364,15 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   - An age directly inside `AVG` / `SUM` / `STDDEV` / `VAR` / `COUNT` is **not**
     capped, so averages stay exact: `f1_avg_age` is 48.4. Capping inside means
     too would make it 48.1, and that case would have to change.
+  - **One exact age mean per query, and unfiltered.** With two age means, or a
+    FILTERed one, every age mean in the query is capped too. The review of
+    #40 showed why: `sum(age) - sum(age) FILTER (WHERE age < 90)` returned the
+    one 90+ person's exact age.
+    - A mean passed through a CTE is capped as well: the CTE's column is a plain
+      age.
+    - **Still open:** differencing across two separate queries. That is the
+      general limit of cell suppression, and stored capped ages close it
+      (§0.6).
   - A mean of a 90+ subgroup (11 or more people) is still exact.
   - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
     `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
