@@ -217,9 +217,14 @@ In plain terms, for the clinical (FHIR) data:
   column, joining it in from another table, hiding it in a sub-query, gluing it
   to other text, or asking for "everything" with `SELECT *`.
 - **Counts are fine; lists of people are not.** You can count patients, count
-  distinct cities, or group patients by age, sex or condition. You cannot group
-  by patient, or ask for the first, last, smallest or largest ID or name in a
-  group, or for a list of them.
+  distinct cities, or group patients by age, sex or condition. You cannot list
+  patients, or ask for the first, last, smallest or largest ID or name in a
+  group, or for a list of them. You can work per patient on the way to an
+  answer ("average encounters per patient", "patients with 15 or more
+  conditions"), as long as the answer itself covers 11 or more people.
+- **No filtering on who someone is.** A query cannot pick rows by name, ID,
+  address, phone, email, exact date or geography smaller than a state, anywhere
+  in the query. Filtering by birth year, or by age in whole years, is fine.
 - **Dates only to the year.** "How many patients were born in 1960" works.
   "Patients born on 5 March 1960" does not.
 - **No small groups.** Any group of fewer than 11 people is left out of a
@@ -230,11 +235,9 @@ In plain terms, for the clinical (FHIR) data:
   identifying data under any name. It also refuses values that look like full
   dates or zip codes. The audit log records the refusal, never the value.
 
-Two limits, stated plainly. Cell suppression can in principle be undone by
-subtraction, for example a total minus every visible group. Filtering by an
-identifying column, such as a name in a `WHERE` clause, is allowed today
-because it returns nothing identifying, though it can narrow a result to one
-person. Both are recorded as open decisions in `docs/PLAN_v2.md` §0.4.
+One limit, stated plainly: cell suppression can in principle be undone by
+subtraction, for example a total minus every visible group. It is recorded in
+`docs/PLAN_v2.md` §0.4.
 
 The CMS hospital data is public and about facilities, not people, so none of
 this applies to it. The column-by-column labels are in `phi_columns.yaml`; a

@@ -257,6 +257,23 @@ def test_every_fhir_column_is_labelled():
         con.close()
 
 
+def test_every_fhir_eval_answer_is_reachable_through_the_guard():
+    """Every FHIR case's reference answer (computed on the raw backend) is what
+    the guard returns for that SQL, unsuppressed: no case asks for something the
+    PHI rules withhold. (The 7 that did were rewritten by the owner's decision.)"""
+    real = os.path.join(os.path.dirname(__file__), "..", "..", "medallion", "fhir_gold.duckdb")
+    if not os.path.exists(real):
+        pytest.skip("FHIR Gold not built")
+    import eval_bank_fhir
+    t = AnalyticsQueryTool(db_path=real, seed_demo=False)
+    for case in eval_bank_fhir.CASES:
+        ref = [tuple(r) for r in t._con.execute(case["reference_sql"]).fetchall()]
+        r = t.execute({"sql": case["reference_sql"]})
+        assert r.success, (case["id"], r.error)
+        assert [tuple(x.values()) for x in r.output["rows"]] == ref, case["id"]
+        assert "suppressed" not in (r.output.get("phi_note") or ""), case["id"]
+
+
 # --- against data: small cells and the output check ----------------------------
 
 @pytest.fixture

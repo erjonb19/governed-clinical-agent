@@ -161,14 +161,29 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   column to its sources with sqlglot's lineage, and refuses PHI under any name.
   It also refuses month/day dates and zip-shaped values. Refusals name the
   column and the rule, never a value, and land in the audit log.
-- **Eval impact (stopped for the owner, not edited).** Seven of the 28 FHIR
-  cases asked for exactly what is now refused:
-  - `f3_oldest_patients`, `f4_patients_most_encounters` and
-    `f5_condition_burden_top5` return `patient_id`.
-  - `f2_count_dialysis` and `f4_dialysis_and_epogen` count 5 people.
-  - In `f3_top_medications` and `f3_top_procedures`, an item of the top 5 by
-    record count belongs to only 5 people.
+- **Eval impact (stopped for the owner, then rewritten on the owner's
+  decision).** Seven of the 28 FHIR cases asked for exactly what is now
+  refused. On the owner's decision (2026-10-30) each was rewritten to keep its
+  intent at a safe level: years or whole ages instead of dates, counts or
+  aggregates instead of patient rows. Each expected answer was recomputed on the
+  raw backend and cross-checked by a second, differently written query. No rule
+  was loosened.
 
+  | Old case | Why it failed | New case |
+  |---|---|---|
+  | `f3_oldest_patients` (patient_id of the 5 oldest) | identifiers | `f3_patients_90_plus`: patients aged 90+ (53) |
+  | `f4_patients_most_encounters` (patient_id, top 5) | identifiers | `f4_avg_encounters_per_patient`: 39.7 |
+  | `f5_condition_burden_top5` (patient_id, top 5) | identifiers | `f5_condition_burden_15plus`: patients with 15+ distinct active conditions (19) |
+  | `f2_count_dialysis` | 5 people | `f2_count_chemoradiation`: same shape, 37 people |
+  | `f4_dialysis_and_epogen` | 5 people | `f4_chemoradiation_and_cisplatin`: same shape, 21 people |
+  | `f3_top_medications` | top item (Epogen) is 5 people | same id, ranked among medications with 11+ patients |
+  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients |
+
+  The dialysis cases have no safe level: 5 people is under the floor at any
+  grain. So they keep their shape and change subject. A test
+  (`test_every_fhir_eval_answer_is_reachable_through_the_guard`) now pins
+  that every FHIR reference answer comes back through the guard unchanged and
+  unsuppressed.
   The hospital bank is unchanged (42/42 reference queries identical).
 - **Hardened after adversarial review.** The first version was bypassed on the
   real data four ways, all now closed and each pinned by a test:
@@ -181,17 +196,25 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
     to single people out).
 
   The output check now fails closed on a lineage leaf it cannot place.
-- **Left to the owner (not bugs; the stated rules allow them):**
-  - **Identifiers used to filter.** `WHERE given_name = …`, `JOIN … ON
-    patient_id` and `WHERE postal_code LIKE '02%'` are allowed, because they
-    return nothing identifying. Combined with row-level safe columns, though,
-    they can pull one named person's diagnoses or act as a prefix oracle.
-  - **Patient GROUP BY that never reaches the result.** It is refused as
-    specified, which refuses plausible queries such as "average encounters
-    per patient".
-  - **Inherent limits of cell suppression.** Differencing (a total minus a
-    visible part), and `ORDER BY <date> LIMIT 1` over safe columns to single
-    out one person.
+- **Filters and per-patient grouping (owner's decisions 3 and 4,
+  2026-10-30).**
+  - **Filters.** An identifier or quasi-identifier may not be used to filter in
+    WHERE, HAVING, QUALIFY or JOIN ON, at any level, including subqueries.
+    This blocks `WHERE given_name = …`, `WHERE postal_code LIKE '02%'`, an exact
+    or month date, and `JOIN … ON a.city = b.city`. Still allowed:
+    - the year, or age in whole years;
+    - a key equality join (`c.patient_id = p.patient_id`);
+    - a key semi-join (`patient_id IN (SELECT patient_id …)`);
+    - `IS [NOT] NULL`.
+  - **Per-patient grouping.** `GROUP BY patient_id` is allowed only in a
+    subquery or CTE whose every consumer aggregates over it. The one-patient
+    inner groups are exempt from the 11-person `HAVING`; the outer aggregate
+    carries it on the patient key, so the result still covers 11+ people.
+    Passing `patient_id` through, re-grouping by it, or leaving the per-patient
+    rows unaggregated is refused. Each of these is pinned by a test.
+- **Still open (inherent limits of cell suppression):** differencing (a total
+  minus a visible part), and `ORDER BY <date-derived value> LIMIT 1` over safe
+  columns to single out one person.
 
 ---
 

@@ -103,10 +103,14 @@ CASES = [
         "mode": "scalar",
     },
     {
-        "id": "f2_count_dialysis", "tier": 2,
-        "question": "How many distinct patients have had a renal dialysis procedure? The procedure is named 'Renal dialysis (procedure)'.",
+        # Was renal dialysis: 5 people, under the 11-person floor, so the guard
+        # suppresses it and no safe level exists. Same shape, a procedure with 37.
+        "id": "f2_count_chemoradiation", "tier": 2,
+        "question": ("How many distinct patients have had combined chemotherapy and radiation "
+                     "therapy? The procedure is named 'Combined chemotherapy and radiation therapy "
+                     "(procedure)'."),
         "reference_sql": ("SELECT count(DISTINCT patient_id) AS n FROM gold_procedure "
-                          "WHERE procedure_name = 'Renal dialysis (procedure)'"),
+                          "WHERE procedure_name = 'Combined chemotherapy and radiation therapy (procedure)'"),
         "mode": "scalar",
     },
     {
@@ -128,24 +132,32 @@ CASES = [
     },
     {
         "id": "f3_top_medications", "tier": 3,
-        "question": "List the 5 most frequently ordered medication names, most frequent first.",
+        # Ranked among medications ordered for 11+ patients: the most-ordered one
+        # (Epogen, 4,133 orders) belongs to 5 people, a group the guard suppresses.
+        "question": ("Among medications ordered for at least 11 distinct patients, list the 5 most "
+                     "frequently ordered medication names, most frequent first."),
         "reference_sql": ("SELECT medication_name FROM gold_medication GROUP BY medication_name "
+                          "HAVING count(DISTINCT patient_id) >= 11 "
                           "ORDER BY count(*) DESC, medication_name ASC LIMIT 5"),
         "mode": "keyed", "key_columns": ["medication_name"],
     },
     {
         "id": "f3_top_procedures", "tier": 3,
-        "question": "List the 5 most frequently performed procedure names, most frequent first.",
+        # As above: renal dialysis (4,135 records) belongs to 5 people.
+        "question": ("Among procedures performed on at least 11 distinct patients, list the 5 most "
+                     "frequently performed procedure names, most frequent first."),
         "reference_sql": ("SELECT procedure_name FROM gold_procedure GROUP BY procedure_name "
+                          "HAVING count(DISTINCT patient_id) >= 11 "
                           "ORDER BY count(*) DESC, procedure_name ASC LIMIT 5"),
         "mode": "keyed", "key_columns": ["procedure_name"],
     },
     {
-        "id": "f3_oldest_patients", "tier": 3,
-        "question": "List the patient_id of the 5 oldest patients by age in years, oldest first.",
-        "reference_sql": ("SELECT patient_id FROM gold_patient WHERE age_years IS NOT NULL "
-                          "ORDER BY age_years DESC, patient_id ASC LIMIT 5"),
-        "mode": "keyed", "key_columns": ["patient_id"],
+        # Was "the patient_id of the 5 oldest": identifiers. The oldest patients,
+        # at the level Safe Harbor itself uses for them (ages 90 and over).
+        "id": "f3_patients_90_plus", "tier": 3,
+        "question": "How many patients are aged 90 or older?",
+        "reference_sql": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 90",
+        "mode": "scalar",
     },
     {
         "id": "f3_top_encounter_types", "tier": 3,
@@ -167,11 +179,14 @@ CASES = [
         "mode": "scalar",
     },
     {
-        "id": "f4_patients_most_encounters", "tier": 4,
-        "question": "List the patient_id of the 5 patients with the most encounters, most first.",
-        "reference_sql": ("SELECT patient_id FROM gold_encounter GROUP BY patient_id "
-                          "ORDER BY count(*) DESC, patient_id ASC LIMIT 5"),
-        "mode": "keyed", "key_columns": ["patient_id"],
+        # Was "the patient_id of the 5 with the most encounters": identifiers.
+        # Encounter load per patient, as an aggregate over every patient.
+        "id": "f4_avg_encounters_per_patient", "tier": 4,
+        "question": ("On average, how many encounters does a patient have? Count encounters per "
+                     "patient, then average over patients. Round to 1 decimal."),
+        "reference_sql": ("SELECT round(count(*) * 1.0 / count(DISTINCT patient_id), 1) AS v "
+                          "FROM gold_encounter"),
+        "mode": "scalar",
     },
     {
         "id": "f4_emer_patient_count", "tier": 4,
@@ -191,14 +206,16 @@ CASES = [
         "mode": "scalar",
     },
     {
-        "id": "f4_dialysis_and_epogen", "tier": 4,
-        "question": ("How many distinct patients have BOTH a renal dialysis procedure "
-                     "('Renal dialysis (procedure)') AND an Epogen medication order (medication_name "
-                     "contains 'Epogen')?"),
+        # Was dialysis AND Epogen: 5 people. Same shape (a procedure joined to a
+        # medication on the patient), a pair with 21.
+        "id": "f4_chemoradiation_and_cisplatin", "tier": 4,
+        "question": ("How many distinct patients have BOTH a combined chemotherapy and radiation "
+                     "therapy procedure ('Combined chemotherapy and radiation therapy (procedure)') "
+                     "AND a Cisplatin medication order (medication_name contains 'Cisplatin')?"),
         "reference_sql": ("SELECT count(DISTINCT p.patient_id) AS n FROM gold_procedure p "
                           "JOIN gold_medication m ON p.patient_id = m.patient_id "
-                          "WHERE p.procedure_name = 'Renal dialysis (procedure)' "
-                          "AND m.medication_name LIKE '%Epogen%'"),
+                          "WHERE p.procedure_name = 'Combined chemotherapy and radiation therapy (procedure)' "
+                          "AND m.medication_name LIKE '%Cisplatin%'"),
         "mode": "scalar",
     },
 
@@ -244,13 +261,14 @@ CASES = [
         "mode": "scalar",
     },
     {
-        "id": "f5_condition_burden_top5", "tier": 5,
-        "question": ("List the patient_id of the 5 patients with the highest number of DISTINCT active "
-                     "condition names, highest first."),
-        "reference_sql": ("SELECT patient_id FROM gold_condition WHERE is_active "
-                          "GROUP BY patient_id "
-                          "ORDER BY count(DISTINCT condition_name) DESC, patient_id ASC LIMIT 5"),
-        "mode": "keyed", "key_columns": ["patient_id"],
+        # Was "the patient_id of the 5 with the most": identifiers. The same
+        # burden question at a cohort level (the top of the distribution: 19 people).
+        "id": "f5_condition_burden_15plus", "tier": 5,
+        "question": ("How many distinct patients have 15 or more DISTINCT active condition names?"),
+        "reference_sql": ("SELECT count(*) AS n FROM (SELECT patient_id FROM gold_condition "
+                          "WHERE is_active GROUP BY patient_id "
+                          "HAVING count(DISTINCT condition_name) >= 15) t"),
+        "mode": "scalar",
     },
     {
         "id": "f5_emer_rate_by_gender", "tier": 5,
