@@ -364,7 +364,8 @@ def open_issues_by_title(listed: list[dict]) -> dict[str, int]:
     """{title: number} of the open scheduled-run issues, whatever their labels.
 
     If two are open under one title, the oldest (lowest number) is the one we
-    keep updating, so the thread stays in one place.
+    update; a newer duplicate is left alone. The match is on the exact title, so
+    an issue a person opens as "scheduled run: <name>" is treated as ours.
     """
     out: dict[str, int] = {}
     for i in listed:

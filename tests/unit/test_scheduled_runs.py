@@ -325,8 +325,8 @@ def test_an_open_issue_is_found_even_if_its_label_was_removed(tmp_path, monkeypa
         calls.append(args)
         if args[:2] == ("issue", "list"):
             assert "--label" not in args          # listed by title, not label
-            return json.dumps([{"number": 7, "title": title},       # label removed
-                               {"number": 9, "title": title},       # an older duplicate
+            return json.dumps([{"number": 7, "title": title},       # label removed (oldest)
+                               {"number": 9, "title": title},       # a newer duplicate
                                {"number": 3, "title": "unrelated"}])
         return ""
     monkeypatch.setattr(sr, "_gh", fake_gh)
