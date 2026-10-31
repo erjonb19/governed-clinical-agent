@@ -531,8 +531,8 @@ rows. So the floor needs one of these:
   - Expected answers are recomputed and must equal today's, with one
     exception. `f1_avg_age` becomes **48.1** instead of 48.4, because stored
     ages are capped at 90, so the mean is capped too. I am stating this for
-    approval; it is not a silent edit. Under #40 (the current guard) means
-    stay exact.
+    approval; it is not a silent edit. #40, the guard's age cap, already
+    caps means and makes the same change, so one approval covers both.
   - `f3_patients_90_plus` (`age_years >= 90`, 53) is unchanged.
 - **Under (N):** the 14 cases that count distinct patients or join across
   tables are rewritten against `deid_patient_facts`: `f2_count_hypertension_patients`,
@@ -591,7 +591,8 @@ The dates assume one PR in review at a time and no change of direction. If
 2. **F1 then F2 (recommended), or F2 straight away, or F3.**
 3. **Releases:** deleting the public `fhir-gold-20260901` release once PR A
    is live.
-4. **`f1_avg_age`:** 48.4 becomes 48.1 under capped stored ages.
+4. **`f1_avg_age`:** 48.4 becomes 48.1 under capped ages (the same change
+   #40 needs).
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
 
