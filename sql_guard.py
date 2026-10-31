@@ -74,6 +74,11 @@ DENIED_FUNCTIONS = {
     "duckdb_functions", "duckdb_types", "duckdb_keywords",
     "pragma_table_info", "pragma_database_list", "pragma_show_tables",
     "show_tables", "sqlite_master",
+    # query('<sql>') runs a STRING as SQL, so nothing in it is ever parsed by
+    # this guard: it reached bronze_*, the catalog and local files. query_table
+    # ('<name>') hides the table name the allowlist checks. Found by adversarial
+    # testing, 2026-10-30.
+    "query", "query_table",
 }
 
 # Catalog / system schemas the agent must never browse.
@@ -98,6 +103,40 @@ class Decision:
     reason: str
     safe_sql: Optional[str] = None
     findings: list = field(default_factory=list)
+
+
+def _with_of(node: exp.Expression):
+    """The WITH clause attached to a query node (sqlglot names the arg 'with_'
+    in current versions, 'with' in older ones)."""
+    return node.args.get("with_") or node.args.get("with")
+
+
+def _resolves_to_cte(table: exp.Table, name: str) -> bool:
+    """Does this table reference name a CTE in scope (rather than a real table)?
+
+    Walk outwards through the WITH clauses around the reference. In each, the
+    CTEs visible are: all of them, from the main query; only the EARLIER ones,
+    from inside a CTE's body; and the CTE itself too only if the WITH is
+    RECURSIVE.
+    """
+    node = table
+    while node is not None:
+        parent = node.parent
+        if isinstance(parent, exp.CTE) and isinstance(parent.parent, exp.With):
+            with_ = parent.parent
+            ctes = list(with_.expressions)
+            i = next(k for k, c in enumerate(ctes) if c is parent)
+            visible = ctes[:i + 1] if with_.args.get("recursive") else ctes[:i]
+            if any(c.alias_or_name.lower() == name for c in visible):
+                return True
+            node = with_.parent              # continue past this WITH entirely
+            continue
+        with_ = _with_of(parent) if parent is not None else None
+        if with_ is not None and node is not with_:
+            if any(c.alias_or_name.lower() == name for c in with_.expressions):
+                return True
+        node = parent
+    return False
 
 
 def validate_query(sql: str,
@@ -128,15 +167,18 @@ def validate_query(sql: str,
             return Decision(False, f"write or DDL operation denied: {type(node).__name__.upper()}")
 
     # 3. Table allowlist (and schema check).
-    # CTE names are local aliases, not real tables, so exclude them.
-    cte_names = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+    # A CTE name is a local alias, not a real table -- but ONLY where it can
+    # resolve to the CTE. Inside a non-recursive CTE's own body, or in an
+    # earlier CTE of the same WITH, the same name means the REAL table: so
+    # WITH bronze_patient AS (SELECT * FROM bronze_patient) ... read the real
+    # bronze table while the old "any CTE name is exempt" rule waved it through.
     bad_tables = []
     for t in tree.find_all(exp.Table):
         name = (t.name or "").lower()
         schema = (t.db or "").lower()
         if schema in DENIED_SCHEMAS:
             return Decision(False, f"catalog/system schema not allowed: {schema}.{name}")
-        if name in cte_names:
+        if not schema and _resolves_to_cte(t, name):
             continue
         if name and name not in allowed_tables:
             bad_tables.append(name)
