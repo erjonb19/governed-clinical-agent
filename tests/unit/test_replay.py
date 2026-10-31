@@ -66,6 +66,7 @@ def test_the_planner_replays_plan_and_critic_calls(tmp_path, monkeypatch):
     path.write_text(json.dumps(entries))
     monkeypatch.setenv("REPLAY_STORE", str(path))
     monkeypatch.delenv("E2E_RECORD", raising=False)
+    monkeypatch.setenv("ALLOW_REPLAY", "1")
     p = NLToSQLPlanner(provider="replay")          # no key needed
     sql, m = p.generate_sql_with_metrics("how many?")
     assert sql == "SELECT 1" and m.provider == "replay" and m.prompt_tokens == 900
@@ -82,3 +83,11 @@ def test_no_recording_holds_a_key_or_rows():
     text = open(path, encoding="utf-8").read()
     for marker in ("sk-ant-", "AIza", "gsk_", "xai-", '"rows"'):
         assert marker not in text
+
+
+def test_replay_is_refused_without_an_explicit_opt_in(monkeypatch):
+    # PLANNER_PROVIDER=replay on a real deploy must not start a keyless,
+    # healthy-looking service that answers only recorded questions.
+    monkeypatch.delenv("ALLOW_REPLAY", raising=False)
+    with pytest.raises(SystemExit, match="ALLOW_REPLAY"):
+        NLToSQLPlanner(provider="replay")

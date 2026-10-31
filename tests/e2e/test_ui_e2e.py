@@ -48,7 +48,7 @@ def server(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("api")
     port = _free_port()
     env = {**os.environ,
-           "PLANNER_PROVIDER": "replay", "API_KEY": KEY, "QUERY_MODE": "graph",
+           "PLANNER_PROVIDER": "replay", "ALLOW_REPLAY": "1", "API_KEY": KEY, "QUERY_MODE": "graph",
            "PLANNER_MIN_INTERVAL_SEC": os.environ.get("PLANNER_MIN_INTERVAL_SEC", "0"),
            "TRACE_DB": str(tmp / "traces.sqlite"), "CHECKPOINT_DB": str(tmp / "cp.sqlite"),
            "APPROVALS_DB": str(tmp / "approvals.sqlite"), "AUDIT_LOG_DIR": str(tmp / "audit"),
@@ -160,5 +160,17 @@ def test_5_api_needs_the_key_and_traces_the_run(server):
     r = httpx.post(server + "/query", json={"question": ASK}, headers={"X-API-Key": KEY},
                    timeout=60).json()
     assert r["allowed"] and r["trace_id"]
+    # a missing critic recording would only make the critic `unavailable` (it
+    # fails open), so check its verdict came from a recording
+    assert r["critic"] == "approve", r.get("critic")
     t = httpx.get(f"{server}/traces/{r['trace_id']}", headers={"X-API-Key": KEY}).json()
     assert [s["name"] for s in t["spans"]][:2] == ["plan", "critic"]
+
+
+def test_6_every_recorded_critic_call_is_replayed(server):
+    # The denied question is planned and reviewed on every attempt: each critic
+    # verdict must be a recorded one, never `unavailable` from a ReplayMiss.
+    r = httpx.post(server + "/query", json={"question": DENY}, headers={"X-API-Key": KEY},
+                   timeout=60).json()
+    verdicts = [s.get("verdict") for s in r.get("trajectory") or [] if s.get("step") == "critic"]
+    assert verdicts and "unavailable" not in verdicts, verdicts

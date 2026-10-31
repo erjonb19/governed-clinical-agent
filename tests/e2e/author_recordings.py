@@ -64,6 +64,7 @@ def main():
     import tempfile
 
     before = set(replay.ReplayStore.from_env().entries)
+    os.environ.setdefault("ALLOW_REPLAY", "1")     # replay is fenced to opt-in runs
     planner = NLToSQLPlanner(provider="replay")
     planner._source = Scripted()
     rt = AgentRuntime()

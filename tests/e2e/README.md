@@ -16,7 +16,7 @@ RUN_E2E=1 pytest tests/e2e -q
 
 ## Recorded responses (`recordings/llm.json`)
 
-`test_ui_e2e.py` starts the API with `PLANNER_PROVIDER=replay` (`replay.py`).
+`test_ui_e2e.py` starts the API with `PLANNER_PROVIDER=replay` and `ALLOW_REPLAY=1` (`replay.py`; the provider refuses to start without that opt-in).
 Every plan and critic call is looked up by
 `sha256(role, sha256(system prompt), user text)`. The system prompt carries the
 schema, and the user text carries the question and any retry context.

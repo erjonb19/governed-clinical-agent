@@ -16,7 +16,7 @@ CI must not reach a provider, and a stale recording must not pass silently.
 
 Recording is a manual, local, one-off step (tests/e2e/README.md):
 
-    E2E_RECORD=1 REPLAY_SOURCE_PROVIDER=groq PLANNER_PROVIDER=replay ...
+    ALLOW_REPLAY=1 E2E_RECORD=1 REPLAY_SOURCE_PROVIDER=groq PLANNER_PROVIDER=replay ...
 
 Misses are then answered by the real provider and written to the store. A
 recording holds the response text (SQL or a critic verdict), the token counts

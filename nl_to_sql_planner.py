@@ -401,6 +401,12 @@ class NLToSQLPlanner:
     def __init__(self, provider: str = ACTIVE_PROVIDER):
         cfg = PROVIDERS[provider]
         if cfg.get("sdk") == "replay":
+            # Test-only. Without an explicit opt-in a deploy with
+            # PLANNER_PROVIDER=replay would start keyless, look healthy, and
+            # answer only the recorded questions. Refuse, like a missing key.
+            if os.environ.get("ALLOW_REPLAY") != "1":
+                raise SystemExit("PLANNER_PROVIDER=replay is for the E2E suite only; "
+                                 "set ALLOW_REPLAY=1 to use it")
             import replay
             self._sdk, self._model, self.provider = "replay", cfg["model"], provider
             self._replay = replay.ReplayStore.from_env()
