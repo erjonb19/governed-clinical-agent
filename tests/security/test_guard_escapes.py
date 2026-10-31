@@ -33,6 +33,10 @@ ESCAPES = {
     # second review
     "json_execute_serialized_sql runs a string": (
         "SELECT count(*) AS n FROM json_execute_serialized_sql(json_serialize_sql('SELECT * FROM bronze_patient'))"),
+    # third review
+    "json_serialize_plan binds a string": "SELECT json_serialize_plan('SELECT * FROM bronze_patient') AS p",
+    "json_serialize_plan with optimize": (
+        "SELECT json_serialize_plan('SELECT * FROM bronze_patient WHERE 1 = 0', optimize := true) AS p"),
     "WITH RECURSIVE with no UNION reads the real table": (
         "WITH RECURSIVE bronze_patient AS (SELECT * FROM bronze_patient) SELECT * FROM bronze_patient"),
     "WITH RECURSIVE: the anchor reads the real table": (

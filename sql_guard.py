@@ -114,7 +114,10 @@ class Decision:
 ALLOWED_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
 # Whole families of readers and introspection: denied wherever they appear.
 DENIED_PREFIXES = ("read_", "parquet_", "pragma_", "duckdb_", "sqlite_", "postgres_",
-                   "mysql_", "iceberg_", "delta_", "sniff_", "json_execute", "glob")
+                   "mysql_", "iceberg_", "delta_", "sniff_", "json_execute", "glob",
+                   # json_serialize_plan('<sql>') binds and optimises a string the
+                   # guard never parses (schema leak, file reach, a stats oracle)
+                   "json_serialize", "json_deserialize")
 
 
 def _with_of(node: exp.Expression):
