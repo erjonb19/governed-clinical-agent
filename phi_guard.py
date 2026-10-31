@@ -172,6 +172,16 @@ def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
     return False
 
 
+def _is_key(base: Optional[str]) -> bool:
+    """Is `base` ("table.column") a person or record key of a protected table,
+    passed through bare? Only such columns may be joined on (decision 3)."""
+    if not base or "." not in base:
+        return False
+    table, column = base.split(".", 1)
+    return table in PROTECTED and column.endswith("_id") and \
+        classify(table, column)[0] == IDENTIFIER
+
+
 def _banned_wrapper(col: exp.Expression, root: exp.Expression) -> Optional[str]:
     path = _path(col, root) or []
     for anc in path:
@@ -214,14 +224,44 @@ def _is_aggregate(select: exp.Select) -> bool:
     if select.args.get("group"):
         return True
     for proj in select.expressions:
-        for node in proj.walk():
-            if isinstance(node, (exp.Subquery, exp.Select)) and node is not proj:
-                continue
+        for node in _own_nodes(proj, exp.Expression):
             if is_agg(node) and not isinstance(node.parent, exp.Window) \
                     and not any(isinstance(a, exp.Window) for a in _ancestors(node, proj)):
                 return True
     having = select.args.get("having")
     return having is not None
+
+
+def _equal_components(select: exp.Select):
+    """Which column references are tied together by `a = b` in the JOIN ONs and
+    the WHERE (top-level AND only: an OR does not tie anything)."""
+    parent: dict = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            x = parent[x]
+        return x
+
+    def conjuncts(e):
+        if isinstance(e, exp.And):
+            yield from conjuncts(e.this)
+            yield from conjuncts(e.expression)
+        elif isinstance(e, exp.Paren):
+            yield from conjuncts(e.this)
+        elif e is not None:
+            yield e
+
+    clauses = [j.args.get("on") for j in (select.args.get("joins") or [])]
+    where = select.args.get("where")
+    clauses.append(where.this if where is not None else None)
+    for clause in clauses:
+        for c in conjuncts(clause):
+            if isinstance(c, exp.EQ) and isinstance(c.this, exp.Column) and \
+                    isinstance(c.expression, exp.Column) and c.this.table and c.expression.table:
+                a = f"{c.this.table}.{c.this.name}".lower()
+                b = f"{c.expression.table}.{c.expression.name}".lower()
+                parent[find(a)] = find(b)
+    return lambda a, b: find(a) == find(b)
 
 
 def _own_nodes(select: exp.Expression, kind):
@@ -401,7 +441,16 @@ class _Analysis:
         """The scopes that read this one: as a FROM source, or -- a subquery in a
         predicate -- its parent."""
         users = [s for s in self.scopes if any(v is scope for v in s.sources.values())]
-        return users or ([scope.parent] if scope.parent is not None else [])
+        if users:
+            return users
+        node = scope.expression.parent
+        if isinstance(node, exp.Subquery):
+            node = node.parent
+        # a semi-join (key IN (SELECT ...)) reads it as a set; a scalar subquery
+        # would hand one patient's row straight back, so it has no consumer
+        if isinstance(node, exp.In) and scope.parent is not None:
+            return [scope.parent]
+        return []
 
     def _per_patient_ok(self, scope: Scope, col: exp.Column, s: "Sens") -> bool:
         """Owner's decision 4 (2026-10-30): grouping BY PATIENT is allowed only
@@ -413,6 +462,8 @@ class _Analysis:
             return False                                   # the result itself
         if not (s.base or "").endswith(f".{PERSON_KEY}"):
             return False                                   # only the person key
+        if not self._person_group_refs(scope):
+            return False                                   # patient_id AND something
         return self._consumers_aggregate(scope)
 
     def _consumers_aggregate(self, scope: Scope) -> bool:
@@ -439,7 +490,38 @@ class _Analysis:
             if not (r.base or "").endswith(f".{PERSON_KEY}") or not inner.table:
                 return None
             refs.append(f"{inner.table}.{inner.name}".lower())
-        return refs or None
+        if not refs:
+            return None
+        # Every person source must be tied to a group key by equality: a source
+        # joined on anything else (a condition name, gender) puts other
+        # people's rows into each "one-patient" group.
+        keys = self._person_source(scope)[1] or []
+        linked = _equal_components(scope.expression)
+        for k in keys:
+            k = k.lower()
+            if k not in refs and not any(linked(k, r) for r in refs):
+                return None
+        return refs
+
+    def per_patient_outputs(self, scope: Scope) -> None:
+        """Decision 4: no patient-level value reaches the result. A consumer may
+        count, sum or average a per-patient scope's values, or group by them
+        (11+ people per group), but not pick one patient's out (MAX, ARG_MAX,
+        ANY_VALUE...) or collect them all (LIST, STRING_AGG...)."""
+        sel = scope.expression
+        if not isinstance(sel, exp.Select):
+            return
+        for alias, src in scope.sources.items():
+            if not (isinstance(src, Scope) and isinstance(src.expression, exp.Select)
+                    and _is_aggregate(src.expression) and self._person_group_refs(src)):
+                continue
+            for col in _own_nodes(sel, exp.Column):
+                if (col.table or "").lower() != alias.lower():
+                    continue
+                banned = _banned_wrapper(col, sel)
+                if banned:
+                    self.findings.append(f"a per-patient value {alias}.{col.name} inside {banned} "
+                                         f"returns one patient's data; use COUNT, SUM or AVG")
 
     # --- decision 3: no filtering on identifying columns ---
     def predicates(self, scope: Scope) -> None:
@@ -451,8 +533,15 @@ class _Analysis:
         filter); a key semi-join (patient_id IN (SELECT patient_id ...)); and
         IS [NOT] NULL, which tests presence, not value."""
         sel = scope.expression
+        joins = sel.args.get("joins") or []
+        if any((j.args.get("method") or "").upper() == "NATURAL" for j in joins) and \
+                self._person_source(scope)[0]:
+            # NATURAL joins on every shared name -- given_name included -- with no
+            # ON clause to check
+            self.findings.append("a NATURAL JOIN over patient data joins on columns it does "
+                                 "not name; use JOIN ... ON the key")
         clauses = [sel.args.get("where"), sel.args.get("having"), sel.args.get("qualify")]
-        clauses += [j.args.get("on") for j in (sel.args.get("joins") or [])]
+        clauses += [j.args.get("on") for j in joins]
         for clause in clauses:
             if clause is None:
                 continue
@@ -460,26 +549,56 @@ class _Analysis:
                 s = self.resolve(scope, col)
                 if s.cls == SAFE or reduced(col, clause, s.is_date):
                     continue
-                if s.cls == IDENTIFIER and self._key_join(scope, col):
+                if self._key_join(scope, col, s):
                     continue
-                if isinstance(col.parent, exp.Is):
-                    continue
+                if isinstance(col.parent, exp.Is) and isinstance(col.parent.expression, exp.Null) \
+                        and s.base:
+                    continue                    # presence of a real column, not its value
                 self.findings.append(f"{s.cls} {s.base or col.name} used to filter (WHERE / "
                                      f"HAVING / JOIN ON); filter on safe columns, or on the year")
+        # ORDER BY an identifying column sorts people by who they are: with a
+        # LIMIT it singles one out, without one it lines rows up per person
+        order = sel.args.get("order")
+        if order is not None:
+            aliases = {p.alias.lower(): p for p in sel.expressions if p.alias}
+            for col in _own_nodes(order, exp.Column):
+                if not col.table and (col.name or "").lower() in aliases:
+                    # ORDER BY an output alias: as sensitive as that output
+                    s = self.sens_of(scope, aliases[col.name.lower()])
+                    if s.cls != SAFE:
+                        self.findings.append(f"{s.cls} {s.base or col.name} used to ORDER BY")
+                    continue
+                s = self.resolve(scope, col)
+                if s.cls != SAFE and not reduced(col, order, s.is_date):
+                    self.findings.append(f"{s.cls} {s.base or col.name} used to ORDER BY")
 
-    def _key_join(self, scope: Scope, col: exp.Column) -> bool:
-        parent = col.parent
+    def _key_join(self, scope: Scope, col: exp.Column, s: "Sens") -> bool:
+        """A join, not a filter: a key of a protected table equated to another
+        such key, or tested against a set of them (key IN (SELECT key ...)).
+        A constant dressed as a key -- VALUES, a literal concatenated onto one,
+        IN (SELECT '<id>') -- is not a key, so it is a filter."""
+        if not _is_key(s.base):
+            return False
+        node, parent = col, col.parent
         while isinstance(parent, (exp.Cast, exp.TryCast, exp.Paren)):
-            parent = parent.parent
+            node, parent = parent, parent.parent
         if isinstance(parent, exp.EQ):
-            other = parent.expression if parent.this is col or col in parent.this.walk() \
-                else parent.this
+            other = parent.expression if parent.this is node else parent.this
             while isinstance(other, (exp.Cast, exp.TryCast, exp.Paren)):
                 other = other.this
-            return isinstance(other, exp.Column) and self.resolve(scope, other).cls == IDENTIFIER
-        if isinstance(parent, exp.In) and parent.args.get("query") is not None:
-            return parent.this is col
+            return isinstance(other, exp.Column) and _is_key(self.resolve(scope, other).base)
+        if isinstance(parent, exp.In) and parent.this is node and parent.args.get("query") is not None:
+            q = parent.args["query"]
+            q = q.this if isinstance(q, exp.Subquery) else q
+            sub_scope = next((x for x in self.scopes if x.expression is q), None)
+            return sub_scope is not None and self._selects_keys(sub_scope)
         return False
+
+    def _selects_keys(self, scope: Scope) -> bool:
+        if scope.union_scopes:
+            return all(self._selects_keys(u) for u in scope.union_scopes)
+        outs = self.outputs(scope)
+        return len(outs) == 1 and _is_key(outs[0][1].base)
 
     def person_rows(self, scope: Scope) -> tuple[bool, Optional[list]]:
         """Does this scope's output hold person-level rows, and if so which
@@ -555,7 +674,11 @@ class _Analysis:
         for agg in _own_nodes(sel, exp.Expression):
             if not is_agg(agg) or isinstance(agg.parent, exp.Window):
                 continue
-            if any(isinstance(n, (exp.Case, exp.If)) for n in agg.walk() if n is not agg):
+            conditional = isinstance(agg, exp.CountIf) or \
+                (isinstance(agg, exp.Anonymous) and (agg.name or "").lower().endswith("_if"))
+            if conditional or any(isinstance(n, (exp.Case, exp.If, exp.Predicate, exp.Is,
+                                                 exp.Like, exp.ILike, exp.Not, exp.Connector))
+                                  for n in agg.walk() if n is not agg):
                 self.findings.append(
                     f"a condition inside an aggregate ({agg.sql(dialect=DIALECT)[:50]}) over "
                     f"patient rows forms a subgroup that cannot be held to {MIN_CELL} people; "
@@ -619,6 +742,7 @@ class _Analysis:
                 self.small_cells(scope)
                 self.windows(scope)
                 self.predicates(scope)
+                self.per_patient_outputs(scope)
         root_scope = scopes[-1] if scopes else None
         if root_scope is not None:
             for name, sens in self.outputs(root_scope):
