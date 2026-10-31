@@ -336,12 +336,16 @@ class _Analysis:
         # A scalar subquery in the SELECT list returns a VALUE into this row --
         # correlated, it is a per-row lookup. Its output's sensitivity is this
         # projection's, unless reduced here like a column.
-        for sq in proj.find_all(exp.Subquery):
-            if any(isinstance(a, (exp.Subquery, exp.Select)) for a in _ancestors(sq, proj)):
-                continue
+        # A query nested in the projection returns a VALUE into this row:
+        # (SELECT ...), ARRAY(SELECT ...), or any function over one.
+        nested = [n for n in proj.find_all(exp.Subquery, exp.Select)
+                  if n is not proj and not any(isinstance(a, (exp.Subquery, exp.Select))
+                                               for a in _ancestors(n, proj))]
+        for sq in nested:
             if isinstance(sq.parent, exp.In):
                 continue                                  # x IN (SELECT ...): a filter
-            child = next((c for c in scope.subquery_scopes if c.expression is sq.this), None)
+            body = sq.this if isinstance(sq, exp.Subquery) else sq
+            child = next((c for c in scope.subquery_scopes if c.expression is body), None)
             outs = self.outputs(child) if child is not None else [("?", Sens(IDENTIFIER))]
             for _, s in outs:
                 if s.cls == SAFE or reduced(sq, proj, s.is_date):
@@ -659,7 +663,9 @@ def _trace(node) -> list[tuple[str, bool, str, bool]]:
             if isinstance(child.source, exp.Table) and child.source.name:
                 table = child.source.name.lower()
                 src_name = f"{table}.{column}"
-            if not isinstance(child.source, exp.Table) and \
+            if isinstance(child.source, exp.Placeholder) or child.expression.find(exp.Placeholder):
+                cls, is_date = IDENTIFIER, False        # lineage lost the trail: fail closed
+            elif not isinstance(child.source, exp.Table) and \
                     not any(True for _ in child.expression.find_all(exp.Column)):
                 cls, is_date = SAFE, False              # a constant or COUNT(*): no source
             elif table not in PROTECTED and table not in _PUBLIC_TABLES:
@@ -706,14 +712,26 @@ def check_output(decision: Any, columns: list[str], rows: list[dict]) -> None:
                 raise OutputRefused(f"output check: column {col!r} comes from {cls} {src}")
     for col in columns:
         for r in rows:
-            v = r.get(col)
-            if isinstance(v, (_dt.date, _dt.datetime)) and not isinstance(v, _dt.time):
-                raise OutputRefused(f"output check: column {col!r} holds dates with month or "
-                                    f"day precision")
-            if isinstance(v, str):
-                if _DATE_VALUE.match(v):
+            for v in _leaves(r.get(col)):     # lists, structs and maps hold values too
+                if isinstance(v, (_dt.date, _dt.datetime)) and not isinstance(v, _dt.time):
                     raise OutputRefused(f"output check: column {col!r} holds dates with month "
                                         f"or day precision")
-                if _ZIP_VALUE.match(v):
-                    raise OutputRefused(f"output check: column {col!r} holds values shaped like "
-                                        f"a zip code")
+                if isinstance(v, str):
+                    if _DATE_VALUE.match(v):
+                        raise OutputRefused(f"output check: column {col!r} holds dates with "
+                                            f"month or day precision")
+                    if _ZIP_VALUE.match(v):
+                        raise OutputRefused(f"output check: column {col!r} holds values shaped "
+                                            f"like a zip code")
+
+
+def _leaves(v):
+    """Every scalar inside a value, through lists, tuples, structs and maps."""
+    if isinstance(v, dict):
+        for x in list(v.keys()) + list(v.values()):
+            yield from _leaves(x)
+    elif isinstance(v, (list, tuple, set)):
+        for x in v:
+            yield from _leaves(x)
+    else:
+        yield v

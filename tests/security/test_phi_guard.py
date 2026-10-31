@@ -117,6 +117,16 @@ BLOCKED = {
         "SELECT t.gender, t.measure_name, avg(t.value_num) AS v, count(*) AS n FROM "
         "(SELECT patient_id || observation_id AS patient_id, gender, measure_name, value_num "
         "FROM gold_observation) t GROUP BY 1, 2"),
+    # --- fourth adversarial review ---
+    "ARRAY(subquery) through LATERAL": ("SELECT ARRAY(SELECT v FROM gold_patient p, "
+                                        "LATERAL (SELECT p.given_name AS v) l) AS a"),
+    "unnest of ARRAY through LATERAL": ("SELECT unnest(ARRAY(SELECT v FROM gold_patient p, "
+                                        "LATERAL (SELECT p.given_name AS v) l)) AS a"),
+    "a struct of identifiers in an ARRAY": (
+        "SELECT ARRAY(SELECT v FROM gold_patient p, LATERAL (SELECT {'i': p.patient_id, "
+        "'c': p.city} AS v) l) AS a"),
+    "ARRAY over a LATERAL CTE": ("WITH c AS (SELECT v FROM gold_patient p, LATERAL (SELECT "
+                                 "p.birth_date AS v) l) SELECT ARRAY(SELECT v FROM c) AS a"),
     "a fan-out hiding one source's key": (
         "SELECT t.gender, t.measure_name, avg(t.value_num) AS v FROM (SELECT p.patient_id, o.gender, "
         "o.measure_name, o.value_num FROM gold_observation o JOIN gold_patient p ON o.gender = p.gender) t "
@@ -346,4 +356,17 @@ def test_a_filtered_count_keeps_its_column_name(tool):
 def test_generator_table_functions_still_run(tool):
     r = tool.execute({"sql": "SELECT count(*) AS n FROM range(3)"})
     assert r.success and r.output["rows"] == [{"n": 3}]
+
+
+def test_the_value_check_looks_inside_lists_and_structs():
+    d = Decision(True, "allowed", phi_sql="SELECT gender AS g FROM gold_patient", phi_names=["g"])
+    for v in (["x", "2019-03-05"], {"k": "02134"}, [{"d": "1980-01-02"}]):
+        with pytest.raises(phi_guard.OutputRefused):
+            phi_guard.check_output(d, ["g"], [{"g": v}])
+    phi_guard.check_output(d, ["g"], [{"g": ["female", "male"]}])
+
+
+def test_an_array_over_grouped_results_still_runs(tool):
+    r = tool.execute({"sql": "SELECT ARRAY(SELECT gender FROM gold_patient GROUP BY gender) AS a"})
+    assert r.success, r.error
 
