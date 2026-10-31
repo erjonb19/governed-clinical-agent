@@ -437,6 +437,15 @@ def interpret_result(result: Any, sql: str) -> dict:
     }
 
 
+def _record_failed_call(exc: BaseException, question: str) -> None:
+    """Record the cost of a model call that completed but raised (a PlannerError
+    for a refusal, truncation or thinking-only answer carries `.metrics`): the
+    tokens were billed even though no SQL came back."""
+    m = getattr(exc, "metrics", None)
+    if m is not None:
+        cost_tracker.record(m.as_dict(), question=question)
+
+
 def _unanswerable(out: dict) -> Optional[str]:
     """Detect a planner refusal dressed up as a result row.
 
@@ -617,6 +626,7 @@ def query(request: Request, req: QueryRequest) -> dict:
                        completion_tokens=metrics.completion_tokens,
                        est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
         except Exception as e:
+            _record_failed_call(e, req.question)
             tracer.event("answer", outcome="planner_error")
             tracer.end_trace(tid, status="error", decided_by="planner_error")
             return {"allowed": False, "decided_by": "planner_error",
@@ -657,6 +667,7 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
                     cost_tracker.record(st["metrics"], question=req.question)
         except Exception:
             pass
+        _record_failed_call(e, req.question)   # the call that raised was billed too
         return {"allowed": False, "decided_by": "planner_error",
                 "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid}
     calls = [st["metrics"] for st in state.get("trajectory") or []

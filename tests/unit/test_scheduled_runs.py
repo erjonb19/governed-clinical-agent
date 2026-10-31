@@ -9,6 +9,7 @@ that schedules.yaml only names questions that are already eval cases.
 """
 
 import datetime as dt
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -312,3 +313,33 @@ def test_a_run_that_raises_is_charged_its_worst_case(store):
     assert results[0]["cost_usd"] == worst
     assert [r["status"] for r in results] == [sr.PROVIDER_ERROR, sr.SKIPPED]
 
+
+
+def test_an_open_issue_is_found_even_if_its_label_was_removed(tmp_path, monkeypatch):
+    # The review finding: issues were listed by label, so an open issue whose
+    # label was removed by hand was missed and the next failure opened a duplicate.
+    title = sr.ISSUE_PREFIX + "still-failing"
+    calls = []
+
+    def fake_gh(*args):
+        calls.append(args)
+        if args[:2] == ("issue", "list"):
+            assert "--label" not in args          # listed by title, not label
+            return json.dumps([{"number": 7, "title": title},       # label removed (oldest)
+                               {"number": 9, "title": title},       # a newer duplicate
+                               {"number": 3, "title": "unrelated"}])
+        return ""
+    monkeypatch.setattr(sr, "_gh", fake_gh)
+    summary = tmp_path / "s.json"
+    summary.write_text(json.dumps({"results": [_result("still-failing", sr.FAILED)]}))
+    sr.file_issues(str(summary))
+    acted = [a for a in calls if a[0] == "issue" and a[1] != "list"]
+    assert acted == [("issue", "comment", "7", "--body", acted[0][4])]   # no "create"
+
+
+def test_open_issues_by_title_ignores_other_issues_and_keeps_the_oldest():
+    p = sr.ISSUE_PREFIX
+    assert sr.open_issues_by_title([
+        {"number": 20, "title": p + "a"}, {"number": 4, "title": p + "a"},
+        {"number": 5, "title": "scheduled runs are great"}, {"number": 6, "title": p + "b"},
+    ]) == {p + "a": 4, p + "b": 6}
