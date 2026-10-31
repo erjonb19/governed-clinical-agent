@@ -856,3 +856,71 @@ def test_a_key_semi_join_through_a_cte_runs(tool):
                              "SELECT count(*) AS n FROM gold_patient p "
                              "WHERE p.patient_id IN (SELECT x.patient_id FROM x)"})
     assert r.success, r.error
+
+
+# --- tenth review (static, of the ninth-review fixes) ----------------------------
+# Each was ALLOWED on ff58099, ran on a toy table and passed check_output.
+
+TENTH_REVIEW_BYPASSES = {
+    # computed per row one scope down, then a "plain" aggregate outside
+    "CASE in a CTE, AVG outside": (
+        "WITH t AS (SELECT patient_id, CASE WHEN state = 'XX' THEN age_years END AS a "
+        "FROM gold_patient) SELECT avg(a) AS m FROM t"),
+    "CASE with a sentinel in a derived table, MIN outside": (
+        "SELECT min(a) AS m FROM (SELECT patient_id, CASE WHEN state = 'XX' THEN age_years "
+        "ELSE 999 END AS a FROM gold_patient) t"),
+    "a 0/1 flag in a derived table, SUM outside (a small count)": (
+        "SELECT sum(f) AS n FROM (SELECT patient_id, CAST(condition_name = 'X' AS INT) AS f "
+        "FROM gold_condition) t"),
+    "a struct in a derived table, MAX outside": (
+        "SELECT max(s) AS r FROM (SELECT patient_id, struct_pack(a := age_years, g := gender) AS s "
+        "FROM gold_patient) t"),
+    "unnest of a per-row list, AVG outside": (
+        "SELECT avg(x) AS m FROM (SELECT patient_id, unnest([CASE WHEN state = 'XX' THEN age_years "
+        "END]) AS x FROM gold_patient) t"),
+    "CASE in a CTE, grouped root": (
+        "WITH t AS (SELECT patient_id, gender, CASE WHEN state = 'XX' THEN age_years END AS a "
+        "FROM gold_patient) SELECT gender, avg(a) AS m FROM t GROUP BY gender"),
+    # the same through a per-patient group (decision 4)
+    "CASE around per-patient aggregates": (
+        "SELECT avg(f) AS m FROM (SELECT patient_id, CASE WHEN max(age_years) = 104 THEN "
+        "max(age_years) END AS f FROM gold_patient GROUP BY patient_id) t"),
+    # a FILTERed window aggregate escaped the window rule
+    "AVG FILTER OVER () in a source": (
+        "SELECT max(w) AS m FROM (SELECT patient_id, avg(age_years) FILTER (WHERE state = 'XX') "
+        "OVER () AS w FROM gold_patient) t"),
+    "COUNT FILTER OVER () in a source": (
+        "SELECT avg(w) AS m FROM (SELECT c.patient_id, count(*) FILTER (WHERE c.condition_name = 'X') "
+        "OVER () AS w FROM gold_condition c) t"),
+}
+
+
+@pytest.mark.parametrize("name", list(TENTH_REVIEW_BYPASSES))
+def test_tenth_review_bypasses_are_refused(name):
+    d = validate_query(TENTH_REVIEW_BYPASSES[name])
+    assert not d.allowed, f"{name}: {d.safe_sql}"
+    assert "PHI rule" in d.reason
+
+
+TENTH_REVIEW_ALLOWED = {
+    "per-patient counts averaged outside": (
+        "SELECT avg(c) AS a FROM (SELECT patient_id, count(*) AS c FROM gold_encounter "
+        "GROUP BY patient_id) t"),
+    "per-patient FILTERed count averaged outside": (
+        "SELECT avg(c) AS a FROM (SELECT patient_id, count(*) FILTER (WHERE condition_name = 'X') "
+        "AS c FROM gold_condition GROUP BY patient_id) t"),
+    "a day difference in a derived table, AVG outside": (
+        "SELECT avg(los) AS a FROM (SELECT patient_id, date_diff('day', CAST(start_date AS DATE), "
+        "CAST(end_date AS DATE)) AS los FROM gold_encounter) t"),
+    "a passthrough CTE, AVG outside": (
+        "WITH t AS (SELECT patient_id, age_years FROM gold_patient) SELECT avg(age_years) AS a FROM t"),
+    "an age bucket in a CTE, COUNT by bucket": (
+        "WITH t AS (SELECT patient_id, CASE WHEN age_years < 18 THEN 'child' ELSE 'adult' END AS b "
+        "FROM gold_patient) SELECT b, count(*) AS n FROM t GROUP BY b"),
+}
+
+
+@pytest.mark.parametrize("name", list(TENTH_REVIEW_ALLOWED))
+def test_tenth_review_legitimate_shapes_still_pass(name):
+    d = validate_query(TENTH_REVIEW_ALLOWED[name])
+    assert d.allowed, f"{name}: {d.reason}"

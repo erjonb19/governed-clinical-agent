@@ -321,6 +321,18 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   `EXISTS (SELECT c.patient_id ...)`. The live FHIR eval showed the planner
   writing `SUM(CASE WHEN ...)` for a rate, which the guard refuses. The FHIR
   notes now tell it to use `count(*) FILTER (WHERE ...)`.
+- **Tenth review (static, of the ninth-review fixes).** Three more were
+  closed, each pinned by tests that fail on the earlier code:
+  - computing per row one scope down -- a `CASE`, `floor`, `struct_pack`, a 0/1
+    flag or an `unnest` in a CTE or derived table -- and then a "plain" `AVG` /
+    `MIN` / `MAX` / `SUM` outside returned one person's value. Every output
+    now carries whether it was computed, through CTEs, derived tables, UNIONs
+    and per-patient groups, so "plain" means plain all the way down to the
+    table. A per-patient `count(*)` (FILTERed or not), a day difference, a year
+    and a passthrough stay plain.
+  - the same route through a per-patient group (`CASE` around `max(...)`).
+  - a FILTERed window aggregate (`avg(x) FILTER (WHERE ...) OVER ()`) escaped
+    the window rule.
   **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
   group) over a safe column return one person's value, such as the oldest age
   in a group of 11+. They are allowed, because one bank case uses `MAX`.

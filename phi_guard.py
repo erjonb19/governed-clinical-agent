@@ -247,14 +247,22 @@ _PATIENT_ROW_AGGS = _PER_PATIENT_AGGS | {
     "regr_sxy", "regr_syy", "count_if", "countif"}   # *_if is refused as conditional below
 
 
-def _plain_agg_arg(node: Optional[exp.Expression]) -> bool:
+def _plain_agg_arg(node: Optional[exp.Expression], col_ok=None) -> bool:
     """An argument an aggregate over patient rows may take: a column (cast or
     DISTINCT at most), *, a scalar literal, a date reduced to the year, or the
-    days between two date columns. Nothing computed (ninth review)."""
+    days between two date columns. Nothing computed (ninth review) -- and, with
+    `col_ok`, no column that was itself computed in a CTE or derived table one
+    scope down (tenth review: CASE in a CTE, then a 'plain' AVG outside)."""
+    if not _plain_shape(node):
+        return False
+    return col_ok is None or node is None or all(col_ok(c) for c in node.find_all(exp.Column))
+
+
+def _plain_shape(node: Optional[exp.Expression]) -> bool:
     while isinstance(node, (exp.Cast, exp.TryCast, exp.Paren, exp.Ordered)):
         node = node.this
     if isinstance(node, exp.Distinct):
-        return all(_plain_agg_arg(e) for e in node.expressions)
+        return all(_plain_shape(e) for e in node.expressions)
     if node is None or isinstance(node, (exp.Column, exp.Star, exp.Null, exp.Boolean)):
         return True
     if isinstance(node, exp.Literal):
@@ -401,6 +409,7 @@ class Sens:
     is_date: bool = False
     base: Optional[str] = None            # "table.column" when passed through raw
     ref: Optional[str] = None             # "alias.column" when a BARE column (or cast)
+    computed: bool = False                # derived per row: not a plain passthrough
 
     def worse(self, other: "Sens") -> "Sens":
         return other if _RANK[other.cls] > _RANK[self.cls] else self
@@ -507,8 +516,25 @@ class _Analysis:
             # carry the person key. Anything computed (patient_id || x) cannot.
             r = self.resolve(scope, inner)
             ref = f"{inner.table}.{inner.name}".lower() if inner.table else None
-            return Sens(worst.cls, worst.is_date, r.base, ref)
-        return Sens(worst.cls, worst.is_date, None, None)
+            return Sens(worst.cls, worst.is_date, r.base, ref, r.computed)
+        return Sens(worst.cls, worst.is_date, None, None, not self._plain_output(scope, inner))
+
+    def _col_plain(self, scope: Scope, col: exp.Column) -> bool:
+        return not self.resolve(scope, col).computed
+
+    def _plain_output(self, scope: Scope, node: exp.Expression) -> bool:
+        """Is this projection a plain value: a plain argument (as an aggregate
+        would take it), or an aggregate -- FILTERed at most -- of plain
+        arguments (a per-patient count)? Anything else is 'computed', and an
+        aggregate over it in an outer scope is refused like CASE inside one."""
+        ok = lambda c: self._col_plain(scope, c)
+        if _plain_agg_arg(node, ok):
+            return True
+        if isinstance(node, exp.Filter):
+            node = node.this
+        if is_agg(node) and not isinstance(node.parent, exp.Window):
+            return all(_plain_agg_arg(a, ok) for a in node.iter_expressions())
+        return False
 
     def outputs(self, scope: Scope) -> list[tuple[str, Sens]]:
         if id(scope) in self.memo:
@@ -522,10 +548,13 @@ class _Analysis:
                     if i < len(other):
                         sens = sens.worse(other[i][1])   # keeps the worse branch's source
                         bases.add(other[i][1].base)
+                computed = any(p[i][1].computed for p in parts if i < len(p))
                 if len(bases) > 1 and not all(_is_key(b) for b in bases):
                     # branches from different sources (a key UNION a constant) are
                     # no longer that key: keep the class, drop the lineage
-                    sens = Sens(sens.cls, sens.is_date, None, None)
+                    sens = Sens(sens.cls, sens.is_date, None, None, computed)
+                elif computed and not sens.computed:
+                    sens = Sens(sens.cls, sens.is_date, sens.base, sens.ref, True)
                 out.append((name, sens))
         elif isinstance(scope.expression, exp.Select):
             out = [(p.alias_or_name, self.sens_of(scope, p)) for p in scope.expression.selects]
@@ -951,7 +980,8 @@ class _Analysis:
                     "(a list, a record, or one person's value); use COUNT, SUM, AVG, MEDIAN "
                     "or another summary")
                 continue
-            bad = next((a for a in args if not _plain_agg_arg(a)), None)
+            bad = next((a for a in args
+                        if not _plain_agg_arg(a, lambda c: self._col_plain(scope, c))), None)
             if bad is not None:
                 # ninth review: anything computed inside an aggregate can single
                 # people out -- nullif/greatest carve a subgroup, floor(age/107)
@@ -997,7 +1027,8 @@ class _Analysis:
             # In a grouped scope a window runs over the groups, after the HAVING
             # that holds each to 11+ people (rank() OVER (ORDER BY count(*)) is a
             # ranking of groups, not of patients)
-            if reads_patients and is_agg(win.this) and not grouped:
+            fn = win.this.this if isinstance(win.this, exp.Filter) else win.this
+            if reads_patients and is_agg(fn) and not grouped:
                 self.findings.append(
                     f"a window aggregate ({win.this.sql(dialect=DIALECT)[:40]} OVER ...) over "
                     f"patient rows, whose groups cannot be held to {MIN_CELL} people; use GROUP BY")
