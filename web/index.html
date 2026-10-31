@@ -563,7 +563,9 @@ function renderAnswer(d){
     el.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ok=!!d.allowed;
-  const byGuard=d.decided_by==="guard"||d.decided_by==="policy";
+  // out of attempts because the guard denied every one is still the guard's refusal
+  const byGuard=d.decided_by==="guard"||d.decided_by==="policy"||
+    (d.decided_by==="exhausted"&&/sql_guard/.test(d.reason||"")&&!/critic:/.test(d.reason||""));
   const cls=ok?"":"deny";
   let h=`<div class="card"><div class="trust ${cls}">
       <span class="pill ${cls}">${ok?"Answered":"Refused"}</span>
