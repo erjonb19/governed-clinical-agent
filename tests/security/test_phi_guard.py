@@ -906,9 +906,6 @@ TENTH_REVIEW_ALLOWED = {
     "per-patient counts averaged outside": (
         "SELECT avg(c) AS a FROM (SELECT patient_id, count(*) AS c FROM gold_encounter "
         "GROUP BY patient_id) t"),
-    "per-patient FILTERed count averaged outside": (
-        "SELECT avg(c) AS a FROM (SELECT patient_id, count(*) FILTER (WHERE condition_name = 'X') "
-        "AS c FROM gold_condition GROUP BY patient_id) t"),
     "a day difference in a derived table, AVG outside": (
         "SELECT avg(los) AS a FROM (SELECT patient_id, date_diff('day', CAST(start_date AS DATE), "
         "CAST(end_date AS DATE)) AS los FROM gold_encounter) t"),
@@ -923,4 +920,63 @@ TENTH_REVIEW_ALLOWED = {
 @pytest.mark.parametrize("name", list(TENTH_REVIEW_ALLOWED))
 def test_tenth_review_legitimate_shapes_still_pass(name):
     d = validate_query(TENTH_REVIEW_ALLOWED[name])
+    assert d.allowed, f"{name}: {d.reason}"
+
+
+# --- eleventh review (static, of the tenth-review fixes) -------------------------
+# Each was ALLOWED on f32c8ea, ran on a toy table and passed check_output.
+
+ELEVENTH_REVIEW_BYPASSES = {
+    # a correlated table-function argument turns a person's value into a row count
+    "a named person's birth date as a range() row count": (
+        "SELECT count(*) - count(DISTINCT p.patient_id) + 1 AS d FROM gold_patient p, "
+        "range(CASE WHEN p.given_name = 'G5' AND p.family_name = 'F5' THEN "
+        "date_diff('day', DATE '1950-01-01', CAST(p.birth_date AS DATE)) ELSE 1 END) AS r(x)"),
+    "a zip as a generate_series() row count": (
+        "SELECT count(*) AS n FROM gold_patient p, generate_series(1, CASE WHEN "
+        "p.patient_id = 'p5' THEN CAST(p.postal_code AS INTEGER) ELSE 1 END) AS g(x)"),
+    "an uncorrelated-looking column argument": (
+        "SELECT count(*) AS n FROM gold_condition c, range(c.age_at_onset) AS r(x)"),
+    # a FILTER inside a per-patient group was never gated
+    "per-patient AVG FILTER, averaged outside": (
+        "SELECT avg(a) AS v FROM (SELECT patient_id, avg(age_at_onset) FILTER "
+        "(WHERE condition_name = 'X') AS a FROM gold_condition GROUP BY patient_id) t"),
+    "per-patient COUNT FILTER, summed outside (a small count)": (
+        "SELECT sum(n) AS v FROM (SELECT patient_id, count(*) FILTER "
+        "(WHERE condition_name = 'X') AS n FROM gold_condition GROUP BY patient_id) t"),
+    # a LEFT JOIN inside a per-patient group keeps everyone, values from a few
+    "LEFT JOIN on a rare condition inside a per-patient group": (
+        "SELECT avg(t.a) AS v FROM (SELECT p.patient_id, avg(c.age_at_onset) AS a FROM gold_patient p "
+        "LEFT JOIN gold_condition c ON c.patient_id = p.patient_id AND c.condition_name = 'X' "
+        "GROUP BY p.patient_id) t"),
+    "LEFT JOIN to a filtered derived table inside a per-patient group": (
+        "SELECT avg(t.a) AS v FROM (SELECT p.patient_id, avg(c.age_at_onset) AS a FROM gold_patient p "
+        "LEFT JOIN (SELECT patient_id, age_at_onset FROM gold_condition WHERE condition_name = 'X') c "
+        "ON c.patient_id = p.patient_id GROUP BY p.patient_id) t"),
+}
+
+
+@pytest.mark.parametrize("name", list(ELEVENTH_REVIEW_BYPASSES))
+def test_eleventh_review_bypasses_are_refused(name):
+    d = validate_query(ELEVENTH_REVIEW_BYPASSES[name])
+    assert not d.allowed, f"{name}: {d.safe_sql}"
+    assert "PHI rule" in d.reason
+
+
+ELEVENTH_REVIEW_ALLOWED = {
+    "a constant range() still runs": "SELECT count(*) AS n FROM range(0, 100) r(i)",
+    "readmission rate with FILTER (WHERE b.key IS NOT NULL)": (
+        "SELECT count(DISTINCT a.encounter_id) FILTER (WHERE b.encounter_id IS NOT NULL) * 1.0 / "
+        "count(DISTINCT a.encounter_id) AS rate FROM gold_encounter a LEFT JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "AND b.start_date > a.end_date AND b.start_date <= a.end_date + INTERVAL 30 DAY"),
+    "per-patient counts with an inner join, averaged outside": (
+        "SELECT avg(t.n) AS v FROM (SELECT p.patient_id, count(*) AS n FROM gold_patient p "
+        "JOIN gold_condition c ON c.patient_id = p.patient_id GROUP BY p.patient_id) t"),
+}
+
+
+@pytest.mark.parametrize("name", list(ELEVENTH_REVIEW_ALLOWED))
+def test_eleventh_review_legitimate_shapes_still_pass(name):
+    d = validate_query(ELEVENTH_REVIEW_ALLOWED[name])
     assert d.allowed, f"{name}: {d.reason}"

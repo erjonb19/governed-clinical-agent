@@ -333,6 +333,23 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   - the same route through a per-patient group (`CASE` around `max(...)`).
   - a FILTERed window aggregate (`avg(x) FILTER (WHERE ...) OVER ()`) escaped
     the window rule.
+- **Eleventh review (static, of the tenth-review fixes).** Three more were
+  closed, each pinned by tests that fail on the earlier code:
+  - **(critical)** a column inside a FROM table function's arguments
+    (`range(CASE WHEN given_name = ... THEN date_diff('day', DATE '1950-01-01',
+    birth_date) ELSE 1 END)`) turned one named person's birth date or zip into
+    a `count(*)` that no column lineage sees. Table-function arguments on
+    patient data may now hold constants only.
+  - a FILTERed aggregate inside a per-patient group was never gated, so the
+    outer aggregate returned a cohort under 11. A FILTERed aggregate is now a
+    computed value: it may be returned, not aggregated again. This reverses a
+    tenth-review "allowed" shape that turned out to be this leak.
+  - a LEFT JOIN inside a per-patient group kept every patient (so the outer
+    HAVING counted them all) while the values came from the few it matched.
+    Outer joins are refused inside per-patient groups.
+
+  One false refusal was fixed: `FILTER (WHERE b.key IS NOT NULL)`, a presence
+  test, for the readmission rate.
   **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
   group) over a safe column return one person's value, such as the oldest age
   in a group of 11+. They are allowed, because one bank case uses `MAX`.

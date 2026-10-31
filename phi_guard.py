@@ -480,6 +480,8 @@ class _Analysis:
             if s.cls == SAFE:
                 continue
             via = side_channel(col, proj)
+            if via == "an aggregate FILTER" and s.base and isinstance(col.parent, exp.Is)                     and isinstance(col.parent.expression, exp.Null):
+                continue            # presence, not value; the FILTER is gated to 11 people
             if via:
                 self.findings.append(f"{s.cls} {s.base or col.name} used in {via}")
                 continue
@@ -530,8 +532,9 @@ class _Analysis:
         ok = lambda c: self._col_plain(scope, c)
         if _plain_agg_arg(node, ok):
             return True
-        if isinstance(node, exp.Filter):
-            node = node.this
+        # (a FILTERed aggregate is NOT plain: in a per-patient group it keeps
+        # only some patients' values, and the outer aggregate's 11-person
+        # HAVING counts all of them -- eleventh review)
         if is_agg(node) and not isinstance(node.parent, exp.Window):
             return all(_plain_agg_arg(a, ok) for a in node.iter_expressions())
         return False
@@ -610,6 +613,14 @@ class _Analysis:
             return False                                   # only the person key
         if not self._person_group_refs(scope):
             return False                                   # patient_id AND something
+        joins = scope.expression.args.get("joins") or []
+        if any((j.args.get("side") or "").upper() in ("LEFT", "RIGHT", "FULL") for j in joins):
+            # eleventh review: the outer side keeps every patient's row (so the
+            # outer HAVING counts them all) while the values come only from the
+            # few the ON clause matched
+            self.findings.append("an outer join inside a per-patient group lets a few "
+                                 "patients' values pass as everyone's; use an inner join")
+            return True
         return self._consumers_aggregate(scope)
 
     def _consumers_aggregate(self, scope: Scope) -> bool:
@@ -1064,6 +1075,13 @@ class _Analysis:
         for t in self.root.find_all(exp.Table):
             if isinstance(t.this, exp.Func) and t.this.find(exp.Select):
                 self.findings.append("a query as a table function's argument")
+                break
+            if isinstance(t.this, exp.Func) and t.this.find(exp.Column):
+                # eleventh review: range(<expression over a patient's columns>)
+                # turns one person's value into a ROW COUNT, which no column
+                # lineage sees (a birth date or a zip came out as count(*))
+                self.findings.append("a column inside a table function's arguments; use "
+                                     "constants, e.g. range(0, 100)")
                 break
         scopes = list(traverse_scope(self.root))
         self.scopes = scopes
