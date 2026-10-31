@@ -319,6 +319,23 @@ Notes:
   - condition_name / measure_name are free-text displays: match them exactly as
     listed above, or use LIKE for partial matches.
   - Dates are ISO strings; CAST to DATE for date arithmetic.
+  - Patient privacy rules (enforced; a query that breaks one is refused):
+    return aggregates (counts, averages, rates), never patient rows, names, IDs,
+    cities, zips or dates; dates only as a year, e.g.
+    YEAR(CAST(birth_date AS DATE)), or compared / subtracted between TWO date
+    columns, e.g. date_diff('day', CAST(a.end_date AS DATE),
+    CAST(b.start_date AS DATE)) <= 30 -- never against a date literal; filter
+    and sort on safe columns, the year or age_years, never on names, IDs,
+    places or full dates (joining on patient_id / encounter_id is fine); per-patient
+    figures go in a subquery grouped by patient_id that the outer query
+    COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
+    Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV of a plain
+    column, never LIST, ARRAY_AGG, STRING_AGG or ARG_MAX, and never a CASE,
+    NULLIF or other expression inside the aggregate: for a share or a
+    conditional count write count(*) FILTER (WHERE ...) / count(*), not
+    SUM(CASE WHEN ...). A subquery in SELECT or WHERE must
+    aggregate too, except patient_id IN (SELECT patient_id ...) or EXISTS
+    correlated on patient_id.
 """
 
 SCHEMA_DOC_HOSPITAL = """\

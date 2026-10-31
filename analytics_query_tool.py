@@ -25,6 +25,7 @@ from typing import Any, Dict
 import duckdb
 
 from src.tools.base import BaseTool, ToolResult
+import phi_guard
 from sql_guard import validate_query
 
 
@@ -217,6 +218,25 @@ class AnalyticsQueryTool(BaseTool):
                 cols = [d[0] for d in cur.description] if cur.description else []
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
+            # The PHI output check (phi_guard.py): trace every result column to
+            # its sources and refuse PHI however it was renamed, and refuse
+            # month/day dates and zip-shaped values. The refusal names the
+            # column and the rule, never a value -- it reaches the audit log.
+            phi_note = None
+            if decision.phi_sql:
+                try:
+                    phi_guard.check_output(decision, cols, rows)
+                except phi_guard.OutputRefused as refusal:
+                    return ToolResult(success=False,
+                                      output={"safe_sql": decision.safe_sql, "backend": backend},
+                                      error=f"DENIED by sql_guard: {refusal}")
+                if decision.phi_suppressed:
+                    phi_note = (f"groups of fewer than {phi_guard.MIN_CELL} people are not "
+                                f"shown (CMS small-cell rule)")
+                if decision.phi_aggregate_root and not rows:
+                    phi_note = (f"suppressed: fewer than {phi_guard.MIN_CELL} people match, so "
+                                f"the number is not shown (CMS small-cell rule)")
+
             # Record real rows for groundedness verification (before redaction).
             query_id = self._ledger.record(cols, rows) if self._ledger is not None else None
 
@@ -230,6 +250,7 @@ class AnalyticsQueryTool(BaseTool):
                     "row_count": len(rows),
                     "columns": cols,
                     "rows": rows[: self._row_cap],
+                    **({"phi_note": phi_note} if phi_note else {}),
                 },
             )
         except Exception as e:

@@ -1,0 +1,101 @@
+# phi_columns.yaml -- what each column of the FHIR Gold tables may reveal.
+#
+# Read by phi_guard.py, the check sql_guard runs on every query (owner's
+# decision, 2026-10-30; PLAN v2 §0.4). Labels follow HIPAA Safe Harbor:
+#
+#   identifier         names, patient and record IDs, phone, email, address
+#   quasi_identifier   any geography smaller than a state (city, county,
+#                      postal code); any date more specific than the year.
+#                      Dates are written {class: quasi_identifier, date: true}:
+#                      they may be returned reduced to the year, nothing finer.
+#   safe               may be returned at row level
+#
+# DEFAULT DENY: a column of a table listed here that has no label -- including
+# one added to the database later -- is treated as an identifier.
+#
+# The hospital tables (gold_hospital_profile and friends) are public CMS
+# facility data and are deliberately NOT listed: they are not about people.
+
+person_key: patient_id   # counted for the small-cell rule (groups of 11+ people)
+min_cell_size: 11        # CMS small-cell suppression
+
+tables:
+  gold_patient:
+    patient_id: identifier
+    given_name: identifier
+    family_name: identifier
+    gender: safe
+    birth_date: {class: quasi_identifier, date: true}
+    is_deceased: safe
+    marital_status: safe
+    city: quasi_identifier
+    state: safe
+    postal_code: quasi_identifier
+    age_years: safe              # whole years
+
+  gold_encounter:
+    encounter_id: identifier
+    patient_id: identifier
+    gender: safe
+    state: safe
+    class_code: safe
+    encounter_type: safe
+    start_date: {class: quasi_identifier, date: true}
+    end_date: {class: quasi_identifier, date: true}
+    length_of_stay_days: safe    # a duration, not a date
+    age_at_encounter: safe       # whole years
+
+  gold_condition:
+    condition_id: identifier
+    patient_id: identifier
+    encounter_id: identifier
+    code_system: safe
+    code: safe
+    condition_name: safe
+    clinical_status: safe
+    onset_date: {class: quasi_identifier, date: true}
+    abatement_date: {class: quasi_identifier, date: true}
+    is_active: safe
+    gender: safe
+    state: safe
+    age_at_onset: safe           # whole years
+
+  gold_observation:
+    observation_id: identifier
+    patient_id: identifier
+    encounter_id: identifier
+    category: safe
+    code_system: safe
+    code: safe
+    measure_name: safe
+    value_num: safe
+    value_unit: safe
+    effective_date: {class: quasi_identifier, date: true}
+    gender: safe
+    state: safe
+    age_at_observation: safe     # whole years
+
+  gold_procedure:
+    procedure_id: identifier
+    patient_id: identifier
+    encounter_id: identifier
+    code_system: safe
+    code: safe
+    procedure_name: safe
+    status: safe
+    performed_date: {class: quasi_identifier, date: true}
+    gender: safe
+    state: safe
+
+  gold_medication:
+    medication_request_id: identifier
+    patient_id: identifier
+    encounter_id: identifier
+    code_system: safe
+    code: safe
+    medication_name: safe
+    status: safe
+    authored_date: {class: quasi_identifier, date: true}
+    dosage_text: safe
+    gender: safe
+    state: safe

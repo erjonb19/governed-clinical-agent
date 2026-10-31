@@ -108,6 +108,12 @@ class Decision:
     reason: str
     safe_sql: Optional[str] = None
     findings: list = field(default_factory=list)
+    # set when the query reads protected patient tables (phi_guard.py): the
+    # analysed original query and its result columns, for the output check
+    phi_sql: Optional[str] = None
+    phi_names: list = field(default_factory=list)
+    phi_aggregate_root: bool = False
+    phi_suppressed: int = 0               # aggregates given the 11-person HAVING
 
 
 # Row generators: the only functions allowed as a FROM source (step 4a).
@@ -256,7 +262,19 @@ def validate_query(sql: str,
             findings=sorted(set(bad_funcs)),
         )
 
-    # 5. Row cap. Add a LIMIT if missing, clamp if too high.
+    # 5. PHI (phi_guard.py, owner's decision 2026-10-30): on the FHIR patient
+    #    tables, identifiers and quasi-identifiers may not be returned at row
+    #    level, identifiers may not be grouped by or wrapped in MIN/MAX/LIST..,
+    #    dates only to the year, and groups under 11 people are suppressed
+    #    (the query is rewritten with HAVING). Default deny. Public CMS hospital
+    #    tables are not touched by this step.
+    import phi_guard
+    phi = phi_guard.check(tree)
+    if not phi.allowed:
+        return Decision(False, phi.reason, findings=phi.findings)
+    tree = phi.tree
+
+    # 6. Row cap. Add a LIMIT if missing, clamp if too high.
     if isinstance(tree, exp.Select):
         limit = tree.args.get("limit")
         if limit is None:
@@ -277,7 +295,14 @@ def validate_query(sql: str,
         note = "non-simple SELECT, row cap enforced at DB layer"
 
     safe_sql = tree.sql(dialect=DIALECT)
-    return Decision(True, f"allowed ({note})", safe_sql=safe_sql)
+    if phi.protected:
+        note += (f"; PHI rules applied, {phi.suppressed_scopes} aggregate(s) suppress groups "
+                 f"under {phi_guard.MIN_CELL} people")
+    return Decision(True, f"allowed ({note})", safe_sql=safe_sql,
+                    phi_sql=phi.analysed_sql if phi.protected else None,
+                    phi_names=phi.analysed_names if phi.protected else [],
+                    phi_aggregate_root=phi.aggregate_root,
+                    phi_suppressed=phi.suppressed_scopes)
 
 
 if __name__ == "__main__":

@@ -202,8 +202,11 @@ def test_an_allowed_query_returns_rows_as_json():
 @needs_gold
 def test_row_cap_is_applied_without_being_asked_for():
     ds = M.available_datasets()[0]
-    table = "gold_hospital_profile" if ds == "hospital" else "gold_patient"
-    payload = json.loads(M.query_analytics(f"SELECT * FROM {table}", ds))
+    # FHIR results are aggregate-only (owner's decision 1, 2026-10-31), so on
+    # that dataset the uncapped query is a grouped one
+    sql = ("SELECT * FROM gold_hospital_profile" if ds == "hospital" else
+           "SELECT condition_name, count(*) AS n FROM gold_condition GROUP BY condition_name")
+    payload = json.loads(M.query_analytics(sql, ds))
     assert payload["row_count"] <= 1000
     assert "LIMIT" in payload["sql_executed"].upper()
 

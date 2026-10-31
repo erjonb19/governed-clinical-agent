@@ -31,12 +31,15 @@ from analytics_query_tool import AnalyticsQueryTool
 def gold(tmp_path):
     """A tiny two-dataset Gold: one to lock, one that must survive."""
     paths = {}
+    # gold_patient is a PHI-protected table (phi_columns.yaml): a count over it
+    # needs a patient_id to apply the 11-person small-cell rule, and at least
+    # 11 people to be shown at all.
     for name, table, n in (("hospital", "gold_hospital_profile", 3),
-                           ("fhir", "gold_patient", 5)):
+                           ("fhir", "gold_patient", 12)):
         p = str(tmp_path / f"{name}.duckdb")
         con = duckdb.connect(p)
         con.execute(f"CREATE TABLE {table} AS "
-                    f"SELECT i AS id, 'x' AS label FROM range({n}) t(i)")
+                    f"SELECT i AS id, 'p' || i AS patient_id, 'x' AS label FROM range({n}) t(i)")
         con.close()
         paths[name] = p
     return paths
@@ -144,7 +147,7 @@ def test_other_datasets_survive_an_unopenable_primary(unopenable, gold):
     tool = AnalyticsQueryTool(db_path=unopenable, seed_demo=False, db_paths=gold)
     assert sorted(tool.datasets()) == ["fhir", "hospital"]
     r = _count(tool, "gold_patient", "fhir")
-    assert r.success and r.output["rows"] == [{"n": 5}]
+    assert r.success and r.output["rows"] == [{"n": 12}]
 
 
 def test_a_healthy_primary_is_unaffected(gold):
@@ -153,4 +156,4 @@ def test_a_healthy_primary_is_unaffected(gold):
     assert tool.backends()["local_db_error"] is None
     assert sorted(tool.datasets()) == ["fhir", "hospital"]
     r = _count(tool, "gold_patient", "fhir")
-    assert r.success and r.output["rows"] == [{"n": 5}]
+    assert r.success and r.output["rows"] == [{"n": 12}]

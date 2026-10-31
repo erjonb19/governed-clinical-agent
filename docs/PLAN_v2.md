@@ -131,6 +131,234 @@ completed routed run was correct. **The critic does not lower accuracy on the
 banks, so it routes (the default).** If the Gemini confirmation shows
 otherwise, `CRITIC_ROUTING=0` is the §10 fallback.
 
+### 0.4 Decision: the guard protects patient-level data (owner, 2026-10-30)
+
+PR 5's adversarial case `adv_phi_quasi_ids` showed that the guard allowed a
+row-level dump of `patient_id, birth_date, postal_code` from `gold_patient`, and
+`gold_patient` also carries `given_name` and `family_name`. The owner authorised
+one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
+
+- **Classification.** `phi_columns.yaml` labels every column of the six FHIR
+  Gold tables `identifier`, `quasi_identifier` or `safe`, following HIPAA Safe
+  Harbor. Identifiers are names and patient or record IDs. Quasi-identifiers are
+  geography below a state (city, postal code) and every date finer than the
+  year. **An unlabelled column is an identifier.** The public CMS hospital
+  tables are not listed and are unaffected.
+- **One check, every path.** `phi_guard.check` runs inside
+  `sql_guard.validate_query`. `/query`, `/raw-sql`, the approval flow and MCP
+  over stdio and HTTP all reach it through `AnalyticsQueryTool`, and each path
+  has a test.
+- **Row level.** A labelled column reaches a result only reduced: inside
+  `COUNT`, or, for a date, reduced to the year. It is checked through joins,
+  subqueries, CTEs, UNION, windows, aliases, casts, string functions and `*`.
+- **Aggregates.** An identifier is never a `GROUP BY` key, and never inside
+  MIN, MAX, ANY_VALUE, FIRST, LAST, LIST/ARRAY_AGG or STRING_AGG (or similar
+  functions).
+- **Small cells.** Every aggregate over patient rows is rewritten with
+  `HAVING count(DISTINCT patient_id) >= 11` (the CMS small-cell rule). An
+  aggregate whose patients cannot be counted is refused.
+- **Second check on the output.** `phi_guard.check_output` traces every result
+  column to its sources with sqlglot's lineage, and refuses PHI under any name.
+  It also refuses month/day dates and zip-shaped values. Refusals name the
+  column and the rule, never a value, and land in the audit log.
+- **Eval impact (stopped for the owner, then rewritten on the owner's
+  decision).** Seven of the 28 FHIR cases asked for exactly what is now
+  refused. On the owner's decision (2026-10-30) each was rewritten to keep its
+  intent at a safe level: years or whole ages instead of dates, counts or
+  aggregates instead of patient rows. Each expected answer was recomputed on the
+  raw backend and cross-checked by a second, differently written query. No rule
+  was loosened.
+
+  | Old case | Why it failed | New case |
+  |---|---|---|
+  | `f3_oldest_patients` (patient_id of the 5 oldest) | identifiers | `f3_patients_90_plus`: patients aged 90+ (53) |
+  | `f4_patients_most_encounters` (patient_id, top 5) | identifiers | `f4_avg_encounters_per_patient`: 39.7 |
+  | `f5_condition_burden_top5` (patient_id, top 5) | identifiers | `f5_condition_burden_15plus`: patients with 15+ distinct active conditions (19) |
+  | `f2_count_dialysis` | 5 people | `f2_count_chemoradiation`: same shape, 37 people |
+  | `f4_dialysis_and_epogen` | 5 people | `f4_chemoradiation_and_cisplatin`: same shape, 21 people |
+  | `f3_top_medications` | top item (Epogen) is 5 people | same id, ranked among medications with 11+ patients |
+  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients |
+
+  The dialysis cases have no safe level: 5 people is under the floor at any
+  grain. So they keep their shape and change subject (agreed by the owner,
+  2026-10-31). A test
+  (`test_every_fhir_eval_answer_is_reachable_through_the_guard`) now pins
+  that every FHIR reference answer comes back through the guard unchanged and
+  unsuppressed.
+  The hospital bank is unchanged (42/42 reference queries identical).
+- **Hardened after adversarial review.** The first version was bypassed on the
+  real data four ways, all now closed and each pinned by a test:
+  - a correlated scalar subquery in the SELECT list (returned names, IDs and
+    dates);
+  - YEAR() around date arithmetic (leaked month and day);
+  - COUNT of a CASE, or FILTER (WHERE …), on identifying columns (lookups and
+    small counts);
+  - window aggregates over patient rows (unsuppressed groups, and QUALIFY used
+    to single people out).
+
+  The output check now fails closed on a lineage leaf it cannot place.
+- **Filters and per-patient grouping (owner's decisions 3 and 4,
+  2026-10-30).**
+  - **Filters.** An identifier or quasi-identifier may not be used to filter in
+    WHERE, HAVING, QUALIFY or JOIN ON, at any level, including subqueries.
+    This blocks `WHERE given_name = …`, `WHERE postal_code LIKE '02%'`, an exact
+    or month date, and `JOIN … ON a.city = b.city`. Still allowed:
+    - the year, or age in whole years;
+    - a key equality join (`c.patient_id = p.patient_id`);
+    - a key semi-join (`patient_id IN (SELECT patient_id …)`);
+    - `IS [NOT] NULL`.
+  - **Per-patient grouping.** `GROUP BY patient_id` is allowed only in a
+    subquery or CTE whose every consumer aggregates over it. The one-patient
+    inner groups are exempt from the 11-person `HAVING`; the outer aggregate
+    carries it on the patient key, so the result still covers 11+ people.
+    Passing `patient_id` through, re-grouping by it, or leaving the per-patient
+    rows unaggregated is refused. Each of these is pinned by a test.
+- **Fifth adversarial review (of decisions 3 and 4).** Nine bypasses were
+  found and are now closed, each pinned by a test that fails on the earlier
+  code:
+  - a constant passed off as a key: `IN (SELECT '<id>')`, a UNION that slips
+    one in, `VALUES`, or a literal concatenated onto a key. A key join now
+    needs a bare key of a protected table on both sides.
+  - an identity test hidden in a derived flag and checked with `IS TRUE` or
+    `IS NULL`. `IS NULL` is allowed only on a bare protected column.
+  - `NATURAL JOIN`, which has no ON clause to check.
+  - `ORDER BY` an identifying column, which singles a person out with LIMIT.
+  - "per-patient" groups that were not one patient: a source joined on a safe
+    column put the whole population into each group. Now every person source
+    must be equated to the group key.
+  - a per-patient subquery used as a scalar, which returned one patient's row.
+  - `LIST`, `ARG_MAX` or `MAX` over per-patient values.
+  - a conditional hidden as a boolean (`sum(CAST(x = 'y' AS INT))`,
+    `count_if`).
+  - `GROUP BY patient_id, gender` inside, which is now refused with a reason
+    rather than silently returning nothing.
+- **Sixth adversarial review.** Two more were closed, each with tests that fail
+  on the earlier code:
+  - a nested query outside the SELECT list (in WHERE, HAVING, ON, a nested
+    LIMIT/OFFSET, or a `range()` / `generate_series()` argument) carried one
+    patient's identifier into the outer query as a number. Such a query may
+    now return only safe values; a query inside LIMIT/OFFSET or a table
+    function's arguments is refused outright.
+  - quantiles, `median`, `bit_or` and similar over per-patient values picked
+    out one patient's value. Only COUNT, SUM, AVG, STDDEV and VARIANCE are
+    now allowed over them (an allowlist).
+- **Seventh review (static, `validate_query` only).** Two more closed:
+  - a constant on the LEFT of a key IN-set (`'<id>' IN (SELECT patient_id ...
+    WHERE <diagnosis>)`) asked about one person; a key IN-set now needs a key
+    on the left too.
+  - a constant smuggled into a UNION / INTERSECT branch inherited the real
+    key's lineage; a set operation keeps it only if every branch is a key.
+  `var_pop` / `variance_pop` over per-patient values is now allowed (it was a
+  false refusal).
+- **Owner's decisions 1–3 (2026-10-31).**
+  1. **Aggregate-only.** On the FHIR tables every result must be an
+     aggregate; each row covers 11+ people by the small-cell rule. Row-level
+     results are refused even of safe columns: a `UNION` branch, `DISTINCT`,
+     or rows of a rare cohort through a key semi-join. Results over
+     already-grouped data, such as a share-of-total window over a grouped
+     CTE, still pass. The hospital tables are unchanged. No FHIR eval case
+     returned rows, so none needed the owner.
+  2. **Dates, narrowed.** These are now allowed when only an aggregate leaves
+     the query:
+     - comparisons between two date columns (`b.start > a.end`,
+       `BETWEEN a.end AND a.end + INTERVAL 30 DAY`);
+     - differences in days between two date columns (`date_diff('day', a, b)`,
+       `a - b`);
+     - 30-day windows built from those.
+
+     Still refused:
+     - a date literal more specific than the year (`>= DATE '2020-01-01'`, a
+       range of literals);
+     - a date against `current_date`;
+     - a difference between a date and a constant, including one hidden in a
+       CTE, which would read a birth date back to the day;
+     - month or day functions;
+     - any date value in the output.
+
+     Readmission self-joins may also compare two record keys with `<>`
+     ("another encounter"). Tests cover the 30-day readmission shapes
+     (allowed) and exact-date filters (refused).
+  3. **Dialysis cases.** Replacing them with chemotherapy with radiation is
+     agreed.
+- **Eighth review (static, `validate_query` only, of decisions 1 and 2).** Four
+  bypasses were closed, each pinned by tests that fail on the earlier code:
+  - a query nested in an expression -- a scalar subquery, `ARRAY(SELECT ...)`,
+    `EXISTS`, a value `IN`-set -- handed patient rows to the outer query
+    unaggregated (the aggregate-only rule looked at the root only). Every such
+    query must now aggregate too. Still allowed: the key semi-join
+    `patient_id IN (SELECT patient_id ...)` and an `EXISTS` correlated on the
+    patient key, whose outer query aggregates the patients they select.
+  - `LIST`, `ARRAY_AGG`, `STRING_AGG`, `HISTOGRAM` and `ARG_MAX` over safe
+    columns packed each member's record into an 11+ group. Aggregates over
+    patient rows are now an allowlist of summaries (COUNT, SUM, AVG, MEDIAN,
+    STDDEV and kin, one-argument MIN/MAX).
+  - a `BETWEEN` with one date-column bound and one constant bound
+    (`make_date(...)`, `current_date`, an epoch shift, a subquery) compared a
+    date with a constant, and two of them pinned a date to the day. Every
+    operand of a date comparison must now be a date column, shifted at most by
+    a fixed number of days.
+
+  Two false refusals were fixed: `rank()` over grouped counts, and the 30-day
+  window written as `a.end_date + 30` or `+ to_days(30)`.
+- **Ninth review (static, of the eighth-review fixes).** Four more were closed,
+  each pinned by tests that fail on the earlier code:
+  - a per-patient group in a VALUE `IN`-set (`x IN (SELECT max(age) ... GROUP BY
+    patient_id)`) skipped the 11-person rule: its "consumer" aggregated range
+    or hospital rows, not the patients. Only a key semi-join now counts as
+    aggregating over a per-patient group.
+  - `quantile_cont(x, [list])` and `percentile_cont([list]) WITHIN GROUP`
+    listed every member's value.
+  - `nullif`, `greatest`, `floor(age / 107)` or sums of powers inside an
+    aggregate singled people out without a CASE. An aggregate over patient
+    rows now takes only a plain argument: a column, `*`, a number, a year, or
+    days between two date columns.
+  - `max(struct_pack(...))`, a concatenation or a list returned one member's
+    whole record (the plain-argument rule closes this too).
+
+  Three false refusals were fixed: a key semi-join through a CTE (its HAVING
+  named a table the root did not select, so it failed at run time),
+  start-to-start readmission (`b.start_date > a.start_date`), and a correlated
+  `EXISTS (SELECT c.patient_id ...)`. The live FHIR eval showed the planner
+  writing `SUM(CASE WHEN ...)` for a rate, which the guard refuses. The FHIR
+  notes now tell it to use `count(*) FILTER (WHERE ...)`.
+- **Tenth review (static, of the ninth-review fixes).** Three more were
+  closed, each pinned by tests that fail on the earlier code:
+  - computing per row one scope down -- a `CASE`, `floor`, `struct_pack`, a 0/1
+    flag or an `unnest` in a CTE or derived table -- and then a "plain" `AVG` /
+    `MIN` / `MAX` / `SUM` outside returned one person's value. Every output
+    now carries whether it was computed, through CTEs, derived tables, UNIONs
+    and per-patient groups, so "plain" means plain all the way down to the
+    table. A per-patient `count(*)` (FILTERed or not), a day difference, a year
+    and a passthrough stay plain.
+  - the same route through a per-patient group (`CASE` around `max(...)`).
+  - a FILTERed window aggregate (`avg(x) FILTER (WHERE ...) OVER ()`) escaped
+    the window rule.
+- **Eleventh review (static, of the tenth-review fixes).** Three more were
+  closed, each pinned by tests that fail on the earlier code:
+  - **(critical)** a column inside a FROM table function's arguments
+    (`range(CASE WHEN given_name = ... THEN date_diff('day', DATE '1950-01-01',
+    birth_date) ELSE 1 END)`) turned one named person's birth date or zip into
+    a `count(*)` that no column lineage sees. Table-function arguments on
+    patient data may now hold constants only.
+  - a FILTERed aggregate inside a per-patient group was never gated, so the
+    outer aggregate returned a cohort under 11. A FILTERed aggregate is now a
+    computed value: it may be returned, not aggregated again. This reverses a
+    tenth-review "allowed" shape that turned out to be this leak.
+  - a LEFT JOIN inside a per-patient group kept every patient (so the outer
+    HAVING counted them all) while the values came from the few it matched.
+    Outer joins are refused inside per-patient groups.
+
+  One false refusal was fixed: `FILTER (WHERE b.key IS NOT NULL)`, a presence
+  test, for the readmission rate.
+  **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
+  group) over a safe column return one person's value, such as the oldest age
+  in a group of 11+. They are allowed, because one bank case uses `MAX`.
+- The FHIR schema notes tell the planner these rules, so it writes allowed SQL
+  the first time.
+- **Still open (inherent limits of cell suppression):** differencing (a total
+  minus a visible part), and `ORDER BY <date-derived value> LIMIT 1` over safe
+  columns to single out one person.
+
 ### 0.5 Guard hotfix beyond the PHI scope (owner-approved, 2026-10-30, #37)
 
 The PHI work (§0.4) was authorised as one `sql_guard` change and "no other
