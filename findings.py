@@ -36,7 +36,8 @@ def _hf(rows: list[list[dict]]) -> dict:
     overall = sum(r["avg_hf"] * r["hospitals"] for r in states) / total
     gap = worst["avg_hf"] - overall
     return {
-        "headline": f"{worst['state']} has the highest heart-failure readmission rate",
+        "headline": (f"{worst['state']} has the highest heart-failure readmission rate "
+                     f"among states with {MIN_HOSPITALS}+ reporting hospitals"),
         "sentence": (f"Among the {len(states)} states with at least {MIN_HOSPITALS} reporting "
                      f"hospitals, {worst['state']} has the highest average 30-day heart-failure "
                      f"readmission rate ({worst['avg_hf']:.1f}%), {gap:.1f} points above the "
@@ -49,6 +50,8 @@ def _hf(rows: list[list[dict]]) -> dict:
 def _value(rows: list[list[dict]]) -> dict:
     r = rows[0][0]
     hv, rated = r["high_value"], r["rated"]
+    if not rated:
+        raise ValueError("no hospital has both a star rating and a spending score")
     return {
         "headline": f"{hv} hospitals combine high quality with below-average cost",
         "sentence": (f"{hv} of the {rated} hospitals that have both a star rating and a Medicare "
@@ -62,19 +65,26 @@ def _psych(rows: list[list[dict]]) -> dict:
     states, overall = rows[0], rows[1][0]["median_min"]
     if not states:
         raise ValueError("no state reports enough psychiatric ED times")
+    if overall is None:
+        raise ValueError("no hospital reports psychiatric ED times")
     top = states[0]
     return {
-        "headline": f"Psychiatric ED patients wait longest in {top['state']}",
-        "sentence": (f"In {top['state']}, the median time a psychiatric patient spends in the "
-                     f"emergency department is {top['median_min']:.0f} minutes, against "
-                     f"{overall:.0f} minutes across all reporting hospitals (states with at "
-                     f"least {MIN_HOSPITALS} reporting hospitals)."),
+        "headline": (f"Psychiatric ED patients wait longest in {top['state']}, among states with "
+                     f"{MIN_HOSPITALS}+ reporting hospitals"),
+        "sentence": (f"Among the {len(states)} states with at least {MIN_HOSPITALS} reporting "
+                     f"hospitals, {top['state']}'s typical hospital keeps a psychiatric patient in "
+                     f"the emergency department for {top['median_min']:.0f} minutes (the median "
+                     f"of its hospitals' median times), against {overall:.0f} minutes for the "
+                     f"typical hospital across every reporting hospital in the region, smaller "
+                     f"states included."),
         "metric": f"{top['median_min']:.0f} min",
     }
 
 
 def _lbs(rows: list[list[dict]]) -> dict:
     r = rows[0][0]
+    if not r["reporting"]:
+        raise ValueError("no hospital reports the left-before-seen rate")
     return {
         "headline": f"{r['over_5']} hospitals lose more than 1 in 20 ED patients before they are seen",
         "sentence": (f"{r['over_5']} of the {r['reporting']} hospitals that report it "
@@ -90,7 +100,8 @@ FINDINGS = [
         "title": "Heart-failure readmissions",
         "sql": [f"SELECT state, round(avg(readmit_hf), 1) AS avg_hf, count(readmit_hf) AS hospitals "
                 f"FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL GROUP BY state "
-                f"HAVING count(readmit_hf) >= {MIN_HOSPITALS} ORDER BY avg_hf DESC, state"],
+                f"HAVING count(readmit_hf) >= {MIN_HOSPITALS} "
+                f"ORDER BY avg(readmit_hf) DESC, state"],
         "render": _hf,
     },
     {
@@ -106,7 +117,7 @@ FINDINGS = [
         "title": "Behavioral health in the ED",
         "sql": [f"SELECT state, round(median(ed_psych_median_min)) AS median_min, count(*) AS hospitals "
                 f"FROM gold_hospital_profile WHERE ed_psych_median_min IS NOT NULL GROUP BY state "
-                f"HAVING count(*) >= {MIN_HOSPITALS} ORDER BY median_min DESC, state",
+                f"HAVING count(*) >= {MIN_HOSPITALS} ORDER BY median(ed_psych_median_min) DESC, state",
                 "SELECT round(median(ed_psych_median_min)) AS median_min FROM gold_hospital_profile "
                 "WHERE ed_psych_median_min IS NOT NULL"],
         "render": _psych,

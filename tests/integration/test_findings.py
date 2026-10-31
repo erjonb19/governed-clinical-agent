@@ -102,3 +102,94 @@ def test_findings_are_cached_per_vintage_and_failures_are_not(client, monkeypatc
     app_module._STATE["findings_cache"] = (("another vintage", 0), {})
     c.get("/findings", headers=H)
     assert calls == [1, 1]                               # a new vintage recomputes
+
+
+# --- each number checked against an independent computation ---------------------
+# Not the finding's own SQL: plain rows from the Gold, summarised in Python, so a
+# flipped comparison (mspb_score > 1.0, >= 5) or a wrong column fails here.
+
+def _gold_rows(cols):
+    import duckdb
+    con = duckdb.connect(GOLD, read_only=True)
+    try:
+        return con.execute(f"SELECT {', '.join(cols)} FROM gold_hospital_profile").fetchall()
+    finally:
+        con.close()
+
+
+def _card(client, fid):
+    c, _ = client
+    return next(f for f in c.get("/findings", headers=H).json()["findings"] if f["id"] == fid)
+
+
+def test_hf_names_the_state_with_the_highest_unrounded_average(client):
+    by_state = {}
+    for state, v in _gold_rows(["state", "readmit_hf"]):
+        if v is not None:
+            by_state.setdefault(state, []).append(v)
+    avgs = {s: sum(v) / len(v) for s, v in by_state.items() if len(v) >= findings.MIN_HOSPITALS}
+    worst, best = max(avgs, key=avgs.get), min(avgs, key=avgs.get)
+    f = _card(client, "hf_readmission_by_state")
+    assert f["headline"].startswith(worst) and f["metric"] == f"{avgs[worst]:.1f}%"
+    assert f"{best} has the lowest" in f["sentence"]
+
+
+def test_high_value_counts_4_or_5_stars_below_average_cost(client):
+    rows = _gold_rows(["star_rating", "mspb_score"])
+    rated = [(s, m) for s, m in rows if s is not None and m is not None]
+    hv = sum(1 for s, m in rated if s >= 4 and m < 1.0)
+    f = _card(client, "high_quality_low_cost")
+    assert f["sentence"].startswith(f"{hv} of the {len(rated)} hospitals")
+
+
+def test_psych_names_the_slowest_state_with_enough_hospitals(client):
+    import statistics
+    by_state, everyone = {}, []
+    for state, v in _gold_rows(["state", "ed_psych_median_min"]):
+        if v is not None:
+            by_state.setdefault(state, []).append(v)
+            everyone.append(v)
+    meds = {s: statistics.median(v) for s, v in by_state.items() if len(v) >= findings.MIN_HOSPITALS}
+    top = max(meds, key=meds.get)
+    f = _card(client, "psych_ed_wait")
+    assert f"wait longest in {top}," in f["headline"]
+    assert abs(float(f["metric"].split()[0]) - meds[top]) <= 0.5
+    overall = float(re.search(r"against (\d+) minutes", f["sentence"]).group(1))
+    assert abs(overall - statistics.median(everyone)) <= 0.5
+
+
+def test_left_before_seen_counts_more_than_5_percent(client):
+    vals = [v for (v,) in _gold_rows(["ed_left_before_seen_pct"]) if v is not None]
+    f = _card(client, "ed_left_before_seen")
+    assert f["sentence"].startswith(f"{sum(1 for v in vals if v > 5)} of the {len(vals)} hospitals")
+
+
+def test_a_set_with_an_unavailable_finding_is_not_cached(client, monkeypatch):
+    c, _ = client
+    calls = []
+    real = findings.compute
+
+    def flaky(run_sql, vintage):
+        calls.append(1)
+        cards = real(run_sql, vintage)
+        if len(calls) == 1:
+            cards[0] = {**cards[0], "status": "unavailable", "reason": "transient"}
+        return cards
+    monkeypatch.setattr(findings, "compute", flaky)
+    first = c.get("/findings", headers=H).json()
+    assert first["findings"][0]["status"] == "unavailable"
+    second = c.get("/findings", headers=H).json()
+    assert calls == [1, 1] and second["findings"][0]["status"] == "ok"   # retried, not cached
+    c.get("/findings", headers=H)
+    assert calls == [1, 1]                                               # now cached
+
+
+@pytest.mark.parametrize("fid,rows", [
+    ("high_quality_low_cost", [[{"high_value": 0, "rated": 0}]]),
+    ("ed_left_before_seen", [[{"over_5": 0, "reporting": 0}]]),
+    ("psych_ed_wait", [[{"state": "MA", "median_min": 300, "hospitals": 12}], [{"median_min": None}]]),
+])
+def test_an_empty_denominator_is_unavailable_not_a_number(fid, rows):
+    f = next(x for x in findings.FINDINGS if x["id"] == fid)
+    with pytest.raises(ValueError):
+        f["render"](rows)

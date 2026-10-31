@@ -700,6 +700,9 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
     return out
 
 
+_FINDINGS_LOCK = threading.Lock()
+
+
 def _vintage() -> tuple[Optional[str], tuple]:
     """(data vintage, cache key). The vintage is the CMS refresh date the build
     stamped in REFRESH.json; the key adds the Gold file's mtime so a rebuild
@@ -733,12 +736,18 @@ def get_findings(request: Request) -> dict:
     cached = _STATE.get("findings_cache")
     if cached and cached[0] == key:
         return cached[1]
-    with tracing.get_tracer().trace("findings", vintage=vintage):
-        cards = findings.compute(lambda sql: run_governed_sql(sql, None, "hospital"), vintage)
-    out = {"dataset": "hospital", "vintage": vintage, "findings": cards}
-    if all(c["status"] == "ok" for c in cards):
-        _STATE["findings_cache"] = (key, out)
-    return out
+    with _FINDINGS_LOCK:                      # simultaneous first loads compute once
+        cached = _STATE.get("findings_cache")
+        if cached and cached[0] == key:
+            return cached[1]
+        # Read the LOCAL Gold: the vintage and the cache key describe that file,
+        # so the numbers must come from it even when DATA_BACKEND=databricks.
+        with tracing.get_tracer().trace("findings", vintage=vintage):
+            cards = findings.compute(lambda sql: run_governed_sql(sql, "local", "hospital"), vintage)
+        out = {"dataset": "hospital", "backend": "local", "vintage": vintage, "findings": cards}
+        if all(c["status"] == "ok" for c in cards):
+            _STATE["findings_cache"] = (key, out)
+        return out
 
 
 @app.get("/metrics")

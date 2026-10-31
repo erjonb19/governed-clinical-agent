@@ -183,7 +183,8 @@
   .trust code{font-family:var(--mono);font-size:12px;background:var(--paper-2);
               padding:1px 6px;border-radius:5px;border:1px solid var(--rule);color:var(--ink-2)}
   a{color:var(--green-2)}
-  @media(max-width:720px){ .top-in{gap:6px 12px;padding:8px 16px;height:auto;flex-wrap:wrap} .brand h1{white-space:nowrap} nav{order:3;flex:1 0 100%;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch} nav::-webkit-scrollbar{display:none} nav button{padding:8px 9px;font-size:13px;white-space:nowrap;flex:none} main{padding:24px 16px 70px} .hero h2{font-size:26px} }
+  @media(max-width:960px){ .top-in{gap:6px 12px;padding:8px 16px;height:auto;flex-wrap:wrap} .brand h1{white-space:nowrap} nav{order:3;flex:1 0 100%;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch} nav::-webkit-scrollbar{display:none} nav button{white-space:nowrap;flex:none} }
+  @media(max-width:720px){ nav button{padding:8px 9px;font-size:13px} main{padding:24px 16px 70px} .hero h2{font-size:26px} }
 </style>
 </head>
 <body>
@@ -203,7 +204,7 @@
     <button data-v="usage">Usage</button>
     <button data-v="traces">Traces</button>
   </nav>
-  <button class="advtog" id="advBtn" aria-pressed="false" title="Show the technical controls: data source, dataset, SQL mode, access key and traces">Advanced</button>
+  <button class="advtog" id="advBtn" aria-pressed="false" title="Show the technical controls: data source, dataset, SQL mode, and links from an answer to its trace">Advanced</button>
   <button class="gear adv" id="gearBtn"><span class="dot" id="connDot"></span><span id="connTxt">Connect</span></button>
 </div></div>
 
@@ -426,18 +427,30 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const KEY="ci_access_key";
-let MODE="query", BACKEND="local", DATASET=null;
+let MODE="query", BACKEND="local", DATASET=null, DEFAULT_DATASET=null;
 
 /* ---------- settings drawer ---------- */
 /* Advanced toggle: remembered per browser; storage may be unavailable */
 const ADV="ci_advanced";
 function setAdvanced(on){
   document.body.classList.toggle("advanced",on);
+  if(!on) resetHiddenControls();
   $("advBtn").setAttribute("aria-pressed",on?"true":"false");
   try{ localStorage.setItem(ADV,on?"1":"0"); }catch(_){}
 }
 try{ setAdvanced(localStorage.getItem(ADV)==="1"); }catch(_){ setAdvanced(false); }
 $("advBtn").onclick=()=>setAdvanced(!document.body.classList.contains("advanced"));
+/* Turning Advanced off hides the SQL / backend / dataset switches, so put them
+   back to their defaults: a hidden SQL mode would otherwise reject every
+   plain question with no visible way out. */
+function resetHiddenControls(){
+  try{
+    if(MODE!=="query") setMode("query");
+    const loc=$("segBackend").querySelector("[data-b='local']");
+    if(loc && BACKEND!=="local") loc.click();
+    if(DEFAULT_DATASET && DATASET!==DEFAULT_DATASET) setDataset(DEFAULT_DATASET);
+  }catch(_){}
+}
 
 /* ---------- overview: deterministic findings ---------- */
 function findingCard(f){
@@ -461,6 +474,10 @@ async function loadOverview(){
   try{
     const r=await fetch("/findings",{headers:authHdrs()});
     if(r.status===401){ box.innerHTML=""; $("ovConnect").hidden=false; return; }
+    if(!r.ok){
+      box.innerHTML=`<div class="card pad">The findings are not available right now (${r.status===429?"too many requests; try again in a minute":"server error "+r.status}).</div>`;
+      return;
+    }
     const d=await r.json();
     $("ovVintage").textContent=d.vintage?`Data as of ${d.vintage}.`:"";
     box.innerHTML=(d.findings||[]).map(findingCard).join("");
@@ -506,7 +523,7 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
   let cfg={};
   try{ cfg=await (await fetch("/ui-config")).json(); }catch(_){}
   if(Array.isArray(cfg.datasets)){
-    DATASET=cfg.default_dataset||cfg.datasets[0].id;
+    DATASET=DEFAULT_DATASET=cfg.default_dataset||cfg.datasets[0].id;
     $("segDataset").innerHTML=cfg.datasets.map(x=>
       `<button data-d="${esc(x.id)}" class="${x.id===DATASET?"on":""}" ${x.available?"":"disabled title='not built on this server'"}>${esc(x.label.split(" (")[0])}</button>`).join("");
     setDataset(DATASET);   // paints the hint + starters for the initial dataset
