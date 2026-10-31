@@ -54,8 +54,38 @@ BLOCKED = {
     "date to the month": "SELECT strftime(CAST(birth_date AS DATE), '%Y-%m') AS ym FROM gold_patient",
     "city": "SELECT DISTINCT city FROM gold_patient",
     "identifier as GROUP BY key": "SELECT patient_id, count(*) AS n FROM gold_encounter GROUP BY patient_id",
-    "identifier GROUP BY hidden inside": ("SELECT count(*) AS n FROM (SELECT patient_id FROM "
-                                          "gold_encounter GROUP BY patient_id) t"),
+    # grouping by patient inside is allowed only when the outer aggregates over
+    # it (decision 4); these are the shapes where it does not
+    "per-patient group passed straight through": (
+        "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter GROUP BY patient_id) "
+        "SELECT patient_id, c FROM x"),
+    "per-patient group re-grouped by patient": (
+        "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter GROUP BY patient_id) "
+        "SELECT patient_id, max(c) AS m FROM x GROUP BY patient_id"),
+    "per-patient rows without the key": (
+        "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter GROUP BY patient_id) "
+        "SELECT c FROM x"),
+    "per-patient group as the result": ("SELECT count(*) AS n FROM gold_encounter "
+                                        "GROUP BY patient_id"),
+    "grouped by a name inside": ("SELECT count(*) AS n FROM (SELECT given_name FROM gold_patient "
+                                 "GROUP BY given_name) t"),
+    # filters on identifying columns (decision 3)
+    "WHERE on a name": ("SELECT c.condition_name FROM gold_condition c JOIN gold_patient p "
+                        "ON c.patient_id = p.patient_id WHERE p.given_name = 'X'"),
+    "WHERE on a patient id": "SELECT count(*) AS n FROM gold_encounter WHERE patient_id = 'abc'",
+    "WHERE on a zip prefix": "SELECT count(*) AS n FROM gold_patient WHERE postal_code LIKE '02%'",
+    "WHERE on an exact date": "SELECT count(*) AS n FROM gold_patient WHERE birth_date = '1980-01-01'",
+    "WHERE on a month": ("SELECT count(*) AS n FROM gold_patient "
+                         "WHERE month(CAST(birth_date AS DATE)) = 3"),
+    "WHERE on a city in a subquery": (
+        "SELECT count(*) AS n FROM gold_condition WHERE patient_id IN "
+        "(SELECT patient_id FROM gold_patient WHERE city = 'Boston')"),
+    "HAVING on a name": ("SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender "
+                         "HAVING max(given_name) > 'M'"),
+    "JOIN ON a city": "SELECT count(*) AS n FROM gold_patient a JOIN gold_patient b ON a.city = b.city",
+    "JOIN ON an id compared to a value": (
+        "SELECT count(*) AS n FROM gold_condition c JOIN gold_patient p "
+        "ON c.patient_id = p.patient_id AND p.patient_id > 'm'"),
     "GROUP BY ALL on an identifier": "SELECT patient_id, count(*) AS n FROM gold_encounter GROUP BY ALL",
     "record id": "SELECT observation_id, value_num FROM gold_observation",
     "comparison leaks a bit per row": "SELECT given_name = 'Ann' AS is_ann FROM gold_patient",
@@ -165,6 +195,22 @@ ALLOWED = {
         "SELECT gender, n * 1.0 / SUM(n) OVER () AS share FROM g"),
     "sum over a union of counts": ("SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient "
                                    "UNION ALL SELECT count(*) FROM gold_condition) x"),
+    # filters that decision 3 allows
+    "WHERE on the year": "SELECT count(*) AS n FROM gold_patient WHERE YEAR(CAST(birth_date AS DATE)) < 1960",
+    "WHERE on age in whole years": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 65",
+    "WHERE on age from a date diff": (
+        "SELECT count(*) AS n FROM gold_patient "
+        "WHERE date_diff('year', CAST(birth_date AS DATE), DATE '2026-01-01') >= 65"),
+    "WHERE a date IS NULL": "SELECT count(*) AS n FROM gold_condition WHERE abatement_date IS NULL",
+    # grouping by patient inside an aggregate (decision 4)
+    "average per patient": ("WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter "
+                            "GROUP BY patient_id) SELECT round(avg(c), 1) AS v FROM x"),
+    "count of patients over a threshold": (
+        "SELECT count(*) AS n FROM (SELECT patient_id FROM gold_condition WHERE is_active "
+        "GROUP BY patient_id HAVING count(DISTINCT condition_name) >= 5) t"),
+    "distribution of a per-patient count": (
+        "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter GROUP BY patient_id) "
+        "SELECT c, count(*) AS n FROM x GROUP BY c"),
 }
 
 
@@ -364,6 +410,38 @@ def test_the_value_check_looks_inside_lists_and_structs():
         with pytest.raises(phi_guard.OutputRefused):
             phi_guard.check_output(d, ["g"], [{"g": v}])
     phi_guard.check_output(d, ["g"], [{"g": ["female", "male"]}])
+
+
+def test_a_per_patient_aggregate_answers_over_all_its_patients(tool):
+    # 15 patients, 19 conditions: the average is over 15 people, so it is returned
+    r = tool.execute({"sql": "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_condition "
+                             "GROUP BY patient_id) SELECT round(avg(c), 2) AS v FROM x"})
+    assert r.success and r.output["rows"] == [{"v": 1.27}], (r.error, r.output)
+
+
+def test_the_outer_query_counts_the_per_patient_rows_under_the_11_rule(tool):
+    # 4 patients have 2 conditions: that bucket is under 11 and is suppressed;
+    # the inner groups (one patient each) are not, or nothing would survive
+    r = tool.execute({"sql": "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_condition "
+                             "GROUP BY patient_id) SELECT c, count(*) AS n FROM x GROUP BY c ORDER BY c"})
+    assert r.success and r.output["rows"] == [{"c": 1, "n": 11}], (r.error, r.output)
+    few = tool.execute({"sql": "SELECT count(*) AS n FROM (SELECT patient_id FROM gold_condition "
+                               "GROUP BY patient_id HAVING count(*) >= 2) t"})
+    assert few.success and few.output["rows"] == []
+
+
+def test_passing_the_patient_column_through_a_per_patient_group_is_refused(tool):
+    r = tool.execute({"sql": "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_condition "
+                             "GROUP BY patient_id) SELECT patient_id, c FROM x"})
+    assert not r.success and "PHI" in r.error and "p0" not in r.error
+
+
+def test_a_filter_on_an_identifier_is_refused_and_a_year_filter_runs(tool):
+    bad = tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient WHERE patient_id = 'p0'"})
+    assert not bad.success and "used to filter" in bad.error
+    ok = tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient "
+                              "WHERE YEAR(CAST(birth_date AS DATE)) > 1000"})
+    assert ok.success and ok.output["rows"] == [{"n": 15}], (ok.error, ok.output)
 
 
 def test_an_array_over_grouped_results_still_runs(tool):

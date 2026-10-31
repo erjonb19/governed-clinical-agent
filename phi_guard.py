@@ -393,7 +393,93 @@ class _Analysis:
             for col in key.find_all(exp.Column):
                 s = self.resolve(scope, col)
                 if s.cls == IDENTIFIER and not reduced(col, key, s.is_date):
+                    if self._per_patient_ok(scope, col, s):
+                        continue
                     self.findings.append(f"identifier {s.base or col.name} is a GROUP BY key")
+
+    def _consumers(self, scope: Scope) -> list:
+        """The scopes that read this one: as a FROM source, or -- a subquery in a
+        predicate -- its parent."""
+        users = [s for s in self.scopes if any(v is scope for v in s.sources.values())]
+        return users or ([scope.parent] if scope.parent is not None else [])
+
+    def _per_patient_ok(self, scope: Scope, col: exp.Column, s: "Sens") -> bool:
+        """Owner's decision 4 (2026-10-30): grouping BY PATIENT is allowed only
+        inside a subquery or CTE whose every consumer aggregates over it. The
+        consumer then counts those patient rows (11+ people, by the HAVING the
+        rewrite adds), and no patient-level column may reach the result -- the
+        root-output rule refuses the patient column if it is passed through."""
+        if scope is self.scopes[-1]:
+            return False                                   # the result itself
+        if not (s.base or "").endswith(f".{PERSON_KEY}"):
+            return False                                   # only the person key
+        return self._consumers_aggregate(scope)
+
+    def _consumers_aggregate(self, scope: Scope) -> bool:
+        if scope is self.scopes[-1]:
+            return False
+        users = self._consumers(scope)
+        return bool(users) and all(isinstance(u.expression, exp.Select)
+                                   and _is_aggregate(u.expression) for u in users)
+
+    def _person_group_refs(self, scope: Scope) -> Optional[list]:
+        """If this aggregate is grouped by the person key of its patient
+        sources (one row per patient), the bare references it groups by."""
+        group = scope.expression.args.get("group")
+        if not group or group.args.get("all"):
+            return None
+        refs = []
+        for key in group.expressions:
+            inner = key
+            while isinstance(inner, (exp.Cast, exp.TryCast, exp.Paren)):
+                inner = inner.this
+            if not isinstance(inner, exp.Column):
+                return None
+            r = self.resolve(scope, inner)
+            if not (r.base or "").endswith(f".{PERSON_KEY}") or not inner.table:
+                return None
+            refs.append(f"{inner.table}.{inner.name}".lower())
+        return refs or None
+
+    # --- decision 3: no filtering on identifying columns ---
+    def predicates(self, scope: Scope) -> None:
+        """Owner's decision 3 (2026-10-30): an identifier or quasi-identifier may
+        not be used to FILTER -- in WHERE, HAVING, QUALIFY or JOIN ON, at any
+        level (subqueries are scopes of their own and are checked the same way).
+        Allowed: a year (or age in whole years) reduction of a date; COUNT of a
+        column; a key equality between identifier columns (a join, not a
+        filter); a key semi-join (patient_id IN (SELECT patient_id ...)); and
+        IS [NOT] NULL, which tests presence, not value."""
+        sel = scope.expression
+        clauses = [sel.args.get("where"), sel.args.get("having"), sel.args.get("qualify")]
+        clauses += [j.args.get("on") for j in (sel.args.get("joins") or [])]
+        for clause in clauses:
+            if clause is None:
+                continue
+            for col in _own_nodes(clause, exp.Column):
+                s = self.resolve(scope, col)
+                if s.cls == SAFE or reduced(col, clause, s.is_date):
+                    continue
+                if s.cls == IDENTIFIER and self._key_join(scope, col):
+                    continue
+                if isinstance(col.parent, exp.Is):
+                    continue
+                self.findings.append(f"{s.cls} {s.base or col.name} used to filter (WHERE / "
+                                     f"HAVING / JOIN ON); filter on safe columns, or on the year")
+
+    def _key_join(self, scope: Scope, col: exp.Column) -> bool:
+        parent = col.parent
+        while isinstance(parent, (exp.Cast, exp.TryCast, exp.Paren)):
+            parent = parent.parent
+        if isinstance(parent, exp.EQ):
+            other = parent.expression if parent.this is col or col in parent.this.walk() \
+                else parent.this
+            while isinstance(other, (exp.Cast, exp.TryCast, exp.Paren)):
+                other = other.this
+            return isinstance(other, exp.Column) and self.resolve(scope, other).cls == IDENTIFIER
+        if isinstance(parent, exp.In) and parent.args.get("query") is not None:
+            return parent.this is col
+        return False
 
     def person_rows(self, scope: Scope) -> tuple[bool, Optional[list]]:
         """Does this scope's output hold person-level rows, and if so which
@@ -406,6 +492,14 @@ class _Analysis:
         result: Any = False
         if scope.union_scopes:
             result = False if not any(self.person_rows(s)[0] for s in scope.union_scopes) else None
+        elif isinstance(scope.expression, exp.Select) and _is_aggregate(scope.expression) \
+                and self._person_group_refs(scope):
+            # grouped by patient (decision 4): one row per patient, and the
+            # outer aggregate must count them -- so it carries the key
+            refs = self._person_group_refs(scope)
+            outs = self.outputs(scope)
+            names = [next((n for n, sens in outs if sens.ref == r), None) for r in refs]
+            result = names if all(names) else None
         elif isinstance(scope.expression, exp.Select) and not _is_aggregate(scope.expression):
             found, keys = self._person_source(scope)
             if found:
@@ -472,6 +566,10 @@ class _Analysis:
                 f"than {MIN_CELL} people cannot be suppressed; keep {PERSON_KEY} in the inner "
                 "query, or aggregate the tables directly")
             return
+        if self._person_group_refs(scope) and self._consumers_aggregate(scope):
+            # one group per patient (decision 4): each is one person by design,
+            # so the 11-person rule belongs to the outer aggregate counting them
+            return
         self.rewrites.append((sel, key))
         self.filters.extend((f, key) for f in _own_nodes(sel, exp.Filter)
                             if not isinstance(f.parent, exp.Window))
@@ -513,12 +611,14 @@ class _Analysis:
                 self.findings.append("an unexpanded * over patient data; name the columns")
                 break
         scopes = list(traverse_scope(self.root))
+        self.scopes = scopes
         for scope in scopes:
             self.outputs(scope)
             if isinstance(scope.expression, exp.Select):
                 self.group_keys(scope)
                 self.small_cells(scope)
                 self.windows(scope)
+                self.predicates(scope)
         root_scope = scopes[-1] if scopes else None
         if root_scope is not None:
             for name, sens in self.outputs(root_scope):
