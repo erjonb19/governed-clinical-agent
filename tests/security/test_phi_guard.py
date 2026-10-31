@@ -83,6 +83,59 @@ BLOCKED = {
     "HAVING on a name": ("SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender "
                          "HAVING max(given_name) > 'M'"),
     "JOIN ON a city": "SELECT count(*) AS n FROM gold_patient a JOIN gold_patient b ON a.city = b.city",
+    # --- fifth adversarial review (decisions 3 and 4) ---
+    "IN a constant subquery on a name": ("SELECT gender, age_years FROM gold_patient "
+                                         "WHERE given_name IN (SELECT 'X') AND family_name IN (SELECT 'Y')"),
+    "IN a constant subquery on an id": ("SELECT condition_name FROM gold_condition "
+                                        "WHERE patient_id IN (SELECT 'abc')"),
+    "IN unnest of a list of ids": ("SELECT condition_name FROM gold_condition "
+                                   "WHERE patient_id IN (SELECT unnest(['abc']))"),
+    "IN a union smuggling a constant": (
+        "SELECT condition_name FROM gold_condition WHERE patient_id IN "
+        "(SELECT patient_id FROM gold_patient WHERE age_years > 200 UNION SELECT 'abc')"),
+    "a name flag tested with IS TRUE": (
+        "SELECT d.gender, d.age_years FROM (SELECT gender, age_years, given_name = 'X' AS hit "
+        "FROM gold_patient) d WHERE d.hit IS TRUE"),
+    "a NULLIF on an id tested with IS NULL": (
+        "SELECT d.gender FROM (SELECT gender, NULLIF(patient_id, 'abc') AS n FROM gold_patient) d "
+        "WHERE d.n IS NULL"),
+    "a key join to a disguised constant": (
+        "SELECT p.gender, p.age_years FROM gold_patient p JOIN (SELECT 'abc' || substr(patient_id, 1, 0) "
+        "AS k FROM gold_patient LIMIT 1) c ON p.patient_id = c.k"),
+    "a name joined to a name": (
+        "SELECT p.gender FROM gold_patient p JOIN (SELECT 'X' || substr(given_name, 1, 0) AS k "
+        "FROM gold_patient LIMIT 1) c ON p.given_name = c.k"),
+    "a key join to VALUES": ("SELECT p.gender FROM gold_patient p JOIN (VALUES ('abc')) v(patient_id) "
+                             "ON p.patient_id = v.patient_id"),
+    "NATURAL JOIN on names": ("SELECT gender, age_years FROM gold_patient NATURAL JOIN "
+                              "(SELECT 'X' AS given_name, 'Y' AS family_name) c"),
+    "ORDER BY a name": "SELECT gender, age_years FROM gold_patient ORDER BY given_name LIMIT 1",
+    "ORDER BY a patient id": ("SELECT condition_name, gender FROM gold_condition "
+                              "ORDER BY patient_id LIMIT 20"),
+    "a per-patient group joined on a safe column": (
+        "SELECT avg(d.k) AS a FROM (SELECT g.patient_id, count(DISTINCT c.patient_id) FILTER "
+        "(WHERE c.condition_name = 'Rare') AS k FROM gold_patient g JOIN gold_condition c "
+        "ON c.condition_name = 'Rare' GROUP BY g.patient_id) d"),
+    "a per-patient scalar subquery": (
+        "SELECT count(*) AS total, (SELECT count(*) FROM gold_encounter e GROUP BY e.patient_id "
+        "ORDER BY 1 DESC LIMIT 1) AS mx FROM gold_patient"),
+    "LIST of per-patient values": (
+        "SELECT list(d.conds) AS l FROM (SELECT patient_id, string_agg(condition_name, '|') AS conds "
+        "FROM gold_condition GROUP BY patient_id) d"),
+    "ARG_MAX of per-patient values": (
+        "SELECT arg_max(d.conds, d.n) AS a FROM (SELECT patient_id, string_agg(condition_name, '|') "
+        "AS conds, count(*) AS n FROM gold_condition GROUP BY patient_id) d"),
+    "MAX of a per-patient count": ("SELECT max(d.n) AS m FROM (SELECT patient_id, count(*) AS n "
+                                   "FROM gold_encounter GROUP BY patient_id) d"),
+    "a per-patient CTE also read row by row": (
+        "WITH d AS (SELECT patient_id, count(*) AS n FROM gold_encounter GROUP BY patient_id) "
+        "SELECT (SELECT avg(n) FROM d) AS a, x.n FROM d x"),
+    "GROUP BY patient and gender inside": (
+        "SELECT avg(n) AS a FROM (SELECT patient_id, gender, count(*) AS n FROM gold_encounter "
+        "GROUP BY patient_id, gender) t"),
+    "a boolean cast inside SUM": ("SELECT sum(CAST(condition_name = 'Rare' AS INT)) AS n "
+                                  "FROM gold_condition"),
+    "count_if": "SELECT count_if(condition_name = 'Rare') AS n FROM gold_condition",
     "JOIN ON an id compared to a value": (
         "SELECT count(*) AS n FROM gold_condition c JOIN gold_patient p "
         "ON c.patient_id = p.patient_id AND p.patient_id > 'm'"),
@@ -202,6 +255,19 @@ ALLOWED = {
         "SELECT count(*) AS n FROM gold_patient "
         "WHERE date_diff('year', CAST(birth_date AS DATE), DATE '2026-01-01') >= 65"),
     "WHERE a date IS NULL": "SELECT count(*) AS n FROM gold_condition WHERE abatement_date IS NULL",
+    "a semi-join through a derived key": (
+        "SELECT count(*) AS n FROM gold_condition c WHERE c.patient_id IN "
+        "(SELECT t.patient_id FROM (SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER') t)"),
+    "ORDER BY a count alias": ("SELECT condition_name, count(*) AS n FROM gold_condition "
+                               "GROUP BY condition_name ORDER BY n DESC"),
+    "a per-patient CTE joined back on the key": (
+        "WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter GROUP BY patient_id) "
+        "SELECT p.gender, round(avg(x.c), 1) AS v FROM x JOIN gold_patient p "
+        "ON p.patient_id = x.patient_id GROUP BY p.gender"),
+    "per-patient join of two tables on the key": (
+        "SELECT avg(k) AS a FROM (SELECT c.patient_id, count(DISTINCT e.encounter_id) AS k "
+        "FROM gold_condition c JOIN gold_encounter e ON e.patient_id = c.patient_id "
+        "GROUP BY c.patient_id) d"),
     # grouping by patient inside an aggregate (decision 4)
     "average per patient": ("WITH x AS (SELECT patient_id, count(*) AS c FROM gold_encounter "
                             "GROUP BY patient_id) SELECT round(avg(c), 1) AS v FROM x"),
@@ -218,7 +284,11 @@ ALLOWED = {
 def test_an_escape_route_is_blocked(name):
     d = validate_query(BLOCKED[name])
     assert not d.allowed, name
-    assert "PHI" in d.reason
+    if name.startswith(("query()", "query_table()")):
+        # since #37 sql_guard refuses these SQL-string runners itself, earlier
+        assert "not allowed" in d.reason or "disallowed" in d.reason, d.reason
+    else:
+        assert "PHI" in d.reason
 
 
 @pytest.mark.parametrize("name", sorted(ALLOWED))

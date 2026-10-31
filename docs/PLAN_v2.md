@@ -212,6 +212,31 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
     carries it on the patient key, so the result still covers 11+ people.
     Passing `patient_id` through, re-grouping by it, or leaving the per-patient
     rows unaggregated is refused. Each of these is pinned by a test.
+- **Fifth adversarial review (of decisions 3 and 4).** Nine bypasses were
+  found and are now closed, each pinned by a test that fails on the earlier
+  code:
+  - a constant passed off as a key: `IN (SELECT '<id>')`, a UNION that slips
+    one in, `VALUES`, or a literal concatenated onto a key. A key join now
+    needs a bare key of a protected table on both sides.
+  - an identity test hidden in a derived flag and checked with `IS TRUE` or
+    `IS NULL`. `IS NULL` is allowed only on a bare protected column.
+  - `NATURAL JOIN`, which has no ON clause to check.
+  - `ORDER BY` an identifying column, which singles a person out with LIMIT.
+  - "per-patient" groups that were not one patient: a source joined on a safe
+    column put the whole population into each group. Now every person source
+    must be equated to the group key.
+  - a per-patient subquery used as a scalar, which returned one patient's row.
+  - `LIST`, `ARG_MAX` or `MAX` over per-patient values.
+  - a conditional hidden as a boolean (`sum(CAST(x = 'y' AS INT))`,
+    `count_if`).
+  - `GROUP BY patient_id, gender` inside, which is now refused with a reason
+    rather than silently returning nothing.
+- **Trade-offs decision 3 implies (for the owner to know):** date ranges and
+  comparisons between dates (`onset_date >= '2020-01-01'`,
+  `onset_date >= start_date`) are refused, because only the year may be used.
+  Sequence questions ("a condition after a visit", "within 30 days") cannot be
+  asked. The FHIR schema notes now tell the planner the privacy rules, so it
+  writes allowed SQL the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total
   minus a visible part), and `ORDER BY <date-derived value> LIMIT 1` over safe
   columns to single out one person.
