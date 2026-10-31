@@ -88,7 +88,10 @@ class AnalyticsQueryTool(BaseTool):
         self._ledger = ledger          # optional QueryLedger for groundedness
         self._primary_error = None
         try:
-            self._con = duckdb.connect(db_path)
+            # read-only unless it is to be seeded with demo tables: the agent's
+            # path never writes, and a function slipping the guard (checkpoint())
+            # must not be able to either
+            self._con = duckdb.connect(db_path, read_only=not seed_demo and db_path != ":memory:")
         except Exception as e:
             # The PRIMARY connection failing is what actually takes the API
             # server down at startup: app.py passes the hospital Gold here, and

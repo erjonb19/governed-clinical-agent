@@ -31,7 +31,10 @@ class LocalDuckDBBackend:
     def __init__(self, db_path: str = ":memory:"):
         import duckdb
         self.db_path = db_path
-        self.con = duckdb.connect(db_path)
+        # read-only, like AnalyticsQueryTool's connection: it only runs validated
+        # SELECTs, and DuckDB refuses two connections to one file in one process
+        # unless their configuration matches (the eval harness holds both)
+        self.con = duckdb.connect(db_path, read_only=db_path != ":memory:")
 
     def execute(self, sql: str) -> tuple[list[str], list[dict]]:
         cur = self.con.execute(sql)

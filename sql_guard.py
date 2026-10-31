@@ -74,6 +74,16 @@ DENIED_FUNCTIONS = {
     "duckdb_functions", "duckdb_types", "duckdb_keywords",
     "pragma_table_info", "pragma_database_list", "pragma_show_tables",
     "show_tables", "sqlite_master",
+    # query('<sql>') runs a STRING as SQL, so nothing in it is ever parsed by
+    # this guard: it reached bronze_*, the catalog and local files. query_table
+    # ('<name>') hides the table name the allowlist checks. Found by adversarial
+    # testing, 2026-10-30.
+    "query", "query_table",
+    # ...and its cousin: json_execute_serialized_sql runs a serialized query.
+    # Settings and variables read server state. checkpoint() writes.
+    "json_execute_serialized_sql", "json_serialize_sql", "json_deserialize_sql",
+    "current_setting", "getvariable", "getenv", "checkpoint", "force_checkpoint",
+    "sql_auto_complete", "which_secret",
 }
 
 # Catalog / system schemas the agent must never browse.
@@ -106,6 +116,68 @@ class Decision:
     phi_suppressed: int = 0               # aggregates given the 11-person HAVING
 
 
+# Row generators: the only functions allowed as a FROM source (step 4a).
+ALLOWED_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
+# Whole families of readers and introspection: denied wherever they appear.
+DENIED_PREFIXES = ("read_", "parquet_", "pragma_", "duckdb_", "sqlite_", "postgres_",
+                   "mysql_", "iceberg_", "delta_", "sniff_", "json_execute", "glob",
+                   # json_serialize_plan('<sql>') binds and optimises a string the
+                   # guard never parses (schema leak, file reach, a stats oracle)
+                   "json_serialize", "json_deserialize")
+
+
+def _with_of(node: exp.Expression):
+    """The WITH clause attached to a query node (sqlglot names the arg 'with_'
+    in current versions, 'with' in older ones)."""
+    return node.args.get("with_") or node.args.get("with")
+
+
+def _in_recursive_term(node: exp.Expression, cte: exp.CTE) -> bool:
+    body = cte.this
+    if not isinstance(body, exp.Union):
+        return False
+    right = body.expression
+    n = node
+    while n is not None and n is not cte:
+        if n is right:
+            return True
+        n = n.parent
+    return False
+
+
+def _resolves_to_cte(table: exp.Table, name: str) -> bool:
+    """Does this table reference name a CTE in scope (rather than a real table)?
+
+    Walk outwards through the WITH clauses around the reference. In each, the
+    CTEs visible are: all of them, from the main query; only the EARLIER ones,
+    from inside a CTE's body; and the CTE itself too only if the WITH is
+    RECURSIVE.
+    """
+    node = table
+    while node is not None:
+        parent = node.parent
+        if isinstance(parent, exp.CTE) and isinstance(parent.parent, exp.With):
+            with_ = parent.parent
+            ctes = list(with_.expressions)
+            i = next(k for k, c in enumerate(ctes) if c is parent)
+            visible = list(ctes[:i])
+            # A recursive CTE sees ITSELF only in the recursive term -- the right
+            # side of the UNION that is its body. Its anchor, or a body with no
+            # UNION, reads the REAL table of that name (verified in DuckDB).
+            if with_.args.get("recursive") and _in_recursive_term(table, parent):
+                visible.append(parent)
+            if any(c.alias_or_name.lower() == name for c in visible):
+                return True
+            node = with_.parent              # continue past this WITH entirely
+            continue
+        with_ = _with_of(parent) if parent is not None else None
+        if with_ is not None and node is not with_:
+            if any(c.alias_or_name.lower() == name for c in with_.expressions):
+                return True
+        node = parent
+    return False
+
+
 def validate_query(sql: str,
                    allowed_tables: Optional[set] = None,
                    row_cap: int = DEFAULT_ROW_CAP) -> Decision:
@@ -134,15 +206,18 @@ def validate_query(sql: str,
             return Decision(False, f"write or DDL operation denied: {type(node).__name__.upper()}")
 
     # 3. Table allowlist (and schema check).
-    # CTE names are local aliases, not real tables, so exclude them.
-    cte_names = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+    # A CTE name is a local alias, not a real table -- but ONLY where it can
+    # resolve to the CTE. Inside a non-recursive CTE's own body, or in an
+    # earlier CTE of the same WITH, the same name means the REAL table: so
+    # WITH bronze_patient AS (SELECT * FROM bronze_patient) ... read the real
+    # bronze table while the old "any CTE name is exempt" rule waved it through.
     bad_tables = []
     for t in tree.find_all(exp.Table):
         name = (t.name or "").lower()
         schema = (t.db or "").lower()
         if schema in DENIED_SCHEMAS:
             return Decision(False, f"catalog/system schema not allowed: {schema}.{name}")
-        if name in cte_names:
+        if not schema and _resolves_to_cte(t, name):
             continue
         if name and name not in allowed_tables:
             bad_tables.append(name)
@@ -153,16 +228,32 @@ def validate_query(sql: str,
             findings=sorted(set(bad_tables)),
         )
 
-    # 4. Denied functions (file read / exfil).
+    # 4a. Table functions in FROM: ALLOWLIST, not denylist. DuckDB keeps adding
+    #     readers (read_ndjson, parquet_scan, sniff_csv, iceberg_scan, sqlite_scan,
+    #     pragma_storage_info...) and a list of the bad ones never keeps up. Only
+    #     pure row generators may be a FROM source.
+    for t in tree.find_all(exp.Table):
+        if isinstance(t.this, (exp.Identifier, type(None))):
+            continue
+        fn = (t.this.name if isinstance(t.this, exp.Anonymous) else
+              (t.this.sql_name() if isinstance(t.this, exp.Func) else type(t.this).__name__))
+        fn = (fn or "?").lower()
+        if fn not in ALLOWED_TABLE_FUNCTIONS:
+            known_bad = fn in DENIED_FUNCTIONS or fn.startswith(DENIED_PREFIXES)
+            return Decision(False, f"{'disallowed function' if known_bad else 'table function not allowed'}"
+                                   f": {fn}", findings=[fn])
+
+    # 4b. Denied functions (file read / exfil / server state), by name and by
+    #     family prefix.
     bad_funcs = []
     for fn in tree.find_all(exp.Anonymous):
         fname = (fn.name or "").lower()
-        if fname in DENIED_FUNCTIONS:
+        if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     # typed func nodes that sqlglot recognizes by class name
     for fn in tree.find_all(exp.Func):
         fname = (fn.sql_names()[0] if fn.sql_names() else "").lower()
-        if fname in DENIED_FUNCTIONS:
+        if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     if bad_funcs:
         return Decision(
