@@ -172,6 +172,11 @@ def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
     return False
 
 
+# The only aggregates allowed over per-patient values (decision 4).
+_PER_PATIENT_AGGS = {"count", "sum", "avg", "mean", "stddev", "stddev_samp", "stddev_pop",
+                     "variance", "var_samp", "var_pop"}
+
+
 def _is_key(base: Optional[str]) -> bool:
     """Is `base` ("table.column") a person or record key of a protected table,
     passed through bare? Only such columns may be joined on (decision 3)."""
@@ -518,10 +523,17 @@ class _Analysis:
             for col in _own_nodes(sel, exp.Column):
                 if (col.table or "").lower() != alias.lower():
                     continue
-                banned = _banned_wrapper(col, sel)
-                if banned:
-                    self.findings.append(f"a per-patient value {alias}.{col.name} inside {banned} "
-                                         f"returns one patient's data; use COUNT, SUM or AVG")
+                # an ALLOWLIST: quantiles, bit_or, mode, max... each hands back
+                # one patient's value; only these summarise all of them
+                for anc in _path(col, sel) or []:
+                    if is_agg(anc):
+                        name = (anc.name if isinstance(anc, exp.Anonymous)
+                                else anc.sql_name()).lower()
+                        if name not in _PER_PATIENT_AGGS:
+                            self.findings.append(
+                                f"a per-patient value {alias}.{col.name} inside {name.upper()} can "
+                                f"return one patient's data; use COUNT, SUM or AVG")
+                        break
 
     # --- decision 3: no filtering on identifying columns ---
     def predicates(self, scope: Scope) -> None:
@@ -733,8 +745,24 @@ class _Analysis:
             if not isinstance(star.parent, (exp.Count, exp.AggFunc)):
                 self.findings.append("an unexpanded * over patient data; name the columns")
                 break
+        # a query inside a LIMIT / OFFSET, or as a table function's argument,
+        # sizes the result by its value: refused outright on patient data
+        for node in self.root.find_all(exp.Limit, exp.Offset, exp.Fetch):
+            if node.find(exp.Select):
+                self.findings.append("a query inside LIMIT / OFFSET; use a number")
+                break
+        for t in self.root.find_all(exp.Table):
+            if isinstance(t.this, exp.Func) and t.this.find(exp.Select):
+                self.findings.append("a query as a table function's argument")
+                break
         scopes = list(traverse_scope(self.root))
         self.scopes = scopes
+        self._row_sources = []
+        for sc in scopes:
+            for src in sc.sources.values():
+                if isinstance(src, Scope):
+                    self._row_sources.append(src)
+            self._row_sources.extend(sc.union_scopes or [])
         for scope in scopes:
             self.outputs(scope)
             if isinstance(scope.expression, exp.Select):
@@ -743,6 +771,24 @@ class _Analysis:
                 self.windows(scope)
                 self.predicates(scope)
                 self.per_patient_outputs(scope)
+        # A query nested anywhere but FROM -- WHERE, HAVING, ON, a LIMIT, a
+        # function's or table function's argument -- hands its value straight
+        # into the outer query, where it can be compared, counted or turned into
+        # a row count. Its outputs are held to the result's rule: safe only.
+        # (FROM sources are followed by lineage; UNION branches belong to their
+        # union; a key IN-set is a semi-join.)
+        for scope in scopes[:-1]:
+            if scope in self._row_sources:
+                continue
+            node = scope.expression.parent
+            if isinstance(node, exp.Subquery):
+                node = node.parent
+            if isinstance(node, exp.In) and self._selects_keys(scope):
+                continue
+            for name, sens in self.outputs(scope):
+                if sens.cls != SAFE:
+                    self.findings.append(f"a nested query returns {sens.cls} {sens.base or name} "
+                                         f"into the outer query")
         root_scope = scopes[-1] if scopes else None
         if root_scope is not None:
             for name, sens in self.outputs(root_scope):

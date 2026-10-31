@@ -136,6 +136,40 @@ BLOCKED = {
     "a boolean cast inside SUM": ("SELECT sum(CAST(condition_name = 'Rare' AS INT)) AS n "
                                   "FROM gold_condition"),
     "count_if": "SELECT count_if(condition_name = 'Rare') AS n FROM gold_condition",
+    # --- sixth adversarial review ---
+    "a zip read back through range()": (
+        "SELECT count(*) AS n FROM range((SELECT CAST(q.postal_code AS INT) FROM gold_patient q "
+        "ORDER BY q.age_years LIMIT 1)) r"),
+    "a name compared in WHERE via a scalar subquery": (
+        "SELECT count(*) AS n FROM range(100000) r WHERE r.range < "
+        "(SELECT ascii(q.family_name) FROM gold_patient q ORDER BY q.age_years LIMIT 1)"),
+    "a correlated name lookup in WHERE": (
+        "SELECT p.gender, p.age_years FROM gold_patient p WHERE 'X' = "
+        "(SELECT q.family_name FROM gold_patient q WHERE q.patient_id = p.patient_id)"),
+    "a birth date in a HAVING subquery": (
+        "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender HAVING count(*) > "
+        "(SELECT date_diff('day', DATE '1900-01-01', CAST(q.birth_date AS DATE)) FROM gold_patient q LIMIT 1)"),
+    "a zip in a JOIN ON subquery": (
+        "SELECT count(*) AS n FROM range(100000) r JOIN gold_patient p ON r.range < "
+        "(SELECT CAST(q.postal_code AS INT) FROM gold_patient q LIMIT 1)"),
+    "a nested OFFSET by a subquery": (
+        "SELECT count(*) AS n FROM (SELECT r.range FROM range(100000) r OFFSET "
+        "(SELECT count(*) FROM gold_patient)) t"),
+    "a nested LIMIT by a subquery": (
+        "SELECT count(*) AS n FROM (SELECT r.range FROM range(100000) r LIMIT "
+        "(SELECT count(*) FROM gold_patient)) t"),
+    "a date through generate_series()": (
+        "SELECT count(*) AS n FROM generate_series(1, (SELECT year(CAST(q.birth_date AS DATE)) * 1000 + "
+        "month(CAST(q.birth_date AS DATE)) FROM gold_patient q LIMIT 1)) g"),
+    "quantile_disc of per-patient values": (
+        "SELECT quantile_disc(t.n, 1.0) AS q FROM (SELECT e.patient_id, count(*) AS n "
+        "FROM gold_encounter e GROUP BY e.patient_id) t"),
+    "median of per-patient values": (
+        "SELECT median(t.n) AS q FROM (SELECT e.patient_id, count(*) AS n "
+        "FROM gold_encounter e GROUP BY e.patient_id) t"),
+    "bit_or of per-patient values": (
+        "SELECT bit_or(t.n) AS q FROM (SELECT e.patient_id, count(*) AS n "
+        "FROM gold_encounter e GROUP BY e.patient_id) t"),
     "JOIN ON an id compared to a value": (
         "SELECT count(*) AS n FROM gold_condition c JOIN gold_patient p "
         "ON c.patient_id = p.patient_id AND p.patient_id > 'm'"),
@@ -258,6 +292,14 @@ ALLOWED = {
     "a semi-join through a derived key": (
         "SELECT count(*) AS n FROM gold_condition c WHERE c.patient_id IN "
         "(SELECT t.patient_id FROM (SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER') t)"),
+    "a scalar count in WHERE": ("SELECT count(*) AS n FROM gold_encounter WHERE length_of_stay_days > "
+                                "(SELECT avg(length_of_stay_days) FROM gold_encounter)"),
+    "EXISTS on the key": ("SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
+                          "(SELECT 1 FROM gold_condition c WHERE c.patient_id = p.patient_id "
+                          "AND c.condition_name = 'Prediabetes')"),
+    "stddev of per-patient values": (
+        "SELECT round(stddev(t.n), 1) AS s FROM (SELECT e.patient_id, count(*) AS n "
+        "FROM gold_encounter e GROUP BY e.patient_id) t"),
     "ORDER BY a count alias": ("SELECT condition_name, count(*) AS n FROM gold_condition "
                                "GROUP BY condition_name ORDER BY n DESC"),
     "a per-patient CTE joined back on the key": (

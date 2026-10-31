@@ -231,6 +231,23 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
     `count_if`).
   - `GROUP BY patient_id, gender` inside, which is now refused with a reason
     rather than silently returning nothing.
+- **Sixth adversarial review.** Two more were closed, each with tests that fail
+  on the earlier code:
+  - a nested query outside the SELECT list (in WHERE, HAVING, ON, a nested
+    LIMIT/OFFSET, or a `range()` / `generate_series()` argument) carried one
+    patient's identifier into the outer query as a number. Such a query may
+    now return only safe values; a query inside LIMIT/OFFSET or a table
+    function's arguments is refused outright.
+  - quantiles, `median`, `bit_or` and similar over per-patient values picked
+    out one patient's value. Only COUNT, SUM, AVG, STDDEV and VARIANCE are
+    now allowed over them (an allowlist).
+- **⚠ Owner's call: small counts through rows.** A row-level query of safe
+  columns, filtered by a key semi-join (`gender FROM gold_patient WHERE
+  patient_id IN (<patients with a rare condition>)`), returns one row per person,
+  so its row count can be under 11. No aggregate means no HAVING. Closing it
+  means suppressing row-level results over patient data below 11 rows (or
+  refusing row-level patient results entirely). Not done: it changes what the
+  stated rules allow.
 - **Trade-offs decision 3 implies (for the owner to know):** date ranges and
   comparisons between dates (`onset_date >= '2020-01-01'`,
   `onset_date >= start_date`) are refused, because only the year may be used.
