@@ -206,7 +206,7 @@ def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
 
 # The only aggregates allowed over per-patient values (decision 4).
 _PER_PATIENT_AGGS = {"count", "sum", "avg", "mean", "stddev", "stddev_samp", "stddev_pop",
-                     "variance", "var_samp", "var_pop"}
+                     "variance", "var_samp", "var_pop", "variance_pop", "variance_samp"}
 
 
 def _is_key(base: Optional[str]) -> bool:
@@ -446,9 +446,15 @@ class _Analysis:
             parts = [self.outputs(s) for s in scope.union_scopes]
             out = []
             for i, (name, sens) in enumerate(parts[0]):
+                bases = {sens.base}
                 for other in parts[1:]:
                     if i < len(other):
                         sens = sens.worse(other[i][1])   # keeps the worse branch's source
+                        bases.add(other[i][1].base)
+                if len(bases) > 1 and not all(_is_key(b) for b in bases):
+                    # branches from different sources (a key UNION a constant) are
+                    # no longer that key: keep the class, drop the lineage
+                    sens = Sens(sens.cls, sens.is_date, None, None)
                 out.append((name, sens))
         elif isinstance(scope.expression, exp.Select):
             out = [(p.alias_or_name, self.sens_of(scope, p)) for p in scope.expression.selects]
@@ -708,6 +714,14 @@ class _Analysis:
             return sub_scope is not None and self._selects_keys(sub_scope)
         return False
 
+    def _key_on_left(self, scope: Optional[Scope], node: exp.In) -> bool:
+        """`key IN (SELECT key ...)` is a semi-join only with a key on the left:
+        'abc' IN (SELECT patient_id ... WHERE <diagnosis>) asks about one person."""
+        left = node.this
+        while isinstance(left, _TRANSPARENT):
+            left = left.this
+        return scope is not None and isinstance(left, exp.Column) and             _is_key(self.resolve(scope, left).base)
+
     def _selects_keys(self, scope: Scope) -> bool:
         if scope.union_scopes:
             return all(self._selects_keys(u) for u in scope.union_scopes)
@@ -888,7 +902,7 @@ class _Analysis:
             node = scope.expression.parent
             if isinstance(node, exp.Subquery):
                 node = node.parent
-            if isinstance(node, exp.In) and self._selects_keys(scope):
+            if isinstance(node, exp.In) and self._selects_keys(scope) and                     self._key_on_left(scope.parent, node):
                 continue
             for name, sens in self.outputs(scope):
                 if sens.cls != SAFE:

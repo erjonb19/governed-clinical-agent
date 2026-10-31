@@ -242,6 +242,14 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   - quantiles, `median`, `bit_or` and similar over per-patient values picked
     out one patient's value. Only COUNT, SUM, AVG, STDDEV and VARIANCE are
     now allowed over them (an allowlist).
+- **Seventh review (static, `validate_query` only).** Two more closed:
+  - a constant on the LEFT of a key IN-set (`'<id>' IN (SELECT patient_id ...
+    WHERE <diagnosis>)`) asked about one person; a key IN-set now needs a key
+    on the left too.
+  - a constant smuggled into a UNION / INTERSECT branch inherited the real
+    key's lineage; a set operation keeps it only if every branch is a key.
+  `var_pop` / `variance_pop` over per-patient values is now allowed (it was a
+  false refusal).
 - **Owner's decisions 1–3 (2026-10-31).**
   1. **Aggregate-only.** On the FHIR tables every result must be an
      aggregate; each row covers 11+ people by the small-cell rule. Row-level

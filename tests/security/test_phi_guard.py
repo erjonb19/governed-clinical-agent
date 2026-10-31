@@ -136,6 +136,25 @@ BLOCKED = {
     "a boolean cast inside SUM": ("SELECT sum(CAST(condition_name = 'Rare' AS INT)) AS n "
                                   "FROM gold_condition"),
     "count_if": "SELECT count_if(condition_name = 'Rare') AS n FROM gold_condition",
+    # --- seventh review ---
+    "a constant on the left of a key IN-set": (
+        "SELECT count(*) AS n FROM gold_patient WHERE 'abc' IN (SELECT c.patient_id "
+        "FROM gold_condition c WHERE c.condition_name = 'HIV')"),
+    "a constant on the left of NOT IN": (
+        "SELECT count(*) AS n FROM gold_patient WHERE 'abc' NOT IN (SELECT c.patient_id "
+        "FROM gold_condition c WHERE c.condition_name = 'HIV')"),
+    "a safe column on the left of a key IN-set": (
+        "SELECT count(*) AS n FROM gold_patient p WHERE p.gender IN (SELECT c.patient_id "
+        "FROM gold_condition c)"),
+    "a constant smuggled through a UNION in a derived table": (
+        "SELECT count(*) AS n FROM gold_condition c WHERE c.patient_id IN (SELECT k.patient_id "
+        "FROM (SELECT patient_id FROM gold_patient WHERE false UNION ALL SELECT 'abc') k)"),
+    "a constant smuggled through a UNION CTE joined as a key": (
+        "WITH k AS (SELECT 'abc' AS patient_id UNION ALL SELECT patient_id FROM gold_patient "
+        "WHERE false) SELECT count(*) AS n FROM gold_patient p JOIN k ON p.patient_id = k.patient_id"),
+    "a constant smuggled through INTERSECT": (
+        "WITH k AS (SELECT patient_id FROM gold_patient INTERSECT SELECT 'abc') "
+        "SELECT count(*) AS n FROM gold_patient p JOIN k ON p.patient_id = k.patient_id"),
     # --- owner's decision 1 (2026-10-31): aggregate-only ---
     "row-level safe columns": "SELECT gender, age_years FROM gold_patient LIMIT 5",
     "row-level rows of a rare cohort": (
@@ -339,6 +358,13 @@ ALLOWED = {
     "EXISTS on the key": ("SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
                           "(SELECT 1 FROM gold_condition c WHERE c.patient_id = p.patient_id "
                           "AND c.condition_name = 'Prediabetes')"),
+    "var_pop of per-patient values": (
+        "SELECT var_pop(t.n) AS v FROM (SELECT e.patient_id, count(*) AS n "
+        "FROM gold_encounter e GROUP BY e.patient_id) t"),
+    "a key semi-join through a UNION of keys": (
+        "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c WHERE c.patient_id IN "
+        "(SELECT k.patient_id FROM (SELECT patient_id FROM gold_encounter UNION "
+        "SELECT patient_id FROM gold_procedure) k)"),
     "stddev of per-patient values": (
         "SELECT round(stddev(t.n), 1) AS s FROM (SELECT e.patient_id, count(*) AS n "
         "FROM gold_encounter e GROUP BY e.patient_id) t"),
