@@ -252,6 +252,7 @@ class Sens:
     cls: str = SAFE
     is_date: bool = False
     base: Optional[str] = None            # "table.column" when passed through raw
+    ref: Optional[str] = None             # "alias.column" when a BARE column (or cast)
 
     def worse(self, other: "Sens") -> "Sens":
         return other if _RANK[other.cls] > _RANK[self.cls] else self
@@ -347,11 +348,15 @@ class _Analysis:
                     continue
                 worst = worst.worse(s)
         inner = proj.this if isinstance(proj, exp.Alias) else proj
-        if isinstance(inner, exp.Column) and worst.cls != SAFE:
-            worst = Sens(worst.cls, worst.is_date, self.resolve(scope, inner).base)
-        elif isinstance(inner, exp.Column):
-            worst = Sens(SAFE, False, self.resolve(scope, inner).base)
-        return worst
+        while isinstance(inner, (exp.Cast, exp.TryCast, exp.Paren)):
+            inner = inner.this
+        if isinstance(inner, exp.Column):
+            # a bare column (or a cast of one) passes its source through: it can
+            # carry the person key. Anything computed (patient_id || x) cannot.
+            r = self.resolve(scope, inner)
+            ref = f"{inner.table}.{inner.name}".lower() if inner.table else None
+            return Sens(worst.cls, worst.is_date, r.base, ref)
+        return Sens(worst.cls, worst.is_date, None, None)
 
     def outputs(self, scope: Scope) -> list[tuple[str, Sens]]:
         if id(scope) in self.memo:
@@ -386,23 +391,33 @@ class _Analysis:
                 if s.cls == IDENTIFIER and not reduced(col, key, s.is_date):
                     self.findings.append(f"identifier {s.base or col.name} is a GROUP BY key")
 
-    def person_rows(self, scope: Scope) -> tuple[bool, Optional[str]]:
-        """Does this scope's output hold one row per person-level record, and
-        if so which output column carries the person key?"""
+    def person_rows(self, scope: Scope) -> tuple[bool, Optional[list]]:
+        """Does this scope's output hold person-level rows, and if so which
+        output columns carry the person key of EVERY person source it reads?
+        (None when any is missing: a join on gender between two patient tables
+        would otherwise hand the outer query one key over a fanned-out set.)"""
         if id(scope) in self.person:
-            return self.person[id(scope)] is not False, self.person[id(scope)] or None
+            r = self.person[id(scope)]
+            return r is not False, (r if isinstance(r, list) else None)
         result: Any = False
         if scope.union_scopes:
             result = False if not any(self.person_rows(s)[0] for s in scope.union_scopes) else None
         elif isinstance(scope.expression, exp.Select) and not _is_aggregate(scope.expression):
-            if self._person_source(scope)[0]:
+            found, keys = self._person_source(scope)
+            if found:
                 result = None
-                for name, sens in self.outputs(scope):
-                    if sens.base and sens.base.endswith(f".{PERSON_KEY}"):
-                        result = name
-                        break
+                if keys:
+                    outs = self.outputs(scope)
+                    names = []
+                    for k in keys:
+                        name = next((n for n, sens in outs if sens.ref == k.lower()), None)
+                        if name is None:
+                            names = None
+                            break
+                        names.append(name)
+                    result = names
         self.person[id(scope)] = result
-        return result is not False, result if isinstance(result, str) else None
+        return result is not False, (result if isinstance(result, list) else None)
 
     def _person_source(self, scope: Scope) -> tuple[bool, Optional[str]]:
         """(reads person rows?, the person keys of EVERY person source joined
@@ -419,11 +434,11 @@ class _Analysis:
                     else:
                         missing = True
             elif isinstance(src, Scope):
-                rows, k = self.person_rows(src)
+                rows, ks = self.person_rows(src)
                 if rows:
                     found = True
-                    if k:
-                        keys.append(f"{alias}.{k}")
+                    if ks:
+                        keys.extend(f"{alias}.{k}" for k in ks)
                     else:
                         missing = True
         return found, (None if missing or not keys else keys)
@@ -487,6 +502,8 @@ class _Analysis:
                     isinstance(node, exp.Anonymous) and (node.name or "").lower() == "columns"):
                 self.findings.append("COLUMNS(...) selects columns by pattern; name them instead")
                 break
+        if self.root.find(exp.PositionalColumn):
+            self.findings.append("a positional column reference (#N); name the column")
         for star in self.root.find_all(exp.Star):
             if not isinstance(star.parent, (exp.Count, exp.AggFunc)):
                 self.findings.append("an unexpanded * over patient data; name the columns")
@@ -511,9 +528,25 @@ def _rule_hint(findings: list[str]) -> str:
             f"reduced to the year; groups of fewer than {MIN_CELL} people are not shown.")
 
 
+# Table functions whose output is plain generated rows. Any other function in
+# FROM -- query('<sql>'), query_table('<name>'), an unknown one -- hides what it
+# reads from this check (query() even hides it from the allowlist), so it is
+# refused: default deny.
+_SAFE_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
+    for t in tree.find_all(exp.Table):
+        if isinstance(t.this, (exp.Identifier, type(None))):
+            continue
+        fn = (t.this.name if isinstance(t.this, exp.Anonymous) else
+              (t.this.sql_name() if isinstance(t.this, exp.Func) else "")).lower()
+        if fn not in _SAFE_TABLE_FUNCTIONS:
+            return PhiDecision(False, f"PHI rule: the table function {fn or '?'}() reads data the "
+                                      f"guard cannot see, denied (fail closed)",
+                               findings=[fn], protected=True)
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
     try:
@@ -558,7 +591,11 @@ def check(tree: exp.Expression) -> PhiDecision:
     out_tree = tree.copy()
     q_selects = list(q.find_all(exp.Select))
     o_selects = list(out_tree.find_all(exp.Select))
-    if len(q_selects) != len(o_selects):
+    unaliased = any(isinstance(sq.parent, (exp.From, exp.Join)) and not sq.alias
+                    for sq in tree.find_all(exp.Subquery))
+    if len(q_selects) != len(o_selects) or unaliased:
+        # (an unaliased derived table: only the qualified copy has the name the
+        # rewrite refers to)
         out_tree, o_selects = q, q_selects
     def _enough(keys):
         return sqlglot.parse_one(" AND ".join(f"count(DISTINCT {k}) >= {MIN_CELL}" for k in keys),
@@ -573,8 +610,11 @@ def check(tree: exp.Expression) -> PhiDecision:
         where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
         guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL}"
                              for k in keys)
-        target.replace(sqlglot.parse_one(
-            f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END", read=DIALECT))
+        gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
+                                  read=DIALECT)
+        if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
+            gated = exp.alias_(gated, target.sql(dialect=DIALECT), quoted=True)
+        target.replace(gated)
     for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]
         cond = _enough(keys)

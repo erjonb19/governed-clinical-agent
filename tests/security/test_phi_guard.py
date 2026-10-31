@@ -107,6 +107,20 @@ BLOCKED = {
     "COLUMNS() by lambda": "SELECT COLUMNS(c -> c = 'family_name') FROM gold_patient",
     "a condition hidden in SUM": "SELECT SUM(CASE WHEN age_years > 105 THEN 1 ELSE 0 END) AS n FROM gold_patient",
     "a condition hidden in COUNT": "SELECT count(CASE WHEN age_years = 115 THEN 1 END) AS n FROM gold_patient",
+    # --- third adversarial review ---
+    "positional column": "SELECT #3 FROM gold_patient",
+    "positional GROUP BY": "SELECT #3, count(*) FROM gold_patient GROUP BY #3",
+    "query_table() hides the table": "SELECT * FROM query_table('gold_patient')",
+    "query() runs a string the guard never parses": "SELECT * FROM query('SELECT given_name FROM gold_patient')",
+    "query() lists the catalog": "SELECT table_name FROM query('SELECT table_name FROM duckdb_tables()')",
+    "a spoofed person key": (
+        "SELECT t.gender, t.measure_name, avg(t.value_num) AS v, count(*) AS n FROM "
+        "(SELECT patient_id || observation_id AS patient_id, gender, measure_name, value_num "
+        "FROM gold_observation) t GROUP BY 1, 2"),
+    "a fan-out hiding one source's key": (
+        "SELECT t.gender, t.measure_name, avg(t.value_num) AS v FROM (SELECT p.patient_id, o.gender, "
+        "o.measure_name, o.value_num FROM gold_observation o JOIN gold_patient p ON o.gender = p.gender) t "
+        "GROUP BY 1, 2"),
 }
 
 ALLOWED = {
@@ -315,4 +329,21 @@ def test_an_aggregate_sqlglot_does_not_model_is_still_suppressed(tool):
 def test_plausible_ratio_queries_run(tool, name):
     r = tool.execute({"sql": ALLOWED[name]})
     assert r.success, (name, r.error)
+
+
+def test_an_unaliased_derived_table_still_runs(tool):
+    r = tool.execute({"sql": "SELECT gender, count(*) AS n FROM (SELECT gender, patient_id "
+                             "FROM gold_patient) GROUP BY gender"})
+    assert r.success and r.output["rows"] == [{"gender": "female", "n": 12}]
+
+
+def test_a_filtered_count_keeps_its_column_name(tool):
+    r = tool.execute({"sql": "SELECT count(*) FILTER (WHERE gender = 'female') FROM gold_patient"})
+    assert r.success and len(r.output["columns"]) == 1
+    assert "CASE" not in r.output["columns"][0]
+
+
+def test_generator_table_functions_still_run(tool):
+    r = tool.execute({"sql": "SELECT count(*) AS n FROM range(3)"})
+    assert r.success and r.output["rows"] == [{"n": 3}]
 
