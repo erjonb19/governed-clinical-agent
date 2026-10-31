@@ -154,6 +154,31 @@ def _interval_operands(node: exp.Expression) -> Optional[list]:
     return ops
 
 
+_DAY_FUNCS = {"to_days", "to_hours", "to_weeks"}
+
+
+def _fixed_days(node: Optional[exp.Expression]) -> bool:
+    """A fixed shift a date may be moved by in a date-vs-date comparison: a
+    number (date + 30 is 30 days in DuckDB), an INTERVAL of a number, or
+    to_days(<number>). Nothing computed: a subquery or a column would make the
+    'shift' a constant date in disguise."""
+    def number(n):
+        while isinstance(n, (exp.Paren, exp.Neg)):
+            n = n.this
+        return isinstance(n, exp.Literal) and re.fullmatch(
+            r"\s*\d+(\.\d+)?(\s*[a-zA-Z]+)?\s*", n.name or "") is not None \
+            and not _DATE_LITERAL.search(n.name or "")
+    if node is None:
+        return False
+    if isinstance(node, exp.Interval):
+        return number(node.this)
+    if type(node).__name__ == "ToDays":                 # sqlglot models to_days()
+        return number(node.this)
+    if isinstance(node, exp.Anonymous) and (node.name or "").lower() in _DAY_FUNCS:
+        return len(node.expressions) == 1 and number(node.expressions[0])
+    return isinstance(node, exp.Literal) and not node.is_string and number(node)
+
+
 # Nodes that change a value's type, not what it says. A reduction counts only
 # when nothing else sits between the column and the reducing function: YEAR()
 # around arithmetic on a date smuggles the month and day out, and COUNT around
@@ -207,6 +232,23 @@ def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
 # The only aggregates allowed over per-patient values (decision 4).
 _PER_PATIENT_AGGS = {"count", "sum", "avg", "mean", "stddev", "stddev_samp", "stddev_pop",
                      "variance", "var_samp", "var_pop", "variance_pop", "variance_samp"}
+
+# The only aggregates allowed over patient ROWS (decision 1, eighth review): ones
+# that summarise a group. LIST / ARRAY_AGG / STRING_AGG / HISTOGRAM hand back
+# every member's record, and ARG_MAX / ANY_VALUE / FIRST pick out one member's;
+# an aggregate missing here is refused (default deny). MIN and MAX are allowed
+# in their one-argument form only: max(x, n) returns a list of n values.
+_PATIENT_ROW_AGGS = _PER_PATIENT_AGGS | {
+    "count_star", "median", "quantile_cont", "percentile_cont", "min", "max",
+    "approx_count_distinct", "approx_distinct", "corr", "covar_pop", "covar_samp",
+    "skewness", "kurtosis", "kurtosis_pop", "entropy", "fsum", "sumkahan", "kahan_sum",
+    "sum_no_overflow", "bool_and", "bool_or", "logical_and", "logical_or", "regr_avgx",
+    "regr_avgy", "regr_count", "regr_intercept", "regr_r2", "regr_slope", "regr_sxx",
+    "regr_sxy", "regr_syy", "count_if", "countif"}   # *_if is refused as conditional below
+
+
+def _agg_name(node: exp.Expression) -> str:
+    return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
 
 
 def _is_key(base: Optional[str]) -> bool:
@@ -565,8 +607,7 @@ class _Analysis:
                 # one patient's value; only these summarise all of them
                 for anc in _path(col, sel) or []:
                     if is_agg(anc):
-                        name = (anc.name if isinstance(anc, exp.Anonymous)
-                                else anc.sql_name()).lower()
+                        name = _agg_name(anc)
                         if name not in _PER_PATIENT_AGGS:
                             self.findings.append(
                                 f"a per-patient value {alias}.{col.name} inside {name.upper()} can "
@@ -642,55 +683,115 @@ class _Analysis:
 
     def _date_comparison(self, scope: Scope, col: exp.Column, clause: exp.Expression) -> bool:
         """Owner's decision 2: a filter may compare two date columns (b.start >
-        a.end, b.start BETWEEN a.end AND a.end + INTERVAL 30 DAY). Not a date
-        against a literal more specific than the year."""
+        a.end, b.start BETWEEN a.end AND a.end + INTERVAL 30 DAY). EVERY operand
+        must be a date column, shifted at most by a fixed number of days: a
+        constant bound -- make_date(...), current_date, an epoch, a subquery --
+        compares a date with a constant (eighth review: one column bound and one
+        constant bound pinned a date to the day)."""
         node = col
         while node.parent is not None and node is not clause:
             parent = node.parent
             if isinstance(parent, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)):
                 break
-            if isinstance(parent, _TRANSPARENT):
-                node = parent
-                continue
-            if isinstance(parent, (exp.Add, exp.Sub)) and \
-                    isinstance(parent.expression, exp.Interval):
-                node = parent                                # a.end + INTERVAL 30 DAY
-                continue
-            return False
+            node = parent
         else:
             return False
         cmp = node.parent
-        cols = list(_own_nodes(cmp, exp.Column))
-        for c in cols:
-            r = self.resolve(scope, c)
-            if not (r.is_date and r.base):
+        operands = ([cmp.this, cmp.args.get("low"), cmp.args.get("high")]
+                    if isinstance(cmp, exp.Between) else [cmp.this, cmp.expression])
+        bases = set()
+        for op in operands:
+            base = self._shifted_date_column(scope, op)
+            if base is None:
                 return False
-        if len({(c.table, c.name) for c in cols}) < 2:
-            return False
-        for lit in cmp.find_all(exp.Literal):
-            if lit.is_string and _DATE_LITERAL.search(lit.this or "") and \
-                    not isinstance(lit.parent, exp.Interval):
-                return False
-        return True
+            bases.add(base)
+        return len(bases) >= 2
+
+    def _shifted_date_column(self, scope: Scope, node: Optional[exp.Expression]) -> Optional[str]:
+        """If `node` is a date column of a real table, optionally plus or minus a
+        fixed day count (INTERVAL 30 DAY, INTERVAL '30 days', 30, to_days(30)),
+        the column's "table.column"; else None."""
+        while node is not None:
+            if isinstance(node, _TRANSPARENT):
+                node = node.this
+            elif isinstance(node, (exp.Add, exp.Sub)) and _fixed_days(node.expression):
+                node = node.this
+            elif isinstance(node, exp.Add) and _fixed_days(node.this):
+                node = node.expression                      # INTERVAL 30 DAY + a.end
+            else:
+                break
+        if not isinstance(node, exp.Column):
+            return None
+        r = self.resolve(scope, node)
+        return r.base if (r.is_date and r.base) else None
 
     def aggregate_only(self, scopes: list) -> None:
         """Owner's decision 1 (2026-10-31): patient data is aggregate-only. The
         result must be an aggregate (each row covering 11+ people, by the
-        small-cell rule); row-level results are refused even of safe columns."""
-        root = scopes[-1]
-        branches = root.union_scopes or [root]
-        stack = list(branches)
-        while stack:
-            sc = stack.pop()
-            if sc.union_scopes:
-                stack.extend(sc.union_scopes)
+        small-cell rule); row-level results are refused even of safe columns.
+
+        "The result" is every place a query's values leave it: the root, and
+        (eighth review) every query nested in an expression -- a scalar
+        subquery, ARRAY(SELECT ...), EXISTS, a value IN-set -- which hands its
+        rows to the outer query unaggregated, whatever the outer query reads.
+        Exempt: FROM sources (their consumer is checked), and the two
+        semi-joins, whose outer query aggregates the patients they select:
+        key IN (SELECT key ...) and EXISTS (... WHERE inner.key = outer.key)."""
+        terminal = [scopes[-1]]
+        for scope in scopes[:-1]:
+            if scope in self._row_sources:
                 continue
-            if isinstance(sc.expression, exp.Select) and self._person_source(sc)[0] and \
-                    not _is_aggregate(sc.expression):
-                self.findings.append("returns patient records row by row; patient data is "
-                                     "returned only as aggregates (counts, averages, rates) "
-                                     f"covering {MIN_CELL} or more people")
-                return
+            node = scope.expression.parent
+            if isinstance(node, exp.Subquery):
+                node = node.parent
+            if isinstance(node, exp.In) and self._selects_keys(scope) and \
+                    self._key_on_left(scope.parent, node):
+                continue
+            if isinstance(node, exp.Exists) and self._correlated_on_key(scope):
+                continue
+            terminal.append(scope)
+        for top in terminal:
+            stack = list(top.union_scopes or [top])
+            while stack:
+                sc = stack.pop()
+                if sc.union_scopes:
+                    stack.extend(sc.union_scopes)
+                    continue
+                if isinstance(sc.expression, exp.Select) and self._person_source(sc)[0] and \
+                        not _is_aggregate(sc.expression):
+                    where = "" if top is scopes[-1] else " (in a nested query)"
+                    self.findings.append(f"returns patient records row by row{where}; patient "
+                                         "data is returned only as aggregates (counts, averages, "
+                                         f"rates) covering {MIN_CELL} or more people")
+                    return
+
+    def _correlated_on_key(self, scope: Scope) -> bool:
+        """EXISTS as a semi-join: the subquery's WHERE ties a key of its own
+        patient rows to a key of the OUTER query's (inner.patient_id =
+        outer.patient_id). Uncorrelated, EXISTS is a yes/no about the whole
+        table -- one person, if the filter is narrow enough."""
+        sel = scope.expression
+        where = sel.args.get("where") if isinstance(sel, exp.Select) else None
+        if where is None:
+            return False
+        own = {a.lower() for a in scope.sources}
+        stack = [where.this]
+        while stack:
+            c = stack.pop()
+            if isinstance(c, (exp.And, exp.Paren)):
+                stack.extend(x for x in (c.this, c.args.get("expression")) if x is not None)
+                continue
+            if not (isinstance(c, exp.EQ) and isinstance(c.this, exp.Column)
+                    and isinstance(c.expression, exp.Column)):
+                continue
+            sides = [c.this, c.expression]
+            inner = [s for s in sides if (s.table or "").lower() in own]
+            outer = [s for s in sides if s.table and (s.table or "").lower() not in own]
+            if len(inner) == 1 and len(outer) == 1 and \
+                    _is_key(self.resolve(scope, inner[0]).base) and \
+                    _is_key(self.resolve(scope, outer[0]).base):
+                return True
+        return False
 
     def _key_join(self, scope: Scope, col: exp.Column, s: "Sens") -> bool:
         """A join, not a filter: a key of a protected table equated to another
@@ -802,7 +903,15 @@ class _Analysis:
         for agg in _own_nodes(sel, exp.Expression):
             if not is_agg(agg) or isinstance(agg.parent, exp.Window):
                 continue
-            conditional = isinstance(agg, exp.CountIf) or \
+            name = _agg_name(agg)
+            n_args = len([a for a in agg.iter_expressions() if not isinstance(a, exp.Window)])
+            if name not in _PATIENT_ROW_AGGS or (name in ("min", "max") and n_args > 1):
+                self.findings.append(
+                    f"{name.upper()} over patient rows can return members' own values "
+                    "(a list, a record, or one person's value); use COUNT, SUM, AVG, MEDIAN "
+                    "or another summary")
+                continue
+            conditional =isinstance(agg, exp.CountIf) or \
                 (isinstance(agg, exp.Anonymous) and (agg.name or "").lower().endswith("_if"))
             if conditional or any(isinstance(n, (exp.Case, exp.If, exp.Predicate, exp.Is,
                                                  exp.Like, exp.ILike, exp.Not, exp.Connector))
@@ -833,8 +942,10 @@ class _Analysis:
         reads_patients = self._person_source(scope)[0]
         grouped = isinstance(sel, exp.Select) and _is_aggregate(sel)
         for win in _own_nodes(sel, exp.Window):
-            over_groups = grouped and any(is_agg(n) for n in win.this.walk() if n is not win.this)
-            if reads_patients and is_agg(win.this) and not over_groups:
+            # In a grouped scope a window runs over the groups, after the HAVING
+            # that holds each to 11+ people (rank() OVER (ORDER BY count(*)) is a
+            # ranking of groups, not of patients)
+            if reads_patients and is_agg(win.this) and not grouped:
                 self.findings.append(
                     f"a window aggregate ({win.this.sql(dialect=DIALECT)[:40]} OVER ...) over "
                     f"patient rows, whose groups cannot be held to {MIN_CELL} people; use GROUP BY")

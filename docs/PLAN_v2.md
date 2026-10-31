@@ -280,6 +280,29 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
      (allowed) and exact-date filters (refused).
   3. **Dialysis cases.** Replacing them with chemotherapy with radiation is
      agreed.
+- **Eighth review (static, `validate_query` only, of decisions 1 and 2).** Four
+  bypasses were closed, each pinned by tests that fail on the earlier code:
+  - a query nested in an expression -- a scalar subquery, `ARRAY(SELECT ...)`,
+    `EXISTS`, a value `IN`-set -- handed patient rows to the outer query
+    unaggregated (the aggregate-only rule looked at the root only). Every such
+    query must now aggregate too. Still allowed: the key semi-join
+    `patient_id IN (SELECT patient_id ...)` and an `EXISTS` correlated on the
+    patient key, whose outer query aggregates the patients they select.
+  - `LIST`, `ARRAY_AGG`, `STRING_AGG`, `HISTOGRAM` and `ARG_MAX` over safe
+    columns packed each member's record into an 11+ group. Aggregates over
+    patient rows are now an allowlist of summaries (COUNT, SUM, AVG, MEDIAN,
+    STDDEV and kin, one-argument MIN/MAX).
+  - a `BETWEEN` with one date-column bound and one constant bound
+    (`make_date(...)`, `current_date`, an epoch shift, a subquery) compared a
+    date with a constant, and two of them pinned a date to the day. Every
+    operand of a date comparison must now be a date column, shifted at most by
+    a fixed number of days.
+
+  Two false refusals were fixed: `rank()` over grouped counts, and the 30-day
+  window written as `a.end_date + 30` or `+ to_days(30)`.
+  **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
+  group) over a safe column return one person's value, such as the oldest age
+  in a group of 11+. They are allowed, because one bank case uses `MAX`.
 - The FHIR schema notes tell the planner these rules, so it writes allowed SQL
   the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total

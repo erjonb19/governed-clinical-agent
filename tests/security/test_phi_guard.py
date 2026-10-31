@@ -645,3 +645,133 @@ def test_an_array_over_grouped_results_still_runs(tool):
     r = tool.execute({"sql": "SELECT ARRAY(SELECT gender FROM gold_patient GROUP BY gender) AS a"})
     assert r.success, r.error
 
+
+
+# --- eighth review (static, decisions 1 and 2) -----------------------------------
+# Each of these was ALLOWED by the guard before the fix (reproduced with
+# validate_query on 44806b8).
+
+EIGHTH_REVIEW_BYPASSES = {
+    # B1: a query nested in an expression returned patient rows unaggregated
+    "ARRAY(SELECT ...) of every patient's quasi-identifiers": (
+        "SELECT ARRAY(SELECT struct_pack(by := year(birth_date), g := gender, a := age_years) "
+        "FROM gold_patient) AS rows"),
+    "scalar subquery returning one rare-cohort row": (
+        "SELECT (SELECT struct_pack(a := age_at_onset, g := gender) FROM gold_condition "
+        "WHERE condition_name = 'X' LIMIT 1) AS r"),
+    "scalar subquery enumerated over range()": (
+        "SELECT r.i, (SELECT condition_name FROM gold_condition c WHERE c.age_at_onset = r.i "
+        "LIMIT 1) AS cn FROM range(0, 100) r(i)"),
+    "scalar subquery per hospital row": (
+        "SELECT h.state, (SELECT age_years FROM gold_patient p WHERE p.state = h.state LIMIT 1) "
+        "AS a FROM gold_hospital_profile h"),
+    "scalar day difference of one encounter": (
+        "SELECT (SELECT date_diff('day', start_date, end_date) FROM gold_encounter LIMIT 1) AS d"),
+    # B2: EXISTS / IN as a yes-no about one person
+    "uncorrelated EXISTS under a hospital root": (
+        "SELECT count(*) AS n FROM gold_hospital_profile WHERE EXISTS (SELECT 1 FROM gold_patient "
+        "WHERE year(birth_date) = 1922 AND gender = 'F')"),
+    "CASE WHEN EXISTS": (
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM gold_patient WHERE age_years = 104) "
+        "THEN 1 ELSE 0 END AS f"),
+    "a constant IN a set of values": (
+        "SELECT count(*) AS n FROM gold_hospital_profile WHERE 104 IN "
+        "(SELECT age_years FROM gold_patient)"),
+    "uncorrelated EXISTS under a patient root": (
+        "SELECT count(*) AS n FROM gold_patient WHERE EXISTS (SELECT 1 FROM gold_condition c "
+        "WHERE c.condition_name = 'X' AND c.age_at_onset = 3)"),
+    "EXISTS correlated on its own tables only": (
+        "SELECT count(*) AS n FROM gold_hospital_profile WHERE EXISTS (SELECT 1 FROM gold_patient p "
+        "JOIN gold_condition c ON c.patient_id = p.patient_id WHERE p.patient_id = c.patient_id "
+        "AND c.age_at_onset = 3)"),
+    # B3: collecting aggregates pack members' records into an 11+ group
+    "ARRAY_AGG of records": (
+        "SELECT gender, array_agg(struct_pack(g := gender, a := age_years)) AS recs "
+        "FROM gold_patient GROUP BY gender"),
+    "LIST of safe values": "SELECT gender, list(age_years) AS l FROM gold_patient GROUP BY gender",
+    "LIST unnested back into rows": (
+        "SELECT unnest(l) AS age FROM (SELECT gender, list(age_years) AS l FROM gold_patient "
+        "GROUP BY gender) x"),
+    "HISTOGRAM exposing cells of 1": (
+        "SELECT gender, histogram(age_years) AS h FROM gold_patient GROUP BY gender"),
+    "STRING_AGG of safe values": (
+        "SELECT gender, string_agg(CAST(age_years AS VARCHAR), ',') AS s FROM gold_patient "
+        "GROUP BY gender"),
+    "ARG_MAX of a safe column": (
+        "SELECT gender, arg_max(marital_status, age_years) AS m FROM gold_patient GROUP BY gender"),
+    "MAX with a count returns a list": (
+        "SELECT gender, max(age_years, 1000) AS m FROM gold_patient GROUP BY gender"),
+    # B4: one column bound and one constant bound compare a date with a constant
+    "BETWEEN a column and make_date()": (
+        "SELECT count(*) AS n FROM gold_encounter WHERE start_date BETWEEN "
+        "end_date - INTERVAL 100000 DAY AND make_date(2020, 3, 4)"),
+    "BETWEEN a column and current_date": (
+        "SELECT count(*) AS n FROM gold_encounter WHERE start_date BETWEEN "
+        "end_date - INTERVAL 100000 DAY AND current_date"),
+    "BETWEEN a column and an epoch shift": (
+        "SELECT count(*) AS n FROM gold_encounter WHERE start_date BETWEEN "
+        "end_date - INTERVAL 100000 DAY AND TIMESTAMP 'epoch' + INTERVAL 18325 DAY"),
+    "BETWEEN a column and a scalar subquery": (
+        "SELECT count(*) AS n FROM gold_encounter WHERE start_date BETWEEN "
+        "end_date - INTERVAL 100000 DAY AND (SELECT make_date(2020, 3, 4))"),
+    "two BETWEENs pinning a date to the day": (
+        "SELECT count(*) AS n FROM gold_condition WHERE onset_date BETWEEN "
+        "abatement_date - INTERVAL 99999 DAY AND make_date(2020, 3, 4) AND onset_date BETWEEN "
+        "make_date(2020, 3, 4) AND abatement_date + INTERVAL 99999 DAY"),
+    "a shift that is a column, not a number": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id WHERE b.start_date > a.end_date + to_days(b.encounter_id)"),
+}
+
+
+@pytest.mark.parametrize("name", list(EIGHTH_REVIEW_BYPASSES))
+def test_eighth_review_bypasses_are_refused(name):
+    d = validate_query(EIGHTH_REVIEW_BYPASSES[name])
+    assert not d.allowed, f"{name}: {d.safe_sql}"
+    assert "PHI rule" in d.reason
+
+
+EIGHTH_REVIEW_ALLOWED = {
+    # F1: a ranking of groups is not a window over patient rows
+    "rank() over grouped counts": (
+        "SELECT condition_name, count(*) AS n, rank() OVER (ORDER BY count(*) DESC) AS rk "
+        "FROM gold_condition GROUP BY condition_name"),
+    # F2: other spellings of a 30-day window
+    "date + 30 (days)": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30"),
+    "date + to_days(30)": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date BETWEEN a.end_date AND a.end_date + to_days(30)"),
+    # the semi-joins stay allowed: the outer query aggregates the patients
+    "key IN semi-join": (
+        "SELECT count(*) AS n FROM gold_patient WHERE patient_id IN "
+        "(SELECT patient_id FROM gold_condition WHERE condition_name = 'X')"),
+    "EXISTS correlated on the patient key": (
+        "SELECT count(*) AS n FROM gold_patient p WHERE EXISTS (SELECT 1 FROM gold_condition c "
+        "WHERE c.patient_id = p.patient_id AND c.condition_name = 'X')"),
+    "an aggregate scalar subquery": (
+        "SELECT (SELECT avg(age_years) FROM gold_patient) AS a"),
+    "summary statistics over patient rows": (
+        "SELECT gender, median(age_years) AS m, stddev(age_years) AS s, max(age_years) AS mx "
+        "FROM gold_patient GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(EIGHTH_REVIEW_ALLOWED))
+def test_eighth_review_legitimate_shapes_still_pass(name):
+    d = validate_query(EIGHTH_REVIEW_ALLOWED[name])
+    assert d.allowed, f"{name}: {d.reason}"
+
+
+def test_a_nested_aggregate_is_held_to_11_people_too():
+    d = validate_query("SELECT (SELECT avg(age_years) FROM gold_patient) AS a")
+    assert "count(DISTINCT" in d.safe_sql.replace("COUNT", "count")
+
+
+def test_a_correlated_exists_semi_join_runs_and_is_suppressed(tool):
+    r = tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
+                             "(SELECT 1 FROM gold_condition c WHERE c.patient_id = p.patient_id)"})
+    assert r.success, r.error

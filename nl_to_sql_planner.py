@@ -307,6 +307,10 @@ Notes:
     places or full dates (joining on patient_id / encounter_id is fine); per-patient
     figures go in a subquery grouped by patient_id that the outer query
     COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
+    Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV, never LIST,
+    ARRAY_AGG, STRING_AGG or ARG_MAX; a subquery in SELECT or WHERE must
+    aggregate too, except patient_id IN (SELECT patient_id ...) or EXISTS
+    correlated on patient_id.
 """
 
 SCHEMA_DOC_HOSPITAL = """\
