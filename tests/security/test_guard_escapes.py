@@ -30,6 +30,28 @@ ESCAPES = {
                                           "SELECT * FROM bronze_patient"),
     "a CTE referencing a later CTE's name": ("WITH a AS (SELECT * FROM bronze_x), bronze_x AS "
                                             "(SELECT 1 AS x) SELECT * FROM a"),
+    # second review
+    "json_execute_serialized_sql runs a string": (
+        "SELECT count(*) AS n FROM json_execute_serialized_sql(json_serialize_sql('SELECT * FROM bronze_patient'))"),
+    "WITH RECURSIVE with no UNION reads the real table": (
+        "WITH RECURSIVE bronze_patient AS (SELECT * FROM bronze_patient) SELECT * FROM bronze_patient"),
+    "WITH RECURSIVE: the anchor reads the real table": (
+        "WITH RECURSIVE bronze_patient AS (SELECT count(*) AS n FROM bronze_patient UNION SELECT 0) "
+        "SELECT max(n) AS n FROM bronze_patient"),
+    "WITH RECURSIVE: a non-recursive sibling": (
+        "WITH RECURSIVE x AS (SELECT 1 AS n), bronze_patient AS (SELECT * FROM bronze_patient) "
+        "SELECT count(*) AS n FROM bronze_patient"),
+    "read_ndjson": "SELECT * FROM read_ndjson('x.json')",
+    "parquet_scan": "SELECT * FROM parquet_scan('x.parquet')",
+    "parquet_metadata": "SELECT * FROM parquet_metadata('x.parquet')",
+    "sniff_csv": "SELECT * FROM sniff_csv('x.csv')",
+    "sqlite_scan": "SELECT * FROM sqlite_scan('x.db', 't')",
+    "pragma_storage_info (PHI min/max)": "SELECT * FROM pragma_storage_info('bronze_patient')",
+    "pragma_show": "SELECT * FROM pragma_show('bronze_patient')",
+    "checkpoint() writes": "SELECT * FROM checkpoint()",
+    "current_setting": "SELECT current_setting('home_directory') AS h",
+    "getvariable": "SELECT getvariable('x') AS v",
+    "an unknown table function": "SELECT * FROM some_future_reader('x')",
     "a nested shadowing CTE": ("SELECT * FROM (WITH raw_member_phi AS (SELECT * FROM raw_member_phi) "
                                "SELECT * FROM raw_member_phi) t"),
 }
@@ -41,6 +63,10 @@ STILL_FINE = {
     "a recursive CTE": ("WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
                         "SELECT * FROM r"),
     "a nested WITH": "SELECT * FROM (WITH g AS (SELECT * FROM gold_hospital_profile) SELECT * FROM g) x",
+    "a recursive CTE whose recursive term names itself": (
+        "WITH RECURSIVE bronze_patient AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM bronze_patient "
+        "WHERE n < 3) SELECT * FROM bronze_patient"),
+    "a generator in FROM": "SELECT count(*) AS n FROM range(3)",
     "a CTE named after the allowlisted table it reads": (
         "WITH gold_hospital_profile AS (SELECT * FROM gold_hospital_profile) "
         "SELECT * FROM gold_hospital_profile"),

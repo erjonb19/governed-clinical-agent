@@ -79,6 +79,11 @@ DENIED_FUNCTIONS = {
     # ('<name>') hides the table name the allowlist checks. Found by adversarial
     # testing, 2026-10-30.
     "query", "query_table",
+    # ...and its cousin: json_execute_serialized_sql runs a serialized query.
+    # Settings and variables read server state. checkpoint() writes.
+    "json_execute_serialized_sql", "json_serialize_sql", "json_deserialize_sql",
+    "current_setting", "getvariable", "getenv", "checkpoint", "force_checkpoint",
+    "sql_auto_complete", "which_secret",
 }
 
 # Catalog / system schemas the agent must never browse.
@@ -105,10 +110,30 @@ class Decision:
     findings: list = field(default_factory=list)
 
 
+# Row generators: the only functions allowed as a FROM source (step 4a).
+ALLOWED_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
+# Whole families of readers and introspection: denied wherever they appear.
+DENIED_PREFIXES = ("read_", "parquet_", "pragma_", "duckdb_", "sqlite_", "postgres_",
+                   "mysql_", "iceberg_", "delta_", "sniff_", "json_execute", "glob")
+
+
 def _with_of(node: exp.Expression):
     """The WITH clause attached to a query node (sqlglot names the arg 'with_'
     in current versions, 'with' in older ones)."""
     return node.args.get("with_") or node.args.get("with")
+
+
+def _in_recursive_term(node: exp.Expression, cte: exp.CTE) -> bool:
+    body = cte.this
+    if not isinstance(body, exp.Union):
+        return False
+    right = body.expression
+    n = node
+    while n is not None and n is not cte:
+        if n is right:
+            return True
+        n = n.parent
+    return False
 
 
 def _resolves_to_cte(table: exp.Table, name: str) -> bool:
@@ -126,7 +151,12 @@ def _resolves_to_cte(table: exp.Table, name: str) -> bool:
             with_ = parent.parent
             ctes = list(with_.expressions)
             i = next(k for k, c in enumerate(ctes) if c is parent)
-            visible = ctes[:i + 1] if with_.args.get("recursive") else ctes[:i]
+            visible = list(ctes[:i])
+            # A recursive CTE sees ITSELF only in the recursive term -- the right
+            # side of the UNION that is its body. Its anchor, or a body with no
+            # UNION, reads the REAL table of that name (verified in DuckDB).
+            if with_.args.get("recursive") and _in_recursive_term(table, parent):
+                visible.append(parent)
             if any(c.alias_or_name.lower() == name for c in visible):
                 return True
             node = with_.parent              # continue past this WITH entirely
@@ -189,16 +219,32 @@ def validate_query(sql: str,
             findings=sorted(set(bad_tables)),
         )
 
-    # 4. Denied functions (file read / exfil).
+    # 4a. Table functions in FROM: ALLOWLIST, not denylist. DuckDB keeps adding
+    #     readers (read_ndjson, parquet_scan, sniff_csv, iceberg_scan, sqlite_scan,
+    #     pragma_storage_info...) and a list of the bad ones never keeps up. Only
+    #     pure row generators may be a FROM source.
+    for t in tree.find_all(exp.Table):
+        if isinstance(t.this, (exp.Identifier, type(None))):
+            continue
+        fn = (t.this.name if isinstance(t.this, exp.Anonymous) else
+              (t.this.sql_name() if isinstance(t.this, exp.Func) else type(t.this).__name__))
+        fn = (fn or "?").lower()
+        if fn not in ALLOWED_TABLE_FUNCTIONS:
+            known_bad = fn in DENIED_FUNCTIONS or fn.startswith(DENIED_PREFIXES)
+            return Decision(False, f"{'disallowed function' if known_bad else 'table function not allowed'}"
+                                   f": {fn}", findings=[fn])
+
+    # 4b. Denied functions (file read / exfil / server state), by name and by
+    #     family prefix.
     bad_funcs = []
     for fn in tree.find_all(exp.Anonymous):
         fname = (fn.name or "").lower()
-        if fname in DENIED_FUNCTIONS:
+        if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     # typed func nodes that sqlglot recognizes by class name
     for fn in tree.find_all(exp.Func):
         fname = (fn.sql_names()[0] if fn.sql_names() else "").lower()
-        if fname in DENIED_FUNCTIONS:
+        if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     if bad_funcs:
         return Decision(
