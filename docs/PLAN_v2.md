@@ -375,11 +375,12 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
 
     So means use capped ages as well, as the owner asked ("everywhere ages
     appear").
-  - **Eval impact, for the owner:** `f1_avg_age` changes from **48.4** to
-    **48.1**, and it is the only one of 28 FHIR answers that changes.
-    `test_every_fhir_eval_answer_is_reachable_through_the_guard` fails on it
-    until the owner approves the new expected value. The case has not been
-    edited.
+  - **Eval impact:** `f1_avg_age` changes from **48.4** to **48.1**, the
+    only one of 28 FHIR answers that changes. **Approved by the owner
+    2026-10-31.** Its reference is now `round(avg(least(age_years, 90)), 1)`,
+    which states the capped definition; the guard accepts exactly
+    `LEAST(<age>, 90)` as a plain argument (it is the cap it applies anyway),
+    and no other bound.
   - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
     `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
     that implies 90+ the same way. The de-identified views of §0.6 fix this at

@@ -1076,6 +1076,25 @@ def test_the_average_age_uses_capped_ages(old_tool):
     assert r.success and r.output["rows"] == [{"a": 90.0}], r.output   # 100..114 -> all 90
 
 
+def test_writing_the_cap_out_is_allowed_and_changes_nothing(old_tool):
+    # f1_avg_age states its definition as avg(least(age_years, 90)); the guard
+    # caps it again, which is a no-op, and a written-out MAX still shows "90+"
+    r = old_tool.execute({"sql": "SELECT avg(least(age_years, 90)) AS a FROM gold_patient"})
+    assert r.success and r.output["rows"] == [{"a": 90.0}], r.output
+    m = old_tool.execute({"sql": "SELECT max(least(age_years, 90)) AS m FROM gold_patient"})
+    assert m.success and m.output["rows"] == [{"m": "90+"}], m.output
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT avg(least(age_years, 89)) AS a FROM gold_patient",      # any other bound
+    "SELECT avg(least(age_years, 90, 20)) AS a FROM gold_patient",
+    "SELECT avg(least(bmi, 90)) AS a FROM gold_observation",        # not an age
+])
+def test_only_the_exact_age_cap_counts_as_a_plain_argument(sql):
+    d = validate_query(sql)
+    assert not d.allowed and "PHI" in d.reason
+
+
 # review of the age cap (PR #40): two leaks and five false refusals, fixed
 
 @pytest.mark.parametrize("sql", [

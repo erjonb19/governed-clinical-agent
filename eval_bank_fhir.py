@@ -51,7 +51,9 @@ CASES = [
     {
         "id": "f1_avg_age", "tier": 1,
         "question": "What is the average age of patients in years? Round to 1 decimal.",
-        "reference_sql": "SELECT round(avg(age_years), 1) AS v FROM gold_patient",
+        # ages are capped at 90 (Safe Harbor, owner's decision 2026-10-31):
+        # 48.4 uncapped became 48.1, approved by the owner 2026-10-31
+        "reference_sql": "SELECT round(avg(least(age_years, 90)), 1) AS v FROM gold_patient",
         "mode": "scalar",
     },
     {

@@ -281,6 +281,8 @@ def _plain_shape(node: Optional[exp.Expression]) -> bool:
         return True
     if isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal):
         return True
+    if _is_age_cap(node):
+        return True                   # LEAST(age, 90): the guard's own cap, written out
     if _is_year(node):
         if isinstance(node, exp.Anonymous):
             inner = node.expressions[1] if len(node.expressions) > 1 else None
@@ -294,6 +296,22 @@ def _plain_shape(node: Optional[exp.Expression]) -> bool:
             inner = inner.this
         return isinstance(inner, exp.Column)
     return _interval_operands(node) is not None       # days between two date columns
+
+
+def _is_age_cap(node: exp.Expression) -> bool:
+    """LEAST(<age column>, AGE_CAP) exactly: the cap the guard applies anyway,
+    so writing it out reveals nothing more. Any other bound is not plain."""
+    if not isinstance(node, exp.Least):
+        return False
+    args = [node.this, *node.expressions]
+    if len(args) != 2:
+        return False
+    col, lit = args
+    while isinstance(col, (exp.Cast, exp.TryCast, exp.Paren)):
+        col = col.this
+    return (isinstance(col, exp.Column) and (col.name or "").lower() in AGE_NAMES
+            and isinstance(lit, exp.Literal) and not lit.is_string
+            and lit.this == str(AGE_CAP))
 
 
 def _agg_name(node: exp.Expression) -> str:
@@ -1297,6 +1315,8 @@ def _age_refs(a: "_Analysis", q: exp.Expression):
                 node = node.this
                 while isinstance(node, _TRANSPARENT):
                     node = node.this
+            if _is_age_cap(node):
+                node = node.this
             if isinstance(node, exp.Column) and a.resolve(root, node).base in AGE_COLUMNS:
                 mine.add(i)
         outputs = mine if outputs is None else outputs & mine
