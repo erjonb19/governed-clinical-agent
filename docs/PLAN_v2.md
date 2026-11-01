@@ -391,7 +391,7 @@ timeout). That is an availability issue for later.
 
 ---
 
-### 0.6 Plan: a de-identified FHIR layer enforced by the database (owner's option 3, 2026-10-31) — FOR APPROVAL
+### 0.6 Plan: a de-identified FHIR layer enforced by the database (owner's option 3, 2026-10-31) — decisions taken, build awaiting OK
 
 **Why.** The PHI guard (§0.4) reads free-form SQL and decides what it may
 return. Static reviews 8 to 11 each found a new way around it. The eleventh
@@ -411,7 +411,7 @@ raw tables at all, because the database it opens does not contain them.
   (`scripts/fetch_fhir_gold.py`) from the GitHub release `fhir-gold-20260901`,
   and the repo and release are **public**. The data is synthetic (Synthea), so
   nothing real is exposed. With real data, the published artifact alone would
-  be a breach. The plan fixes this first (PR A).
+  be a breach. PR B fixes this (see the release order in 0.6.5).
 
 #### 0.6.1 The isolation boundary: the database, not the parser
 
@@ -469,8 +469,9 @@ cannot point into another file). The rules follow HIPAA Safe Harbor:
 |---|---|
 | `patient_id`, `encounter_id` and the other `*_id` columns | **removed**. See the key question below. |
 | `given_name`, `family_name` | removed |
-| `city`, `postal_code` | removed; `state` stays (geography reduced to state) |
-| `birth_date` | `birth_year`, and NULL when the person is 90 or older (Safe Harbor: a birth year implying 90+ is aggregated) |
+| `city` | removed; `state` stays |
+| `postal_code` | `zip3`: the first 3 digits, and `000` where that 3-digit area holds 20,000 people or fewer (Safe Harbor, owner's decision 2026-10-31; current Census figures, checked against the 17 prefixes listed in HHS guidance) |
+| `birth_date` | `birth_year` only, and NULL when the person is 90 or older (Safe Harbor: a birth year implying 90+ is aggregated into 90+) |
 | every other date (`start_date`, `onset_date`, `effective_date`, ...) | its **year** only |
 | intervals the analyses need | computed **in the build** from the full dates, then the dates are dropped: `length_of_stay_days`, `days_to_next_encounter` and `readmitted_30d` per encounter, `days_from_onset_to_abatement` per condition |
 | `age_years`, `age_at_*` | capped at 90 (stored as 90, labelled "90+") |
@@ -561,7 +562,9 @@ It also checks the built file:
   named like an identifier (`*_name` except clinical names, `*_id` other than
   `pid`, `city`, `postal_code`, `*_date`).
 - **Value scan.** The build also fails if any string value equals a bronze
-  name or postal code, or matches a full-date or zip pattern.
+  name or a full postal code, or matches a full-date or 5-digit zip pattern,
+  or if a `zip3` value is one of the low-population prefixes (it must be
+  `000` there), or a `birth_year` appears for anyone aged 90 or over.
 
 The same checks run against the deployed file in CI (`tests.yml`). The
 adversarial eval cases (`eval_bank_adversarial.py`) gain three
@@ -578,21 +581,29 @@ Databricks, PR C adds the same isolation test as the `fhir-agent` principal
 
 | PR | Content | Done when | Target |
 |---|---|---|---|
-| **A. Stop shipping raw data** | `build_fhir_deid.py`; the de-identified file with its schema and value scans; a de-identified release replaces `fhir-gold-20260901` (deleted, with your go-ahead); `fetch_fhir_gold.py` and `render.yaml` fetch only the de-identified file | the release and the Render disk hold no `bronze_*` / `gold_*` FHIR tables; the scans pass; nightly builds both files | **Fri 2026-11-06** |
-| **B. The agent uses only the de-identified layer** | the FHIR tool connection is locked (§0.6.1); guard labels, `SCHEMA_DOC_FHIR`, the schema check and reference SQL move to `deid_*`; `test_deid_isolation.py`; three adversarial cases | isolation suite green with the guard off; 28/28 FHIR references reachable; FHIR eval ≥ 80% gate on Gemini (3 runs) and the 10 adversarial cases at 100% on guard + stopping; live `/ui` and `/raw-sql` checks on Render | **Wed 2026-11-11** |
+| **A. Stand-in key and floor first** | `build_fhir_deid.py` writes `fhir_deid.duckdb`: random `pid` per patient per build (not derived from any patient field; the mapping is never saved), the Safe Harbor reductions of §0.6.2, schema and value scans that fail the build; guard labels for `deid_*` with the 11-person floor counted on `pid`, and tests of both on the built file. The agent does not use it yet; nothing deployed changes | scans pass; floor tests pass on `deid_*`; `pid` shown not to match any source ID or repeat across two builds | **Fri 2026-11-06** |
+| **B. The agent uses only the de-identified layer; stop shipping raw data** | the FHIR tool connection is locked (§0.6.1); `SCHEMA_DOC_FHIR`, the schema check and reference SQL move to `deid_*`; `test_deid_isolation.py`; three adversarial cases; a de-identified release; `fetch_fhir_gold.py` / `render.yaml` fetch only it; then `fhir-gold-20260901` is deleted (owner's go-ahead given) | isolation suite green with the guard off; 28/28 FHIR references reachable; FHIR eval ≥ 80% gate on Gemini (3 runs) and the 10 adversarial cases at 100% on guard + stopping; live `/ui` and `/raw-sql` checks on Render; the release and the Render disk hold no `bronze_*` / `gold_*` FHIR tables | **Wed 2026-11-11** |
 | **C. Databricks** | `workspace.fhir_deid` and the `fhir-agent` principal with schema-only grants; or a documented "not supported on Free Edition" | the isolation test as the principal shows `PERMISSION_DENIED` outside the schema, or a recorded limitation with Databricks FHIR left disabled | **Wed 2026-11-18** |
 | **D. Floor without the parser (F2)** | approved query shapes for FHIR; free SQL off for FHIR on `/raw-sql` and MCP | every FHIR eval case answered through a template; the guard's HAVING rewrite becomes a redundant second check | **Wed 2026-11-25** |
 
 The dates assume one PR in review at a time and no change of direction. If
-(N) is chosen over (K), PR B moves by about a week, for the 14 case rewrites.
+(N) had been chosen over (K), PR B would have moved by about a week.
 
-**Decisions this needs from you:**
-1. **(K) or (N):** a random surrogate key, or no key at all.
-2. **F1 then F2 (recommended), or F2 straight away, or F3.**
-3. **Releases:** deleting the public `fhir-gold-20260901` release once PR A
-   is live.
-4. **`f1_avg_age`:** 48.4 becomes 48.1 under capped ages (the same change
-   #40 needs).
+Release order: the raw release is replaced in PR B, not A, because the
+deployed agent reads `gold_*` until B switches it to `deid_*`; deleting the
+release first would break FHIR on Render in between.
+
+**Decisions (owner, 2026-10-31):**
+1. **(K):** a random stand-in key, not derived from any patient field.
+2. **F1 then F2**, as recommended.
+3. **Releases:** delete `fhir-gold-20260901` once the replacement is live.
+4. **`f1_avg_age`:** 48.1 approved (#40).
+5. **Safe Harbor for dates and ZIPs:** birth dates to the year only (blank
+   for 90+), ZIPs to the first 3 digits (`000` for areas of 20,000 people or
+   fewer), ages 90 and over as 90+.
+6. **Order:** the stand-in key and the floor are built first (PR A).
+   Building starts only after the owner OKs the plain-words explanation of
+   PR A and of the floor.
 
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
 
