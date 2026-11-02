@@ -532,6 +532,7 @@ python build_hospital_gold.py
 
 python fetch_synthea.py                          # ~85MB of FHIR bundles
 python build_fhir_gold.py                        # ~367k resources
+python build_fhir_deid.py                        # de-identified copy: medallion/fhir_deid.duckdb (PLAN_v2 0.6; not yet used by the agent)
 ```
 
 ## Scope and honest limitations
