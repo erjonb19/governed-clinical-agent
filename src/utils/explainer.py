@@ -88,6 +88,13 @@ def _build_capability_snippet(capability: str) -> str:
     )
 
 
+PHI_SAFE_QUERY = ("SELECT year(CAST(birth_date AS DATE)) AS birth_year, state, count(*) AS patients "
+                  "FROM gold_patient GROUP BY 1, 2")
+PHI_SAFE_SHAPE = ("ask for an aggregate instead of patient rows, for example patients counted "
+                  f"by birth year and state: {PHI_SAFE_QUERY} "
+                  "(groups of fewer than 11 patients are withheld).")
+
+
 def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], policy: dict[str, Any]) -> str:
     """
     Build a human-readable explanation for runtime decisions.
@@ -155,6 +162,13 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
         lines.append("Suggested policy snippet:")
         lines.append(_build_capability_snippet(capability))
         lines.append("Safe alternative: add only this capability with narrow constraints.")
+        return "\n".join(lines)
+
+    if "phi rule" in reason_lower:
+        # Patient-privacy refusal: the fix is a different question, never a
+        # looser policy. (Not "Safe alternative:", which the MCP server strips
+        # as operator advice -- a model caller should see this shape.)
+        lines.append(f"Safe query shape: {PHI_SAFE_SHAPE}")
         return "\n".join(lines)
 
     lines.append("Safe alternative: adjust policy constraints minimally for this operation.")

@@ -40,6 +40,14 @@ class TestExplainer:
         assert "explicitly denied" in msg.lower()
         assert "Safe alternative" in msg
 
+    def test_phi_refusal_suggests_a_query_shape_not_a_policy_change(self) -> None:
+        decision = Decision(allowed=False, reason="Tool execution failed: PHI rule: returns "
+                            "identifier gold_patient.patient_id as column 'patient_id'.")
+        msg = get_explanation(decision, "analytics.query_aggregate", {}, _policy())
+        assert "Safe query shape:" in msg and "birth year and state" in msg
+        assert "adjust policy" not in msg and "Suggested policy snippet" not in msg
+        assert "Safe alternative" not in msg
+
     def test_path_deny_includes_path_snippet(self) -> None:
         decision = Decision(
             allowed=False,
