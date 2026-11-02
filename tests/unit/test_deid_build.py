@@ -174,6 +174,32 @@ def test_ages_are_capped_at_90_everywhere(gold, tmp_path):
     assert rows(con, "SELECT count(*) FROM deid_patient WHERE age_years = 90") == [(1,)]
 
 
+@pytest.mark.parametrize("table, age_col, year_col", B.EVENT_AGE_YEAR)
+def test_age_at_event_is_empty_for_the_90_plus_group_and_their_events_are_kept(
+        gold, tmp_path, table, age_col, year_col):
+    # p13 (95) and p14 (born 92 years ago, died at 60): every event kept with
+    # its year, but no age at it -- year minus age would give the birth year
+    con = built(gold, tmp_path)
+    old = rows(con, f"SELECT e.{age_col}, e.{year_col} FROM {table} e JOIN deid_patient p "
+                    f"USING (pid) WHERE p.birth_year IS NULL AND p.zip3 IS DISTINCT FROM '000'")
+    assert len(old) == 2, old                       # both patients' events are still there
+    assert all(age is None and year is not None for age, year in old), old
+    # everyone else keeps their age at the event
+    assert rows(con, f"SELECT count(*) FROM {table} e JOIN deid_patient p USING (pid) "
+                     f"WHERE p.birth_year IS NOT NULL AND e.{age_col} IS NULL") == [(0,)]
+
+
+def test_a_build_that_lets_a_withheld_birth_year_be_derived_is_refused(gold, tmp_path, monkeypatch):
+    # undo the rule for one table: event year - age at event = birth year
+    monkeypatch.setattr(B, "_event_age", lambda col: f"LEAST(src.{col}, {B.AGE_CAP})")
+    gold_t, select = B.SELECTS["deid_condition"]
+    monkeypatch.setitem(B.SELECTS, "deid_condition", (gold_t, select.replace(
+        "CASE WHEN m.over89 THEN NULL ELSE LEAST(src.age_at_onset, 90) END",
+        "LEAST(src.age_at_onset, 90)")))
+    with pytest.raises(B.DeidBuildError, match="birth year can be derived"):
+        B.build(gold, str(tmp_path / "x.duckdb"))
+
+
 def test_event_dates_become_years(gold, tmp_path):
     con = built(gold, tmp_path)
     assert rows(con, "SELECT DISTINCT effective_year FROM deid_observation") == [(2021,)]
