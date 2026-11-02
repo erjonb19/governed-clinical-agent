@@ -177,7 +177,7 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   | `f2_count_dialysis` | 5 people | `f2_count_chemoradiation`: same shape, 37 people |
   | `f4_dialysis_and_epogen` | 5 people | `f4_chemoradiation_and_cisplatin`: same shape, 21 people |
   | `f3_top_medications` | top item (Epogen) is 5 people | same id, ranked among medications with 11+ patients |
-  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients |
+  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients; worded "ranked by number of times performed" since 2026-11-02 (owner-approved; same reference, same answer) |
 
   The dialysis cases have no safe level: 5 people is under the floor at any
   grain. So they keep their shape and change subject (agreed by the owner,

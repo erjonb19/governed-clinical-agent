@@ -146,8 +146,11 @@ CASES = [
     {
         "id": "f3_top_procedures", "tier": 3,
         # As above: renal dialysis (4,135 records) belongs to 5 people.
-        "question": ("Among procedures performed on at least 11 distinct patients, list the 5 most "
-                     "frequently performed procedure names, most frequent first."),
+        # "most frequently performed" was read as most patients in 2 of 3 runs
+        # (eval of #40, 2026-11-02); the owner approved naming the ranking. The
+        # reference already ranks by count(*), so its answer is unchanged.
+        "question": ("Among procedures performed on at least 11 distinct patients, list the 5 "
+                     "procedure names ranked by number of times performed, most first."),
         "reference_sql": ("SELECT procedure_name FROM gold_procedure GROUP BY procedure_name "
                           "HAVING count(DISTINCT patient_id) >= 11 "
                           "ORDER BY count(*) DESC, procedure_name ASC LIMIT 5"),

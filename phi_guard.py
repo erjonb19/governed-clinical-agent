@@ -1178,6 +1178,52 @@ def _rule_hint(findings: list[str]) -> str:
 _SAFE_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
 
 
+def _no_such_column(names: list) -> PhiDecision:
+    # Every real column of a protected table is labelled (pinned by
+    # test_every_fhir_column_is_labelled), so an unlabelled one does not exist:
+    # say so, rather than calling an invented column an identifier. Still a
+    # refusal -- default deny is unchanged.
+    names = list(dict.fromkeys(names))
+    return PhiDecision(False, f"no such column: {', '.join(names)}; use only the columns the "
+                              f"schema lists", findings=[f"no such column {n}" for n in names],
+                       protected=True)
+
+
+def _unknown_columns_by_alias(tree: exp.Expression) -> list:
+    """Columns written as <alias>.<name> where the alias can only be one
+    protected table and that table has no such column (qualify() raises on
+    these before the analysis can place them)."""
+    aliases: dict[str, set] = {}
+    for t in tree.find_all(exp.Table):
+        if isinstance(t.this, exp.Identifier):
+            aliases.setdefault((t.alias_or_name or "").lower(), set()).add((t.name or "").lower())
+    out = []
+    for col in tree.find_all(exp.Column):
+        if not col.table or isinstance(col.this, exp.Star):
+            continue
+        tables = aliases.get(col.table.lower())
+        if not tables or len(tables) != 1:
+            continue
+        (t,) = tables
+        if t in PROTECTED and (col.name or "").lower() not in TABLES[t]:
+            out.append(f"{t}.{col.name.lower()}")
+    return out
+
+
+def _unknown_columns(a: "_Analysis") -> list:
+    """Columns the analysis placed on a protected table that has no such column."""
+    out = []
+    for sc in a.scopes:
+        for col in sc.columns:
+            base = a.resolve(sc, col).base
+            if not base or "." not in base:
+                continue
+            t, c = base.split(".", 1)
+            if t in PROTECTED and c not in TABLES[t]:
+                out.append(base)
+    return out
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1192,6 +1238,9 @@ def check(tree: exp.Expression) -> PhiDecision:
                                findings=[fn], protected=True)
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
+    unknown = _unknown_columns_by_alias(tree)
+    if unknown:
+        return _no_such_column(unknown)
     try:
         q = qualify(tree.copy(), schema=SCHEMA, dialect=DIALECT,
                     validate_qualify_columns=False, quote_identifiers=False)
@@ -1204,6 +1253,9 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
+    unknown = _unknown_columns(a)
+    if unknown:
+        return _no_such_column(unknown)
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
         return PhiDecision(False, f"PHI rule: {'; '.join(uniq)}. {_rule_hint(uniq)}",

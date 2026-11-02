@@ -397,6 +397,9 @@ def test_an_escape_route_is_blocked(name):
     if name.startswith(("query()", "query_table()")):
         # since #37 sql_guard refuses these SQL-string runners itself, earlier
         assert "not allowed" in d.reason or "disallowed" in d.reason, d.reason
+    elif name == "unlabelled column is an identifier":
+        # every real column is labelled, so an unlabelled one does not exist
+        assert "no such column" in d.reason, d.reason
     else:
         assert "PHI" in d.reason
 
@@ -1076,6 +1079,23 @@ def test_the_average_age_uses_capped_ages(old_tool):
     assert r.success and r.output["rows"] == [{"a": 90.0}], r.output   # 100..114 -> all 90
 
 
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) AS n FROM gold_condition WHERE is_experiment = FALSE AND is_active",
+    "SELECT is_experiment, count(*) AS n FROM gold_condition GROUP BY 1",
+    "SELECT count(*) FROM gold_condition c JOIN gold_patient p ON c.patient_id = p.patient_id "
+    "WHERE p.nickname = 1",
+    "SELECT count(bogus) AS n FROM gold_patient",
+    "WITH t AS (SELECT patient_id, made_up FROM gold_condition) SELECT count(*) FROM t",
+])
+def test_an_invented_column_is_refused_as_no_such_column(sql):
+    # a model that invents a column (Gemini wrote is_experiment in the eval of
+    # #40) is told the column does not exist -- not that it is an identifier --
+    # and is still refused
+    d = validate_query(sql)
+    assert not d.allowed and "no such column" in d.reason, d.reason
+    assert "identifier" not in d.reason
+
+
 def test_writing_the_cap_out_is_allowed_and_changes_nothing(old_tool):
     # f1_avg_age states its definition as avg(least(age_years, 90)); the guard
     # caps it again, which is a no-op, and a written-out MAX still shows "90+"
@@ -1088,7 +1108,7 @@ def test_writing_the_cap_out_is_allowed_and_changes_nothing(old_tool):
 @pytest.mark.parametrize("sql", [
     "SELECT avg(least(age_years, 89)) AS a FROM gold_patient",      # any other bound
     "SELECT avg(least(age_years, 90, 20)) AS a FROM gold_patient",
-    "SELECT avg(least(bmi, 90)) AS a FROM gold_observation",        # not an age
+    "SELECT avg(least(value_num, 90)) AS a FROM gold_observation",  # not an age
 ])
 def test_only_the_exact_age_cap_counts_as_a_plain_argument(sql):
     d = validate_query(sql)
