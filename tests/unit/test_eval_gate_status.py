@@ -98,3 +98,32 @@ def test_boundary_is_inclusive_at_the_floor():
     assert _gate_status(at_floor, total, total - at_floor)[0] == "pass"
     assert _gate_status(at_floor - 1, total, total - at_floor + 1)[0] == \
         "provider_unavailable"
+
+
+# --- every case must actually have been answered (owner, 2026-11-02) --------
+
+def test_a_case_answered_fewer_than_twice_makes_the_run_incomplete_not_a_pass():
+    # run 41520613830: 68 of 84 runs answered (81%, over the floor), 67 correct,
+    # but five cases at the end got only 429s -- it was reported "pass"
+    answered = [3] * 21 + [0, 0, 1, 0, 0] + [2, 2]
+    status, _, completed = _gate_status(67, 84, 16, answered, 3)
+    assert status == "incomplete" and completed == 68
+
+
+def test_every_case_answered_twice_still_rules():
+    status, _, _ = _gate_status(56, 84, 28, [2] * 28, 3)
+    assert status == "provider_unavailable"          # the overall floor still applies
+    status, _, _ = _gate_status(78, 84, 0, [3] * 28, 3)
+    assert status == "pass"
+    status, _, _ = _gate_status(70, 80, 4, [3] * 24 + [2] * 4, 3)
+    assert status == "pass"
+
+
+def test_one_run_per_case_needs_that_one_run():
+    # the quick gate runs each case once: one answer per case is all there is
+    assert _gate_status(6, 6, 0, [1] * 6, 1)[0] == "pass"
+    assert _gate_status(5, 6, 1, [1] * 5 + [0], 1)[0] in ("incomplete", "provider_unavailable")
+
+
+def test_without_per_case_counts_the_old_rule_holds():
+    assert _gate_status(67, 84, 16)[0] == "pass"
