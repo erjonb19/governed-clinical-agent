@@ -1,6 +1,6 @@
 {
   "dataset": "hospital",
-  "last_refreshed": "2026-10-04",
+  "last_refreshed": "2026-11-01",
   "source": "CMS Provider Data Catalog (data.cms.gov)",
   "method": "data-refresh.yml -> fetch_cms + build_hospital_gold",
   "cadence": "monthly",

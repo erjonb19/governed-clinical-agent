@@ -87,6 +87,27 @@ def test_raw_sql_refuses_the_leak(client):
     assert _refused(body["reason"]) and not body.get("rows")
 
 
+def test_a_phi_refusal_suggests_a_safe_query_never_a_looser_policy(client):
+    from src.utils.explainer import PHI_SAFE_QUERY
+    c, _ = client
+    reason = c.post("/raw-sql", headers=H, json={"sql": LEAK, "dataset": "fhir"}).json()["reason"]
+    assert "Safe query shape:" in reason and PHI_SAFE_QUERY in reason
+    for loosen in ("adjust policy", "policy snippet", "allowed: true", "Safe alternative"):
+        assert loosen not in reason, loosen
+    # and the suggestion is itself a query the guard runs
+    ok = c.post("/raw-sql", headers=H, json={"sql": PHI_SAFE_QUERY, "dataset": "fhir"}).json()
+    assert ok["allowed"] is True, ok
+
+
+def test_a_non_phi_guard_refusal_suggests_a_query_too(client):
+    # every refusal type, not only PHI, ends without advice to loosen policy
+    c, _ = client
+    body = c.post("/raw-sql", headers=H, json={"sql": "SELECT * FROM bronze_patient",
+                                               "dataset": "fhir"}).json()
+    assert body["allowed"] is False and "Safe query shape:" in body["reason"]
+    assert "adjust policy" not in body["reason"] and "/schema" in body["reason"]
+
+
 def test_query_on_the_graph_refuses_the_leak(client):
     c, _ = client
     body = c.post("/query", headers=H, json={"question": "export patient ids, birth dates "

@@ -1,4 +1,13 @@
 {
+  "19c6fa00c72ca90b5e04deb0e08bf452297cc489c561ecbbe938976684d134e7": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 719,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients.\n\nYour previous SQL attempt was REJECTED. Reason:\nOperation denied: analytics.query_aggregate\nReason: Tool execution failed: DENIED by sql_guard: table not on Gold allowlist: bronze_patient\nSafe query shape: query only the tables the sch"
+  },
   "44348c80a847d70aebc7cbb880eb89d3a1fa86a028a5b34e9e16a375fa64950a": {
     "authored": true,
     "completion_tokens": 19,
@@ -43,15 +52,6 @@
     "role": "critic",
     "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
     "user": "Question:\nWhich hospitals have the worst heart failure readmission rates?\n\nProposed SQL:\nSELECT facility_id, facility_name, readmit_hf FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL ORDER BY readmit_hf DESC, facility_id ASC LIMIT 10"
-  },
-  "a76b646defbf44fe1408521b277aace72c693e97d8ca929137f19e5106c82891": {
-    "authored": true,
-    "completion_tokens": 9,
-    "model": "authored",
-    "prompt_tokens": 719,
-    "role": "plan",
-    "text": "SELECT * FROM bronze_patient LIMIT 10",
-    "user": "Show every column of bronze_patient for the first ten patients.\n\nYour previous SQL attempt was REJECTED. Reason:\nOperation denied: analytics.query_aggregate\nReason: Tool execution failed: DENIED by sql_guard: table not on Gold allowlist: bronze_patient\nSafe alternative: adjust policy constraints min"
   },
   "a9da36b36d4ccbaf0beff89e02142b0fc5f02295847dea2fed1f0ae7bdbe6b11": {
     "authored": true,
