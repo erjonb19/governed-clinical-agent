@@ -261,3 +261,49 @@ class TestAgentRuntimeRegisterTool:
         result = runtime.execute_tool("test.cap", {})
         # Policy will deny unknown capability (default deny)
         assert isinstance(result, ExecuteResult)
+
+
+class TestPolicySnippetGoesToTheAuditLogOnly:
+    """A denial's least-privilege snippet (YAML that would grant what was
+    refused) is operator advice: it is recorded in the audit log and never
+    returned to the caller (owner's decision 2026-11-02)."""
+
+    POLICY = """
+version: "1.0"
+default_policy: deny
+capabilities:
+  - name: shell.execute
+    allowed: false
+"""
+
+    def _runtime(self, tmp_path: Path, audit: Any) -> AgentRuntime:
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text(self.POLICY, encoding="utf-8")
+        runtime = AgentRuntime(audit_logger=audit)
+        runtime.load_policy(policy_file)
+        return runtime
+
+    @pytest.mark.parametrize("capability", ["shell.execute", "package_manager.query"])
+    def test_the_caller_gets_no_snippet_and_the_audit_event_has_it(
+            self, tmp_path: Path, capability: str) -> None:
+        spy = _AuditSpy()
+        result = self._runtime(tmp_path, spy).execute_tool(capability, {"command": "ls"})
+        assert result.allowed is False
+        assert "Suggested policy snippet" not in result.explanation
+        assert "allowed: true" not in result.explanation
+        [event] = spy.policy_events
+        assert f"name: {capability}" in event["context"]["policy_snippet"]
+
+    def test_a_real_audit_log_records_the_snippet(self, tmp_path: Path) -> None:
+        import json
+        from src.runtime.audit_logger import AuditLogger
+        audit = AuditLogger(log_dir=tmp_path / "logs", agent_id="t", max_buffer_size=1,
+                            enable_console=False)
+        result = self._runtime(tmp_path, audit).execute_tool("shell.execute", {"command": "ls"})
+        if hasattr(audit, "flush"):
+            audit.flush()
+        assert "allowed: true" not in result.explanation
+        logged = "".join(p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("*.jsonl"))
+        events = [json.loads(line) for line in logged.splitlines() if line.strip()]
+        assert any("name: shell.execute" in ((e.get("context") or {}).get("policy_snippet") or "")
+                   for e in events), events

@@ -1,7 +1,7 @@
 """Unit tests for src.utils.explainer."""
 
 from src.runtime.policy_engine import Decision
-from src.utils.explainer import get_explanation
+from src.utils.explainer import get_explanation, policy_snippet
 
 
 def _policy() -> dict:
@@ -27,12 +27,16 @@ def _policy() -> dict:
 class TestExplainer:
     """Tests for denial explanation generation."""
 
-    def test_default_deny_includes_capability_snippet(self) -> None:
+    # Policy snippets (YAML that would grant what was refused) go to the audit
+    # log only, never into what the caller sees (owner, 2026-11-02).
+
+    def test_default_deny_snippet_is_for_the_audit_log_only(self) -> None:
         decision = Decision(allowed=False, reason="Capability 'x' not in policy; default_policy is deny.")
         msg = get_explanation(decision, "package_manager.query", {}, _policy())
         assert "Operation denied: package_manager.query" in msg
-        assert "Suggested policy snippet:" in msg
-        assert "name: package_manager.query" in msg
+        assert "Suggested policy snippet" not in msg and "allowed: true" not in msg
+        assert "name: package_manager.query" in policy_snippet(decision, "package_manager.query",
+                                                              {}, _policy())
 
     def test_explicit_deny_includes_safe_guidance(self) -> None:
         decision = Decision(allowed=False, reason="Capability 'shell.execute' is explicitly denied by policy.")
@@ -48,19 +52,22 @@ class TestExplainer:
         assert "adjust policy" not in msg and "Suggested policy snippet" not in msg
         assert "Safe alternative" not in msg
 
-    def test_path_deny_includes_path_snippet(self) -> None:
+    def test_path_deny_snippet_is_for_the_audit_log_only(self) -> None:
         decision = Decision(
             allowed=False,
             reason="Path denied",
             details={"path": "/workspace/secrets/.env"},
             policy_rule="filesystem.read",
         )
-        msg = get_explanation(decision, "filesystem.read", {"path": "/workspace/secrets/.env"}, _policy())
+        params = {"path": "/workspace/secrets/.env"}
+        msg = get_explanation(decision, "filesystem.read", params, _policy())
         assert "Constraint: Requested path is outside allowed policy paths" in msg
-        assert "paths:" in msg
         assert "[REDACTED_PATH]" in msg
+        assert "paths:" not in msg and "Suggested policy snippet" not in msg
+        snippet = policy_snippet(decision, "filesystem.read", params, _policy())
+        assert "paths:" in snippet and ".env" not in snippet.replace("/workspace/**/.env", "")
 
-    def test_endpoint_deny_includes_endpoint_snippet(self) -> None:
+    def test_endpoint_deny_snippet_is_for_the_audit_log_only(self) -> None:
         decision = Decision(
             allowed=False,
             reason="Endpoint denied",
@@ -69,7 +76,9 @@ class TestExplainer:
         )
         msg = get_explanation(decision, "http.fetch", {"url": "http://evil.com"}, _policy())
         assert "Constraint: Endpoint is not allowed by policy" in msg
-        assert "endpoints:" in msg
+        assert "endpoints:" not in msg and "Suggested policy snippet" not in msg
+        assert "endpoints:" in policy_snippet(decision, "http.fetch", {"url": "http://evil.com"},
+                                              _policy())
 
     def test_approval_denial_message(self) -> None:
         decision = Decision(allowed=False, reason="Approval required but not granted.")

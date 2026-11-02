@@ -149,7 +149,7 @@ After Phase 1, the runtime can: load policy, evaluate capabilities, enforce path
 ### 3.3 Explainer
 
 - **[src/utils/explainer.py](src/utils/explainer.py)**  
-  - `get_explanation(decision, capability, parameters, policy)` → human-readable message (design §5.5): why denied, which constraint failed, suggested policy snippet to allow the operation, and optionally safe alternatives.  
+  - `get_explanation(decision, capability, parameters, policy)` → human-readable message (design §5.5): why denied, which constraint failed, and a suggestion that never loosens policy. (Since 2026-11-02 the suggested policy snippet is NOT in this message: `policy_snippet(...)` produces it for the audit log only, in the policy-evaluation event's `context`.)  
   - Called from policy engine or runtime when returning a denial.
 
 ### 3.4 Runtime wiring
