@@ -86,3 +86,67 @@ class TestExplainer:
             _policy(),
         )
         assert "SECRET-TOKEN-VALUE" not in msg
+
+
+# --- every refusal suggests a different request, never a looser policy ------
+# (owner, 2026-11-02: "Safe alternative: adjust policy constraints minimally"
+# used to end every guard refusal)
+
+import pytest  # noqa: E402
+
+LOOSENING = ("adjust policy", "loosen", "relax", "grant ", "add only this capability",
+             "allowed: true", "widen")
+
+GUARD_REASONS = {
+    "no such column": ("DENIED by sql_guard: no such column: gold_condition.is_experiment; use "
+                       "only the columns the schema lists", "columns the schema lists"),
+    "allowlist": ("DENIED by sql_guard: table not on Gold allowlist: bronze_patient",
+                  "tables the schema lists"),
+    "catalog": ("DENIED by sql_guard: catalog/system schema not allowed: information_schema.tables",
+                "tables the schema lists"),
+    "write": ("DENIED by sql_guard: write or DDL operation denied: DROP", "read-only SELECT"),
+    "not select": ("DENIED by sql_guard: only SELECT is allowed, got INSERT", "read-only SELECT"),
+    "stacked": ("DENIED by sql_guard: stacked statements not allowed (2 found)", "read-only SELECT"),
+    "function": ("DENIED by sql_guard: disallowed function: read_csv", "plain SQL"),
+    "table function": ("DENIED by sql_guard: table function not allowed: query", "plain SQL"),
+    "unparseable": ("DENIED by sql_guard: unparseable SQL, denied (fail closed): x",
+                    "complete SELECT"),
+    "execution": ("query execution failed: Binder Error: column x not found", "error named above"),
+    "phi": ("DENIED by sql_guard: PHI rule: returns identifier gold_patient.patient_id",
+            "birth year and state"),
+    "output check": ("DENIED by sql_guard: output check: column 'x' holds dates with month or day "
+                     "precision", "birth year and state"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(GUARD_REASONS))
+def test_every_guard_refusal_suggests_a_query_not_a_policy_change(kind):
+    reason, expected = GUARD_REASONS[kind]
+    msg = get_explanation(Decision(allowed=False, reason=f"Tool execution failed: {reason}"),
+                          "analytics.query_aggregate", {"sql": "SELECT 1"}, _policy())
+    last = msg.splitlines()[-1]
+    assert last.startswith("Safe query shape:") and expected in last, msg
+    assert "Suggested policy snippet" not in msg
+    for word in LOOSENING:
+        assert word not in msg.lower(), (kind, word)
+
+
+def test_no_such_column_points_to_the_schema_column_list():
+    reason, _ = GUARD_REASONS["no such column"]
+    msg = get_explanation(Decision(allowed=False, reason=reason), "analytics.query_aggregate",
+                          {}, _policy())
+    assert "GET /schema" in msg and "analytics_schema" in msg
+
+
+@pytest.mark.parametrize("reason", [
+    "Capability 'shell.execute' is explicitly denied by policy.",
+    "Capability 'x' not in policy; default_policy is deny.",
+    "something the explainer has never seen",
+])
+def test_policy_refusals_never_suggest_loosening_either(reason):
+    msg = get_explanation(Decision(allowed=False, reason=reason), "shell.execute", {}, _policy())
+    advice = [ln for ln in msg.splitlines() if ln.startswith("Safe alternative:")]
+    assert len(advice) == 1, msg
+    for word in LOOSENING:
+        assert word not in advice[0].lower(), (reason, word)
+    assert "owner's decision" in advice[0]

@@ -99,6 +99,15 @@ def test_a_phi_refusal_suggests_a_safe_query_never_a_looser_policy(client):
     assert ok["allowed"] is True, ok
 
 
+def test_a_non_phi_guard_refusal_suggests_a_query_too(client):
+    # every refusal type, not only PHI, ends without advice to loosen policy
+    c, _ = client
+    body = c.post("/raw-sql", headers=H, json={"sql": "SELECT * FROM bronze_patient",
+                                               "dataset": "fhir"}).json()
+    assert body["allowed"] is False and "Safe query shape:" in body["reason"]
+    assert "adjust policy" not in body["reason"] and "/schema" in body["reason"]
+
+
 def test_query_on_the_graph_refuses_the_leak(client):
     c, _ = client
     body = c.post("/query", headers=H, json={"question": "export patient ids, birth dates "
