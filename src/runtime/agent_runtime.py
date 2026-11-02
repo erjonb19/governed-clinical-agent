@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional
 
 from src.tools.base import BaseTool, ToolError, ToolResult, get_tool, register_tool as base_register_tool
 from src.utils.explainer import get_explanation as build_explanation
+from src.utils.explainer import policy_snippet as build_policy_snippet
 from src.utils.redaction import redact_data, redact_text
 
 from .audit_logger import AuditLogger, DecisionType
@@ -151,6 +152,11 @@ class AgentRuntime:
             decision_type = DecisionType.ALLOW if decision.allowed else DecisionType.DENY
             if decision.needs_approval:
                 decision_type = DecisionType.REQUIRE_APPROVAL
+            # The least-privilege snippet for a denial is operator advice: it
+            # is written to the audit log only, never into the explanation the
+            # caller receives (owner's decision 2026-11-02).
+            snippet = None if decision.allowed else build_policy_snippet(
+                decision, capability, parameters, self._policy_engine.get_policy())
             self.audit_logger.log_policy_evaluation(
                 capability=capability,
                 decision=decision_type,
@@ -158,6 +164,7 @@ class AgentRuntime:
                 parameters=redacted_parameters,
                 policy_rule=decision.policy_rule,
                 evaluation_time_ms=evaluation_time_ms,
+                context={"policy_snippet": snippet} if snippet else None,
             )
 
         if not decision.allowed:

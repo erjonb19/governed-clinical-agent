@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from src.utils.redaction import redact_data, redact_text
 
@@ -94,16 +94,58 @@ PHI_SAFE_SHAPE = ("ask for an aggregate instead of patient rows, for example pat
                   f"by birth year and state: {PHI_SAFE_QUERY} "
                   "(groups of fewer than 11 patients are withheld).")
 
+# Where to read what may be queried, on every surface.
+SCHEMA_POINTER = "GET /schema, or analytics_schema over MCP"
+
+# What to do instead, by refusal type, checked in order (first match wins).
+# None of these suggests changing the policy or the guard: a refusal is fixed
+# by a different query, and a policy change is its owner's decision, never the
+# caller's next step.
+GUARD_SUGGESTIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("phi rule", "output check:"), PHI_SAFE_SHAPE),
+    (("no such column",),
+     f"use only the columns the schema lists for that table ({SCHEMA_POINTER})."),
+    (("table not on gold allowlist", "catalog/system schema"),
+     f"query only the tables the schema lists ({SCHEMA_POINTER})."),
+    (("only select is allowed", "write or ddl", "stacked statements"),
+     "send one read-only SELECT statement."),
+    (("disallowed function", "table function not allowed"),
+     "compute it with plain SQL over the listed tables, without file, settings or "
+     "SQL-string functions."),
+    (("unparseable sql", "empty query"),
+     "send one complete SELECT statement."),
+    (("query execution failed",),
+     f"fix the error named above, using the tables and columns the schema lists "
+     f"({SCHEMA_POINTER})."),
+)
+POLICY_OWNER_ONLY = ("use a capability the policy already allows; whether to change the "
+                     "policy is its owner's decision.")
+GENERIC_SUGGESTION = ("change the request to stay within what the policy and the guard already "
+                      "allow; whether to change them is their owner's decision.")
+
 
 def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], policy: dict[str, Any]) -> str:
     """
-    Build a human-readable explanation for runtime decisions.
+    Build the human-readable explanation a CALLER sees (API and MCP).
 
-    Denials include:
-    - concise reason
-    - failing constraint context
-    - minimal least-privilege policy snippet suggestion
+    Denials include the reason, the failing constraint and a suggestion that
+    never loosens policy. They never include a policy snippet: a YAML block
+    that would grant what was just refused is advice for whoever maintains the
+    policy file, so it goes only to the audit log (`policy_snippet`, owner's
+    decision 2026-11-02).
     """
+    return _explain(decision, capability, parameters, policy)[0]
+
+
+def policy_snippet(decision: Any, capability: str, parameters: dict[str, Any],
+                   policy: dict[str, Any]) -> Optional[str]:
+    """The least-privilege policy snippet for a policy denial, for the AUDIT
+    LOG only (None when there is none). Never return it to a caller."""
+    return _explain(decision, capability, parameters, policy)[1]
+
+
+def _explain(decision: Any, capability: str, parameters: dict[str, Any],
+             policy: dict[str, Any]) -> tuple[str, Optional[str]]:
     safe_params = redact_data(parameters or {})
     reason = redact_text(getattr(decision, "reason", "Operation was denied by policy."))
     # Redact details too: they are echoed into the explanation, and a denial on a
@@ -117,8 +159,8 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
                 f"Operation allowed with approval: {capability}\n"
                 f"Reason: {reason}\n"
                 "Next step: request approval through the configured approval flow."
-            )
-        return f"Operation allowed: {capability}\nReason: {reason}"
+            ), None
+        return f"Operation allowed: {capability}\nReason: {reason}", None
 
     lines = [
         f"Operation denied: {capability}",
@@ -132,44 +174,37 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
     if "approval required" in reason_lower:
         lines.append("Constraint: operation requires human approval before execution.")
         lines.append("Next step: request approval and retry the action.")
-        return "\n".join(lines)
+        return "\n".join(lines), None
 
     if "path" in details or "path" in safe_params:
         path_value = str(details.get("path") or safe_params.get("path") or "<path>")
         lines.append(f"Constraint: Requested path is outside allowed policy paths ({path_value}).")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_path_snippet(policy, capability, path_value))
         lines.append("Safe alternative: use a path already covered by existing allow rules.")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_path_snippet(policy, capability, path_value)
 
     if "url" in details or "url" in safe_params or "endpoint" in safe_params:
         endpoint = str(details.get("url") or safe_params.get("url") or safe_params.get("endpoint") or "<url>")
         lines.append(f"Constraint: Endpoint is not allowed by policy ({endpoint}).")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_endpoint_snippet(policy, capability, endpoint))
         lines.append("Safe alternative: use a currently allow-listed HTTPS endpoint.")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_endpoint_snippet(policy, capability, endpoint)
 
     if "explicitly denied" in reason_lower:
         lines.append("Constraint: this capability is configured with allowed: false.")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_capability_snippet(capability))
-        lines.append("Safe alternative: grant only the narrow capability needed.")
-        return "\n".join(lines)
+        lines.append(f"Safe alternative: {POLICY_OWNER_ONLY}")
+        return "\n".join(lines), _build_capability_snippet(capability)
 
     if "not in policy" in reason_lower or "default_policy" in reason_lower:
         lines.append("Constraint: capability is missing from policy and default deny blocked it.")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_capability_snippet(capability))
-        lines.append("Safe alternative: add only this capability with narrow constraints.")
-        return "\n".join(lines)
+        lines.append(f"Safe alternative: {POLICY_OWNER_ONLY}")
+        return "\n".join(lines), _build_capability_snippet(capability)
 
-    if "phi rule" in reason_lower:
-        # Patient-privacy refusal: the fix is a different question, never a
-        # looser policy. (Not "Safe alternative:", which the MCP server strips
-        # as operator advice -- a model caller should see this shape.)
-        lines.append(f"Safe query shape: {PHI_SAFE_SHAPE}")
-        return "\n".join(lines)
+    # Guard refusals: the fix is a different query, never a looser policy.
+    # (Labelled "Safe query shape:", not "Safe alternative:", which the MCP
+    # server strips as operator advice -- a model caller should see these.)
+    for markers, suggestion in GUARD_SUGGESTIONS:
+        if any(m in reason_lower for m in markers):
+            lines.append(f"Safe query shape: {suggestion}")
+            return "\n".join(lines), None
 
-    lines.append("Safe alternative: adjust policy constraints minimally for this operation.")
-    return "\n".join(lines)
+    lines.append(f"Safe alternative: {GENERIC_SUGGESTION}")
+    return "\n".join(lines), None

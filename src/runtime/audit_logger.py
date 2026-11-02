@@ -140,10 +140,15 @@ class AuditLogger:
         reason: str,
         parameters: Optional[Dict[str, Any]] = None,
         policy_rule: Optional[str] = None,
-        evaluation_time_ms: Optional[float] = None
+        evaluation_time_ms: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Log a policy evaluation event.
+
+        `context` carries operator-only detail, e.g. the least-privilege
+        `policy_snippet` for a denial -- recorded here and never returned to
+        the caller.
         
         Args:
             capability: The capability being evaluated
@@ -169,9 +174,10 @@ class AuditLogger:
             reason=reason,
             parameters=parameters,
             policy_rule=policy_rule,
-            performance_metrics=performance_metrics
+            performance_metrics=performance_metrics,
+            context=context
         )
-        
+
         return self._log_event(event)
     
     def log_tool_execution(

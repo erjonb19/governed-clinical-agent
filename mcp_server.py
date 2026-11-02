@@ -183,7 +183,10 @@ def available_datasets() -> list[str]:
 # The mediation seam: every MCP tool call goes through here.
 # This is the heart of the project. MCP call -> capability -> execute_tool.
 # ---------------------------------------------------------------------------
-# A policy denial from the explainer ends with advice written for the OPERATOR
+# Since 2026-11-02 the explainer no longer returns policy snippets at all (they
+# go to the audit log only); this stripping stays as a second line of defence.
+#
+# A policy denial from the explainer used to end with advice written for the OPERATOR
 # tuning the policy file -- including, for a hard deny, a ready-to-paste YAML
 # snippet that grants the very capability just refused:
 #
