@@ -1,0 +1,118 @@
+# .github/workflows/eval-fhir-manual.yml
+# The full 28-case FHIR eval on a CHOSEN BRANCH, started by hand (owner's
+# request 2026-11-02: run it on a GitHub runner, not the laptop). Same build and
+# provider as the nightly FHIR job, but it checks out the branch you name and,
+# by default, fails unless EVERY case passes -- the bar for merging a PR that
+# touches the FHIR guard or planner. Exit 2 (provider unavailable) fails too
+# here: an inconclusive run must not read as a pass for a merge decision.
+#
+#   gh workflow run eval-fhir-manual.yml -f ref=feat/my-branch
+#
+# The branch's own code runs with the Gemini secret, so only dispatch branches
+# you trust (only collaborators can dispatch at all).
+
+name: eval (FHIR, manual, any branch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to evaluate"
+        required: true
+      runs:
+        description: "Runs per case"
+        required: false
+        default: "3"
+      require_all_cases:
+        description: "Fail unless every case passes (majority of its runs)"
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: gemini-eval        # one Gemini sweep at a time: they share a quota
+  cancel-in-progress: false
+
+jobs:
+  fhir-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify required secret is present
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error title=Missing secret::GEMINI_API_KEY is not set for this repository."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt pyarrow   # pyarrow: build_fhir_gold._to_arrow
+
+      - name: Cache FHIR Gold
+        id: fhir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/synthea
+            medallion/fhir_gold.duckdb
+          key: fhir-gold-${{ hashFiles('fetch_synthea.py', 'build_fhir_gold.py') }}
+
+      - name: Build FHIR Gold (on cache miss)
+        if: steps.fhir-cache.outputs.cache-hit != 'true'
+        run: |
+          python fetch_synthea.py
+          python build_fhir_gold.py
+
+      - name: Run FHIR eval
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PLANNER_PROVIDER: "gemini"
+          PLANNER_MIN_INTERVAL_SEC: "5"
+          EVAL_DATASET: "fhir"
+          PLANNER_SCHEMA: "fhir"
+          RUNS: ${{ inputs.runs }}
+        run: |
+          set +e
+          python -u eval_harness.py --runs "$RUNS"
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "::error title=Provider unavailable::Inconclusive: Gemini was unavailable for most runs. Not a regression, but not a pass either."
+          fi
+          exit $code
+
+      - name: Require every case to pass
+        if: inputs.require_all_cases
+        run: |
+          python - <<'PY'
+          import glob, json, os, sys
+          path = max(glob.glob("eval_runs/eval_*_fhir_*.json"), key=os.path.getmtime)
+          r = json.load(open(path))
+          failed = [c for c in r["cases"] if not c["passed"]]
+          for c in r["cases"]:
+              print(f"{'PASS' if c['passed'] else 'FAIL'} {c['id']}: {c['correct_runs']}/{c['runs']}  {c['sample_detail']}")
+          if failed:
+              print(f"::error title=Not every case passed::{len(failed)} of {len(r['cases'])} failed: "
+                    + ", ".join(c["id"] for c in failed))
+              sys.exit(1)
+          print(f"all {len(r['cases'])} cases passed")
+          PY
+
+      - name: Upload FHIR eval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: eval-report-fhir-${{ github.run_id }}
+          path: eval_runs/
