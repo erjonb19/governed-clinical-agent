@@ -521,6 +521,13 @@ With `anthropic`, `ANTHROPIC_MODEL` picks the model (default `claude-haiku-5-5`)
 Current Claude models reject `temperature` and think by default, so this provider
 uses the native SDK at low effort rather than the OpenAI-compat endpoint.
 
+Every query the guard allows is stopped after `QUERY_TIMEOUT_SEC` seconds
+(default 10; zero, negative or unparseable values fall back to 10, so it cannot
+be switched off), on DuckDB by interrupting the connection and on Databricks as
+`STATEMENT_TIMEOUT`. The guard decides what a query may return, not what it
+costs: a self-join or cross join of a patient table passes it, and at the real
+Gold's size some ran past 60 s (`docs/measurements/compute_bomb_2026-11-03.txt`).
+
 Note: `xai` is xAI/Grok (`api.x.ai`, `XAI_API_KEY` starting `xai-`), a different
 vendor from `groq` (`api.groq.com`, `GROQ_API_KEY` starting `gsk_`).
 
