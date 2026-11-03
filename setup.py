@@ -8,6 +8,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
+# The SQL guard's parser and engine. Pinned to the SAME versions as
+# requirements-api.txt (tests/unit/test_dependency_pins.py checks they agree).
+# Unpinned, `pip install -e ".[dev]"` gave the guard no sqlglot at all, and a
+# hand-installed newer sqlglot (30.29.0) makes phi_guard fail closed on every
+# FHIR query, including plain GROUP BY counts (found 2026-11-03).
+GUARD_PINS = ["sqlglot==30.11.0", "duckdb==1.5.4"]
+
 setup(
     name="agent-runtime-secure",
     version="0.1.0",
@@ -30,9 +37,9 @@ setup(
         "Programming Language :: Python :: 3.11",
     ],
     python_requires=">=3.8",
-    install_requires=requirements,
+    install_requires=requirements + GUARD_PINS,
     extras_require={
-        "dev": [
+        "dev": GUARD_PINS + [
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
             "pytest-mock>=3.10.0",
