@@ -245,7 +245,11 @@ In plain terms, for the clinical (FHIR) data:
 
 One limit, stated plainly: cell suppression can in principle be undone by
 subtraction, for example a total minus every visible group. It is recorded in
-`docs/PLAN_v2.md` §0.4.
+`docs/PLAN_v2.md` §0.4, with the options for closing it.
+
+Over MCP, the client's own model reads the result rows. Text in the data that
+reads like an instruction reaches that model; the guard still rules on every
+query it sends. Treat result rows as untrusted data on the client side.
 
 The CMS hospital data is public and about facilities, not people, so none of
 this applies to it. The column-by-column labels are in `phi_columns.yaml`; a
@@ -327,7 +331,7 @@ Every run above is committed under `eval_runs/`:
 `eval_single_hospital_20261030T141101Z.json` (FHIR the same day:
 `eval_single_fhir_20261030T141840Z.json`, 72/72 completed runs correct).
 
-**Scoring the whole path, and ten adversarial cases.** `--trajectory` runs every
+**Scoring the whole path, and thirteen adversarial cases.** `--trajectory` runs every
 case through the self-correcting graph and scores the run, not just its rows
 (`trajectory_eval.py`, deterministic, no LLM judge):
 
