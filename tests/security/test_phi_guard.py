@@ -569,7 +569,10 @@ def test_a_cross_join_cannot_pad_a_group_past_11(tool):
 def test_a_filtered_count_of_a_small_subgroup_is_nulled(tool):
     r = tool.execute({"sql": "SELECT count(*) FILTER (WHERE gender = 'male') AS men, "
                              "count(*) FILTER (WHERE gender = 'female') AS women FROM gold_patient"})
-    assert r.success and r.output["rows"] == [{"men": None, "women": 12}]
+    # 3 men: nulled. 12 women: nulled too since the differencing fix
+    # (2026-11-03), because their complement in the group is the 3 men, and the
+    # total minus 12 would give the 3 back.
+    assert r.success and r.output["rows"] == [{"men": None, "women": None}]
 
 
 def test_an_aggregate_sqlglot_does_not_model_is_still_suppressed(tool):
@@ -1127,8 +1130,10 @@ def test_a_rare_condition_cohort_is_never_described(tool, name):
 # (1) differencing. A suppressed cell can be recovered as a total minus what is
 # shown. The fixture has 15 patients, 12 female and 3 male: "male" is suppressed,
 # but 15 - 12 = 3. Each shape below gets the 3 back in ONE query today.
-# Known gap (PLAN_v2 §0.4), strict xfail: when a fix closes a shape, its xfail
-# turns into a failure here and the marker comes off.
+# Closed (owner's decision 2026-11-03): a filtered or differenced count is its
+# own cell, and it and its complement must each cover 11 people. A shape may
+# still return a number -- the UNION one returns the true total, 15 -- but never
+# the suppressed group.
 SUPPRESSED_MALE_COUNT = 3
 
 
@@ -1158,7 +1163,6 @@ SINGLE_QUERY_DIFFERENCING = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="known gap: single-query differencing (PLAN_v2 §0.4)")
 @pytest.mark.parametrize("name", list(SINGLE_QUERY_DIFFERENCING))
 def test_a_suppressed_group_cannot_be_recovered_by_differencing_in_one_query(tool, name):
     sql, derive = SINGLE_QUERY_DIFFERENCING[name]
@@ -1166,7 +1170,46 @@ def test_a_suppressed_group_cannot_be_recovered_by_differencing_in_one_query(too
                         ).output["rows"] == [{"gender": "female", "n": 12}]     # male suppressed
     r = tool.execute({"sql": sql})
     disclosed = derive(r.output["rows"]) if r.success else None
-    assert disclosed is None, f"{name}: recovered the suppressed group ({disclosed})"
+    assert disclosed != SUPPRESSED_MALE_COUNT, f"{name}: recovered the suppressed group"
+
+
+GROUPED_DIFFERENCING = {
+    "a grouped WHERE count beside a total": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS total, g.n FROM (SELECT gender, count(*) AS n "
+        "FROM gold_patient WHERE age_years > 45 GROUP BY gender) g"),
+    "a grouped WHERE count in a UNION with an ungrouped one": (
+        "SELECT count(*) AS n FROM gold_condition UNION ALL SELECT count(*) FROM gold_condition "
+        "WHERE condition_name = 'Hypertension' GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(GROUPED_DIFFERENCING))
+def test_a_grouped_filtered_count_beside_another_aggregate_is_refused(name):
+    d = validate_query(GROUPED_DIFFERENCING[name])
+    assert not d.allowed and "subtracting" in d.reason, d.reason
+
+
+@pytest.fixture
+def even_tool(tmp_path):
+    # 12 women and 15 men: both sides of the split cover 11 people
+    path = build(str(tmp_path / "even.duckdb"))
+    import duckdb
+    con = duckdb.connect(path)
+    con.execute("INSERT INTO gold_patient SELECT 'q' || i, 'G', 'F', 'male', '1960-01-01', false, "
+                "'S', 'Springfield', 'MA', '02134', 50 FROM range(12) t(i)")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+def test_a_split_where_both_sides_cover_11_people_is_still_answered(even_tool):
+    r = even_tool.execute({"sql": "SELECT count(*) AS total, count(*) FILTER "
+                                  "(WHERE gender = 'female') AS f FROM gold_patient"})
+    assert r.output["rows"] == [{"total": 27, "f": 12}]
+    r = even_tool.execute({"sql": "SELECT (SELECT count(*) FROM gold_patient) - (SELECT count(*) "
+                                  "FROM gold_patient WHERE gender = 'female') AS men"})
+    assert r.output["rows"] == [{"men": 15}]
+    pct = even_tool.execute({"sql": ALLOWED["percentage from two scalar counts"]})
+    assert pct.success and pct.output["rows"][0]["pct"] is not None
 
 
 def test_cross_query_differencing_still_recovers_a_suppressed_group_RESIDUAL_RISK(tool):
