@@ -125,3 +125,23 @@ def test_export_is_off_unless_configured(monkeypatch):
 def test_a_non_hex_trace_id_still_maps_to_a_valid_otel_id():
     assert 0 < trace_export._int_id("approval-thread-7", 128) < (1 << 128)
     assert trace_export.root_span_id("abc") == trace_export.root_span_id("abc") != 0
+
+
+def test_the_deploy_never_exports_or_runs_phoenix():
+    # Owner's requirement (2026-11-06): Phoenix is opt-in and local only; Render
+    # keeps the SQLite traces. The deploy sets no export endpoint, installs no
+    # Phoenix, and a tracer built without the variable has no exporter.
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    render = open(os.path.join(root, "render.yaml"), encoding="utf-8").read()
+    assert "TRACE_OTLP_ENDPOINT" not in render and "phoenix" not in render.lower()
+    for req in ("requirements-api.txt", "requirements.txt"):
+        assert "arize-phoenix" not in open(os.path.join(root, req), encoding="utf-8").read(), req
+
+
+def test_a_tracer_without_the_variable_writes_sqlite_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("TRACE_OTLP_ENDPOINT", raising=False)
+    t = tracing.Tracer(str(tmp_path / "t.sqlite"))
+    assert t.exporter is None
+    with t.trace("run") as tid:
+        t.event("plan")
+    assert [s["name"] for s in t.get_trace(tid)["spans"]] == ["plan"]
