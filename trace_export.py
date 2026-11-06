@@ -49,11 +49,20 @@ import hashlib
 import json
 import os
 import re
+from urllib.parse import unquote
 import threading
 from typing import Any, Optional
 
 ENDPOINT_ENV = "TRACE_OTLP_ENDPOINT"
 PROJECT_ENV = "TRACE_OTLP_PROJECT"
+# Auth for a hosted backend (backlog item 12), in the OpenTelemetry header format
+# "key=value,key2=value2" -- e.g. Langfuse Cloud:
+#   Authorization=Basic <base64 of public:secret key>,x-langfuse-ingestion-version=4
+# A secret: set it in the host's environment (Render dashboard), never in code;
+# it is sent only as request headers and never logged or recorded.
+HEADERS_ENV = "TRACE_OTLP_HEADERS"
+QUEUE_MAX = 2048                 # spans waiting for export; beyond this, new ones are dropped
+EXPORT_TIMEOUT_SEC = 5
 DEFAULT_PROJECT = "governed-clinical-agent"
 NON_FINAL = {"pending_approval"}
 
@@ -134,7 +143,8 @@ class OTLPExporter:
     """Queues recorded spans for export. Every public method is best effort."""
 
     def __init__(self, endpoint: str, project: str = DEFAULT_PROJECT, span_exporter=None,
-                 processor=None):
+                 processor=None, headers: Optional[dict] = None,
+                 timeout_sec: float = EXPORT_TIMEOUT_SEC):
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
@@ -143,8 +153,14 @@ class OTLPExporter:
                                          "openinference.project.name": project})
         if span_exporter is None:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            span_exporter = OTLPSpanExporter(endpoint=endpoint, timeout=5)
-        self.processor = processor or BatchSpanProcessor(span_exporter, schedule_delay_millis=500)
+            span_exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers or None,
+                                             timeout=timeout_sec)
+        # Export runs on the processor's own thread from a bounded queue: a slow,
+        # failing or unreachable backend delays no request, and when the queue is
+        # full new spans are dropped rather than held (tests/unit/test_trace_export.py)
+        self.processor = processor or BatchSpanProcessor(
+            span_exporter, max_queue_size=QUEUE_MAX, schedule_delay_millis=500,
+            export_timeout_millis=int(timeout_sec * 1000))
         self._rooted: set = set()          # traces whose root this process has sent
         self._rooted_lock = threading.Lock()
 
@@ -216,18 +232,35 @@ _lock = threading.Lock()
 _cached: dict = {}
 
 
+def parse_headers(value: str) -> dict:
+    """'k=v,k2=v2' (the OTEL_EXPORTER_OTLP_HEADERS format) -> {'k': 'v', ...}.
+    Splits each pair on its FIRST '=', so base64 padding survives; values are
+    percent-decoded as the OpenTelemetry spec says. Malformed pairs are skipped."""
+    out = {}
+    for pair in (value or "").split(","):
+        if "=" not in pair:
+            continue
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        if k:
+            out[k] = unquote(v.strip())
+    return out
+
+
 def from_env() -> Optional[OTLPExporter]:
-    """The exporter for TRACE_OTLP_ENDPOINT, built once per endpoint; None when
-    unset or when the OpenTelemetry packages are missing."""
+    """The exporter for TRACE_OTLP_ENDPOINT (with TRACE_OTLP_HEADERS), built
+    once per configuration; None when unset or when the OpenTelemetry packages
+    are missing."""
     endpoint = os.environ.get(ENDPOINT_ENV, "").strip()
     if not endpoint:
         return None
     project = os.environ.get(PROJECT_ENV, "").strip() or DEFAULT_PROJECT
-    key = (endpoint, project)
+    headers = parse_headers(os.environ.get(HEADERS_ENV, ""))
+    key = (endpoint, project, hashlib.sha256(repr(sorted(headers.items())).encode()).hexdigest())
     with _lock:
         if key not in _cached:
             try:
-                _cached[key] = OTLPExporter(endpoint, project)
+                _cached[key] = OTLPExporter(endpoint, project, headers=headers)
             except Exception:
                 _cached[key] = None
         return _cached[key]
