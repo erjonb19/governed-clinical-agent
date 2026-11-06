@@ -329,6 +329,9 @@ Notes:
     places or full dates (joining on patient_id / encounter_id is fine); per-patient
     figures go in a subquery grouped by patient_id that the outer query
     COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
+    Ages over 90 are counted as 90 automatically (averages too) and shown as
+    "90+"; write age questions plainly, with no age filter or cap of your own
+    unless the question asks for one (a condition above 90 matches nobody).
     Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV of a plain
     column, never LIST, ARRAY_AGG, STRING_AGG or ARG_MAX, and never a CASE,
     NULLIF or other expression inside the aggregate: for a share or a

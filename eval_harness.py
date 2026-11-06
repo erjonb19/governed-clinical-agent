@@ -220,22 +220,38 @@ def score_one(case, agent_rows) -> tuple[str, str]:
     return F_WRONG_ANSWER, f"agent={a[:3]}... ref={b[:3]}..."
 
 
+# What the last run wrote and why it was refused, for the report: the SQL and
+# the refusal reason only, NEVER result rows (the repo is public; guard
+# refusals name columns, never values).
+_LAST_RUN: dict = {}
+_REASON_CHARS = 600
+
+
+def _note_run(sql=None, reason=None) -> None:
+    _LAST_RUN.clear()
+    _LAST_RUN.update({"sql": sql, "reason": (reason or None) and str(reason)[:_REASON_CHARS]})
+
+
 def run_once(case, runtime, planner) -> tuple[str, str]:
     """One agent attempt at one case. Returns (failure_mode, detail)."""
+    _note_run()
     try:
         sql = planner.generate_sql(case["question"])
     except Exception as e:
         mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
         return mode, str(e)[:120]
+    _note_run(sql)
     result = runtime.execute_tool(CAPABILITY, {"sql": sql})
     if not getattr(result, "allowed", False):
         reason = getattr(result, "explanation", "") or ""
+        _note_run(sql, reason)
         mode = F_GUARD_DENIED if ("guard" in reason.lower() or "sql_guard" in reason) else F_GUARD_DENIED
         return mode, reason[:120]
     tr = result.result
     if tr is None:
         return F_SQL_ERROR, "no tool result"
     if not tr.success:
+        _note_run(sql, tr.error)
         err = (tr.error or "")[:120]
         mode = F_GUARD_DENIED if "guard" in err.lower() else F_SQL_ERROR
         return mode, err
@@ -248,14 +264,17 @@ def run_once_graph(case, agent):
     Scoring is identical to the single-shot path -- same score_one() -- so the
     comparison is apples-to-apples. Only the execution path differs.
     """
+    _note_run()
     try:
         state = agent.run(case["question"])
     except Exception as e:
         mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
         return mode, str(e)[:120], 1
     attempts = state.get("attempts", 1)
+    _note_run(state.get("sql"))
     if not state.get("allowed"):
         reason = str(state.get("reason") or "denied")
+        _note_run(state.get("sql"), reason)
         if "critic:" in reason:
             # the SQL may well have been right; the critic never let it run.
             # Its own mode, so a critic that costs accuracy is visible as one.
@@ -448,7 +467,9 @@ def main():
         details = []
         attempts_used = []
         dims_runs = []
+        run_details = []
         for _ in range(runs):
+            _note_run()
             if provider_down:
                 # Provider already proven unreachable -- record the run without
                 # attempting it, so the totals stay consistent and the report is
@@ -467,6 +488,7 @@ def main():
                 attempts_used.append(1)
             outcomes.append(mode)
             details.append(detail)
+            run_details.append({"outcome": mode, **_LAST_RUN})
             failure_counts[mode] += 1
             if mode == F_PROVIDER_ERROR and not provider_error_sample:
                 provider_error_sample = detail
@@ -494,6 +516,8 @@ def main():
             "correct_runs": correct, "runs": runs, "stability": round(stability, 2),
             "passed": passed, "outcomes": outcomes, "sample_detail": details[0],
             "avg_attempts": round(sum(attempts_used) / len(attempts_used), 2),
+            # per run: the SQL written and, if refused or failed, why -- no rows
+            "run_details": run_details,
         })
         if args.trajectory:
             case_results[-1]["trajectory"] = dims_runs

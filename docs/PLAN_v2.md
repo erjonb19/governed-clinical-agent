@@ -177,7 +177,7 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   | `f2_count_dialysis` | 5 people | `f2_count_chemoradiation`: same shape, 37 people |
   | `f4_dialysis_and_epogen` | 5 people | `f4_chemoradiation_and_cisplatin`: same shape, 21 people |
   | `f3_top_medications` | top item (Epogen) is 5 people | same id, ranked among medications with 11+ patients |
-  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients |
+  | `f3_top_procedures` | top item (dialysis) is 5 people | same id, ranked among procedures with 11+ patients; worded "ranked by number of times performed" since 2026-11-02 (owner-approved; same reference, same answer) |
 
   The dialysis cases have no safe level: 5 people is under the floor at any
   grain. So they keep their shape and change subject (agreed by the owner,
@@ -350,9 +350,41 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
 
   One false refusal was fixed: `FILTER (WHERE b.key IS NOT NULL)`, a presence
   test, for the readmission rate.
-  **Open for the owner:** one-argument `MIN` / `MAX` (and `MEDIAN` of an odd
-  group) over a safe column return one person's value, such as the oldest age
-  in a group of 11+. They are allowed, because one bank case uses `MAX`.
+- **MIN / MAX / MEDIAN and ages (owner's decision, 2026-10-31).** One-argument
+  `MIN` / `MAX` / `MEDIAN` over a safe column stay allowed. Ages, though, are
+  capped at **90+** (HIPAA Safe Harbor) wherever one person's age could
+  surface. The four age columns (`age_years`, `age_at_encounter`,
+  `age_at_onset`, `age_at_observation`) are flagged `age: true` in
+  `phi_columns.yaml`.
+  - Before the query runs, every reference to one becomes `LEAST(col, 90)`:
+    returned values, `MIN` / `MAX` / `MEDIAN`, `GROUP BY` keys, filters and
+    **means**. So everyone 90 or older falls into one group, and
+    `WHERE age_years > 100` finds nobody.
+  - A query with ages always executes the guard's analysed copy, with the
+    original result-column names restored.
+  - In the result, an age of 90 shows as `"90+"`. A UNION position is labelled
+    only where every branch is an age.
+  - **Why means are capped too.** The first version left `AVG` / `SUM` exact.
+    Two reviews of #40 then got one person's exact 90+ age out of a single
+    query five ways, all through that exemption:
+    - `sum - sum FILTER`;
+    - `sum(DISTINCT)` under a narrowing WHERE;
+    - a sum over `WHERE age = 50 OR age >= 90` beside counts;
+    - a second mean;
+    - a cap placed on the wrong column.
+
+    So means use capped ages as well, as the owner asked ("everywhere ages
+    appear").
+  - **Eval impact:** `f1_avg_age` changes from **48.4** to **48.1**, the
+    only one of 28 FHIR answers that changes. **Approved by the owner
+    2026-10-31.** Its reference is now `round(avg(least(age_years, 90)), 1)`,
+    which states the capped definition; the guard accepts exactly
+    `LEAST(<age>, 90)` as a plain argument (it is the cap it applies anyway),
+    and no other bound.
+  - **Not yet capped:** an age derived from a birth date (`year(birth_date)`,
+    `date_diff('year', birth_date, ...)`). Safe Harbor treats a birth year
+    that implies 90+ the same way. The de-identified views of §0.6 fix this at
+    the source.
 - The FHIR schema notes tell the planner these rules, so it writes allowed SQL
   the first time.
 - **Still open (inherent limits of cell suppression):** differencing (a total
@@ -368,7 +400,7 @@ live cases `adv_diff_suppressed_group`, `adv_rare_singling_out`,
 
 | # | Class | Result on the fixture | Smallest fix |
 |---|---|---|---|
-| 1 | Differencing | **Leaks.** Six one-query shapes give a suppressed group back (total minus a FILTERed count, side by side, scalar subqueries, CTEs, a UNION sum); strict xfail. Across two queries it always will | One query: a filtered or differenced count is its own cell, and it and its complement must each cover 11+ (separate PR). Across queries: options below |
+| 1 | Differencing | Leaked: six one-query shapes gave a suppressed group back (total minus a FILTERed count, side by side, scalar subqueries, CTEs, a UNION sum). **Closed within one query** (owner's rule, 2026-11-03): a FILTERed count is nulled unless it and its complement in the group each cover 11; with two or more aggregate scopes in a query, each WHERE-filtered scope also needs its complement to cover 11 (a HAVING on a scalar count of the people the filter leaves out); a grouped one there is refused. Cost: a split is now hidden when EITHER side is under 11 (fixture: 12 women are no longer shown beside 3 men). Across two queries it always will | Across queries: options below |
 | 2 | Hashed / encoded identifiers | Refused (md5, sha256, hash, reverse, base64, hex, initial plus birth year, as output, GROUP BY key, COUNT DISTINCT or WHERE) | none |
 | 3 | Month / week date grouping | Refused when the month or week is SHOWN. **Gap found:** `GROUP BY month(date)` with only `count(*)` selected is allowed: one unlabelled count per month, each held to 11 people (strict xfail, `HIDDEN_DATE_KEYS`) | apply the year-only rule to GROUP BY keys as to output columns |
 | 4 | Rare-condition singling out | Refused at row level; aggregates (age by sex, min/max age at onset, FILTERed average) come back suppressed | none |
