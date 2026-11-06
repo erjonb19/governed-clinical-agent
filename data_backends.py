@@ -73,12 +73,16 @@ class DatabricksBackend:
 
     def execute(self, sql: str) -> tuple[list[str], list[dict]]:
         from databricks import sql as dbsql  # lazy import
+        from analytics_query_tool import query_timeout
         with dbsql.connect(
             server_hostname=self._host,
             http_path=self._http_path,
             access_token=self._token,
             catalog=self._catalog,
             schema=self._schema,
+            # the same per-statement limit as the local path (QUERY_TIMEOUT_SEC,
+            # default 10 s); Databricks SQL's STATEMENT_TIMEOUT is in seconds
+            session_configuration={"STATEMENT_TIMEOUT": str(max(1, round(query_timeout())))},
         ) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
