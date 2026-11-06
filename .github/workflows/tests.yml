@@ -5,11 +5,13 @@
 
 name: tests (pytest)
 
+# Every push to any branch, every PR, and nightly (backlog item 1).
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "15 7 * * *"   # nightly, beside eval-nightly.yml (07:00)
   workflow_dispatch:
 
 jobs:
@@ -35,3 +37,29 @@ jobs:
       # remain opt-in and are skipped here.
       - name: Run tests (pytest)
         run: pytest -q -m "not network"
+
+  # The documented dev install (`pip install -e ".[dev]"`, CLAUDE.md) must give
+  # the guard the SAME sqlglot and duckdb as requirements-api.txt. Before the
+  # pins in setup.py it installed no sqlglot at all, and a hand-installed newer
+  # one (30.29.0) made phi_guard fail closed on every FHIR query. This job
+  # installs ONLY that way, in a clean environment, and runs the guard tests.
+  guard-editable-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install the package the documented way
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip list | grep -iE '^(sqlglot|duckdb) '
+
+      - name: Run the guard tests
+        run: >-
+          pytest -q tests/security/test_phi_guard.py tests/security/test_guard_escapes.py
+          tests/unit/test_dependency_pins.py

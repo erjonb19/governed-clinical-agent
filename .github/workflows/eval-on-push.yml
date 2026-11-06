@@ -6,11 +6,11 @@
 
 name: eval (quick gate)
 
+# Every push to any branch (backlog item 1). No pull_request trigger: a push to
+# a PR branch already runs this, and running it twice per push would spend the
+# Gemini free-tier quota twice (the binding limit -- 429s end runs early).
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:        # allows manual runs from the Actions tab
 
 jobs:
@@ -24,9 +24,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Fail fast with a clear message if the planner key is absent. Without it,
-      # NLToSQLPlanner.__init__ raises SystemExit and the job dies in ~20s with a
-      # cryptic exit 1 that looks like an eval failure but is really a setup gap.
       # Fail fast with a clear message if the planner key is absent. Without it,
       # NLToSQLPlanner.__init__ raises SystemExit and the job dies in ~20s with a
       # cryptic exit 1 that looks like an eval failure but is really a setup gap.
@@ -53,22 +50,77 @@ jobs:
           EVAL_SUBSET: "1"        # harness runs the tagged subset only
           EVAL_RUNS: "1"          # one run per case keeps the gate fast
         # Exit 2 = provider unavailable (402/429/5xx): an infrastructure outage,
-        # not an accuracy regression -- warn instead of blocking the PR. Exit 1
-        # (real regression) still fails the gate.
-        run: |
-          set +e
-          python eval_harness.py
-          code=$?
-          set -e
-          if [ "$code" -eq 2 ]; then
-            echo "::warning title=Provider unavailable::Eval inconclusive -- the LLM provider was unavailable for most runs (402/403-no-credits/429/5xx). This is NOT an accuracy regression. Fund/switch the provider, or run against a fallback provider (see README)."
-            exit 0
-          fi
-          exit $code
+        # not an accuracy regression -- warn instead of blocking the push. Exit 1
+        # (real regression) still fails the gate (scripts/eval_gate.sh).
+        run: scripts/eval_gate.sh warn
 
       - name: Upload eval report
         if: always()              # keep the report even if the gate fails
         uses: actions/upload-artifact@v6
         with:
           name: eval-report-quick
+          path: eval_runs/
+
+  # FHIR subset (backlog item 1, owner's decision 2026-11-06): 13 cases covering
+  # every tier, both modes and every FHIR table (tests/unit/test_fhir_subset.py);
+  # the full 28 run nightly. After the hospital job: one key, so running both at
+  # once doubles the request rate and trips 429s.
+  fhir-quick-eval:
+    needs: quick-eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify required secret is present
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error title=Missing secret::GEMINI_API_KEY is not set for this workflow. The eval planner uses the Gemini provider and cannot run without it."
+            exit 1
+          fi
+          echo "GEMINI_API_KEY is present."
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt pyarrow   # pyarrow: build_fhir_gold._to_arrow
+
+      # the same cache as the nightly FHIR job (a branch reads main's cache)
+      - name: Cache FHIR Gold
+        id: fhir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/synthea
+            medallion/fhir_gold.duckdb
+          key: fhir-gold-${{ hashFiles('fetch_synthea.py', 'build_fhir_gold.py') }}
+
+      - name: Build FHIR Gold (on cache miss)
+        if: steps.fhir-cache.outputs.cache-hit != 'true'
+        run: |
+          python fetch_synthea.py
+          python build_fhir_gold.py
+
+      - name: Run FHIR quick eval (subset)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PLANNER_PROVIDER: "gemini"
+          PLANNER_MIN_INTERVAL_SEC: "5"
+          EVAL_DATASET: "fhir"
+          PLANNER_SCHEMA: "fhir"
+          EVAL_SUBSET: "1"
+          EVAL_RUNS: "1"
+        run: scripts/eval_gate.sh warn
+
+      - name: Upload FHIR eval report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: eval-report-fhir-quick
           path: eval_runs/

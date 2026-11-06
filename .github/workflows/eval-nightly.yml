@@ -13,7 +13,9 @@ on:
 jobs:
   full-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # two attempts (~23 min each when healthy) + 5 min wait; each attempt is
+    # capped at 32 min by the gate so an overrun is red, not "cancelled"
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
@@ -45,19 +47,11 @@ jobs:
           PLANNER_PROVIDER: "gemini"      # gemini free tier has headroom for the full suite
           PLANNER_MIN_INTERVAL_SEC: "5"  # ~12 RPM: stays under the Gemini free-tier per-minute cap
           EVAL_RUNS: "3"
-        # Exit 2 = provider unavailable (402/429/5xx). That is an infrastructure
-        # outage, not an accuracy regression, so surface it as a warning instead
-        # of failing the build. Exit 1 (real regression) still fails.
-        run: |
-          set +e
-          python eval_harness.py --runs 3
-          code=$?
-          set -e
-          if [ "$code" -eq 2 ]; then
-            echo "::warning title=Provider unavailable::Eval inconclusive -- the LLM provider was unavailable for most runs (402/403-no-credits/429/5xx). This is NOT an accuracy regression. Fund/switch the provider, or run against a fallback provider (see README)."
-            exit 0
-          fi
-          exit $code
+          EVAL_ATTEMPT_TIMEOUT_MIN: "32"
+        # Exit 1 (below the gate) is red. Exit 2 (provider unavailable or cases
+        # unanswered) is retried once after 5 minutes, then red: owner's
+        # decision 2026-11-06, backlog item 1 (scripts/eval_gate.sh).
+        run: scripts/eval_gate.sh retry-then-fail --runs 3
 
       - name: Upload eval report
         if: always()
@@ -73,8 +67,11 @@ jobs:
   # Synthea source, cached so we don't refetch every night.
   fhir-eval:
     needs: full-eval
+    # still runs when the hospital job is red: each dataset gets its own verdict
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # two attempts (~15 min each when healthy) + 5 min wait, each capped at 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -125,17 +122,9 @@ jobs:
           EVAL_DATASET: "fhir"               # select the FHIR bank + fhir_gold.duckdb
           PLANNER_SCHEMA: "fhir"             # must be set in env (planner reads it at import)
           EVAL_RUNS: "3"
-        # Exit 2 = provider unavailable -> warn, don't fail (see hospital job).
-        run: |
-          set +e
-          python eval_harness.py --runs 3
-          code=$?
-          set -e
-          if [ "$code" -eq 2 ]; then
-            echo "::warning title=Provider unavailable::FHIR eval inconclusive -- provider unavailable (402/403-no-credits/429/5xx). NOT an accuracy regression."
-            exit 0
-          fi
-          exit $code
+          EVAL_ATTEMPT_TIMEOUT_MIN: "25"
+        # Exit 2 = provider unavailable -> one retry, then red (see hospital job).
+        run: scripts/eval_gate.sh retry-then-fail --runs 3
 
       - name: Upload FHIR eval report
         if: always()

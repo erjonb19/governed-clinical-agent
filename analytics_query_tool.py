@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import os
+import threading
 from typing import Any, Dict
 
 import duckdb
@@ -53,6 +54,66 @@ def redact_values(message: str) -> str:
     """Every single-quoted literal in `message` replaced (the fallback for
     errors that are about the SQL, whose LINE 1 echo can still carry a literal)."""
     return _QUOTED_VALUE.sub("'<value>'", message)
+
+
+# Per-statement time limit (twelfth review, case 6). The guard rules on what a
+# query may RETURN, not what it costs: a self-join or cross join of a patient
+# table passes it. Measured on the real Gold's size (223,503 synthetic
+# observations): a key self-join 0.31 s, a self-join on a safe column 22 s, a
+# three-way self-join and a cross join still running at 60 s
+# (docs/measurements/compute_bomb_2026-11-03.txt). 10 s is ~30x the slowest
+# legitimate shape measured, and stops the bombs.
+DEFAULT_QUERY_TIMEOUT_SEC = 10.0
+
+
+def query_timeout() -> float:
+    """QUERY_TIMEOUT_SEC, a positive number of seconds; anything else is the
+    default. There is deliberately no "off" value."""
+    try:
+        v = float(os.environ.get("QUERY_TIMEOUT_SEC", DEFAULT_QUERY_TIMEOUT_SEC))
+    except ValueError:
+        return DEFAULT_QUERY_TIMEOUT_SEC
+    return v if v > 0 else DEFAULT_QUERY_TIMEOUT_SEC
+
+
+class QueryTimeout(Exception):
+    def __init__(self, seconds: float):
+        super().__init__(f"query timed out after {seconds:g} s (QUERY_TIMEOUT_SEC) and was "
+                         f"stopped; write a cheaper query -- avoid self-joins and cross joins "
+                         f"of large tables")
+
+
+def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
+    """Execute and fetch on a DuckDB connection, interrupting it after
+    `seconds`. DuckDB has no statement_timeout setting, so a timer calls
+    con.interrupt(). Callers serialise use of `con` (the API's _LOCK), so the
+    query running when it fires is this one; the timer is disarmed under a lock
+    before returning, and an interrupt that lands on an idle connection does not
+    affect the next query (tests/unit/test_query_timeout.py)."""
+    lock, done, fired = threading.Lock(), [False], [False]
+
+    def fire():
+        with lock:
+            if not done[0]:
+                fired[0] = True
+                con.interrupt()
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    try:
+        cur = con.execute(sql)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return cols, rows
+    except duckdb.InterruptException:
+        if fired[0]:
+            raise QueryTimeout(seconds) from None
+        raise
+    finally:
+        with lock:
+            done[0] = True
+        timer.cancel()
 
 
 def describe_execution_error(e: Exception) -> str:
@@ -214,9 +275,7 @@ class AnalyticsQueryTool(BaseTool):
             else:
                 ds = params.get("dataset")
                 con = self._cons.get(ds, self._con) if ds else self._con
-                cur = con.execute(decision.safe_sql)
-                cols = [d[0] for d in cur.description] if cur.description else []
-                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                cols, rows = run_with_timeout(con, decision.safe_sql, query_timeout())
 
             # The PHI output check (phi_guard.py): trace every result column to
             # its sources and refuse PHI however it was renamed, and refuse
@@ -255,6 +314,9 @@ class AnalyticsQueryTool(BaseTool):
                     **({"phi_note": phi_note} if phi_note else {}),
                 },
             )
+        except QueryTimeout as e:
+            return ToolResult(success=False, output={"safe_sql": decision.safe_sql, "backend": backend},
+                              error=f"query execution failed: {e}")
         except Exception as e:
             return ToolResult(success=False, output={"safe_sql": decision.safe_sql, "backend": backend},
                               error=f"query execution failed: {describe_execution_error(e)}")

@@ -572,7 +572,10 @@ def test_a_cross_join_cannot_pad_a_group_past_11(tool):
 def test_a_filtered_count_of_a_small_subgroup_is_nulled(tool):
     r = tool.execute({"sql": "SELECT count(*) FILTER (WHERE gender = 'male') AS men, "
                              "count(*) FILTER (WHERE gender = 'female') AS women FROM gold_patient"})
-    assert r.success and r.output["rows"] == [{"men": None, "women": 12}]
+    # 3 men: nulled. 12 women: nulled too since the differencing fix
+    # (2026-11-03), because their complement in the group is the 3 men, and the
+    # total minus 12 would give the 3 back.
+    assert r.success and r.output["rows"] == [{"men": None, "women": None}]
 
 
 def test_an_aggregate_sqlglot_does_not_model_is_still_suppressed(tool):
@@ -997,6 +1000,230 @@ def test_a_count_over_an_intersect_of_patient_key_sets_runs_held_to_11():
     bad = validate_query(base + "SELECT count(*) AS n FROM (SELECT patient_id FROM a "
                                 "INTERSECT SELECT 'p1') t")
     assert not bad.allowed                         # a constant is not a key set
+
+
+# --- twelfth review (2026-11-03): six adversarial classes ----------------------
+# Each case was fired at validate_query (and, where allowed, run on the fixture)
+# before it was written down here. #5 (indirect injection) is in
+# tests/integration/test_indirect_injection.py, #6 (compute bomb) is measured by
+# scripts/measure_compute_bomb.py; their live agent cases are in
+# eval_bank_adversarial.py.
+
+TWELFTH_REVIEW_BYPASSES = {
+    # (2) an identifier hashed, reversed or encoded is still the identifier
+    "md5 of a family name": "SELECT md5(family_name) AS h FROM gold_patient",
+    "sha256 of a patient id": "SELECT sha256(patient_id) AS h FROM gold_patient",
+    "hash of a name": "SELECT hash(given_name) AS h FROM gold_patient",
+    "reverse of a name": "SELECT reverse(given_name) AS r FROM gold_patient",
+    "base64 of a name": "SELECT to_base64(encode(family_name)) AS b FROM gold_patient",
+    "hex of a zip": "SELECT hex(postal_code) AS z FROM gold_patient",
+    "initial plus birth year as a key": (
+        "SELECT left(family_name, 1) || CAST(year(CAST(birth_date AS DATE)) AS VARCHAR) AS k, "
+        "count(*) AS n FROM gold_patient GROUP BY 1"),
+    "initial plus birth year at row level": (
+        "SELECT left(family_name, 1) || CAST(year(CAST(birth_date AS DATE)) AS VARCHAR) AS k "
+        "FROM gold_patient"),
+    "md5 of a name as a GROUP BY key": ("SELECT md5(family_name) AS h, count(*) AS n "
+                                        "FROM gold_patient GROUP BY 1"),
+    "a hash bucket of the patient id": ("SELECT hash(patient_id) % 2 AS b, count(*) AS n "
+                                        "FROM gold_patient GROUP BY 1"),
+    "count of distinct hashed names": ("SELECT gender, count(DISTINCT md5(family_name)) AS n "
+                                       "FROM gold_patient GROUP BY gender"),
+    "a hashed name compared in WHERE": ("SELECT count(*) AS n FROM gold_patient "
+                                        "WHERE md5(family_name) = 'abc'"),
+    # (3) dates on FHIR data reach a result at the year only
+    "month of onset as a group": ("SELECT month(CAST(onset_date AS DATE)) AS m, count(*) AS n "
+                                  "FROM gold_condition GROUP BY 1"),
+    "week of onset as a group": ("SELECT week(CAST(onset_date AS DATE)) AS w, count(*) AS n "
+                                 "FROM gold_condition GROUP BY 1"),
+    "date_trunc month of a visit": ("SELECT date_trunc('month', CAST(start_date AS DATE)) AS m, "
+                                    "count(*) AS n FROM gold_encounter GROUP BY 1"),
+    "date_trunc week of a visit": ("SELECT date_trunc('week', CAST(start_date AS DATE)) AS w, "
+                                   "count(*) AS n FROM gold_encounter GROUP BY 1"),
+    "strftime year-month of birth": ("SELECT strftime(CAST(birth_date AS DATE), '%Y-%m') AS m, "
+                                     "count(*) AS n FROM gold_patient GROUP BY 1"),
+    "strftime week number of a visit": ("SELECT strftime(CAST(start_date AS DATE), '%W') AS w, "
+                                        "count(*) AS n FROM gold_encounter GROUP BY 1"),
+    "day of year of onset": ("SELECT dayofyear(CAST(onset_date AS DATE)) AS d, count(*) AS n "
+                             "FROM gold_condition GROUP BY 1"),
+    "EXTRACT month of an observation": (
+        "SELECT EXTRACT(MONTH FROM CAST(effective_date AS DATE)) AS m, count(*) AS n "
+        "FROM gold_observation GROUP BY 1"),
+    "year and month as two group keys": (
+        "SELECT year(CAST(onset_date AS DATE)) AS y, month(CAST(onset_date AS DATE)) AS m, "
+        "count(*) AS n FROM gold_condition GROUP BY 1, 2"),
+    "month of a date as a substring": ("SELECT substr(onset_date, 6, 2) AS m, count(*) AS n "
+                                       "FROM gold_condition GROUP BY 1"),
+    # (4) the people with a rare condition are not listed, whatever is shown of them
+    "age and sex of a rare cohort, row by row": (
+        "SELECT p.gender, p.age_years FROM gold_patient p WHERE p.patient_id IN "
+        "(SELECT c.patient_id FROM gold_condition c WHERE c.condition_name = 'Rare disease')"),
+    "age at onset of a rare condition, row by row": (
+        "SELECT gender, age_at_onset FROM gold_condition WHERE condition_name = 'Rare disease'"),
+}
+
+TWELFTH_REVIEW_ALLOWED = {
+    "onset by year": ("SELECT year(CAST(onset_date AS DATE)) AS y, count(*) AS n "
+                      "FROM gold_condition GROUP BY 1"),
+    "visits by year via EXTRACT": ("SELECT EXTRACT(YEAR FROM CAST(start_date AS DATE)) AS y, "
+                                   "count(*) AS n FROM gold_encounter GROUP BY 1"),
+    "count of distinct people by gender": ("SELECT gender, count(DISTINCT patient_id) AS n "
+                                           "FROM gold_patient GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(TWELFTH_REVIEW_BYPASSES))
+def test_twelfth_review_bypasses_are_refused(name):
+    d = validate_query(TWELFTH_REVIEW_BYPASSES[name])
+    assert not d.allowed, name
+    assert "PHI" in d.reason, d.reason
+
+
+@pytest.mark.parametrize("name", list(TWELFTH_REVIEW_ALLOWED))
+def test_twelfth_review_legitimate_shapes_still_pass(name):
+    d = validate_query(TWELFTH_REVIEW_ALLOWED[name])
+    assert d.allowed, (name, d.reason)
+
+
+# Found by this review: a date grouped below the year is refused when it is
+# SHOWN, but allowed when it is only the GROUP BY key. The result is one
+# unlabelled count per month, each still held to 11 people; the month itself is
+# not returned. Known gap, owner to decide (strict xfail).
+HIDDEN_DATE_KEYS = {
+    "month as a hidden group key": ("SELECT count(*) AS n FROM gold_condition "
+                                    "GROUP BY month(CAST(onset_date AS DATE))"),
+    "week as a hidden group key": ("SELECT count(*) AS n FROM gold_encounter "
+                                   "GROUP BY date_trunc('week', CAST(start_date AS DATE))"),
+}
+
+
+@pytest.mark.xfail(strict=True, reason="known gap: a date grouped below the year but not shown")
+@pytest.mark.parametrize("name", list(HIDDEN_DATE_KEYS))
+def test_a_date_below_the_year_is_refused_as_a_hidden_group_key(name):
+    d = validate_query(HIDDEN_DATE_KEYS[name])
+    assert not d.allowed and "PHI" in d.reason, d.reason
+
+
+# (4) rare-condition singling out, against data: 4 people have 'Rare disease'
+RARE = ("p.patient_id IN (SELECT c.patient_id FROM gold_condition c "
+        "WHERE c.condition_name = 'Rare disease')")
+RARE_AGGREGATES = {
+    "age and sex of the cohort": (f"SELECT p.gender, round(avg(p.age_years), 1) AS a, count(*) AS n "
+                                  f"FROM gold_patient p WHERE {RARE} GROUP BY p.gender"),
+    "their age range": ("SELECT min(age_at_onset) AS lo, max(age_at_onset) AS hi "
+                        "FROM gold_condition WHERE condition_name = 'Rare disease'"),
+    "their average age": f"SELECT avg(p.age_years) AS a FROM gold_patient p WHERE {RARE}",
+    "how many, by sex": (f"SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+                         f"WHERE {RARE} GROUP BY p.gender"),
+    "their average age as a FILTER": (
+        f"SELECT avg(p.age_years) FILTER (WHERE {RARE}) AS a FROM gold_patient p"),
+}
+
+
+@pytest.mark.parametrize("name", list(RARE_AGGREGATES))
+def test_a_rare_condition_cohort_is_never_described(tool, name):
+    r = tool.execute({"sql": RARE_AGGREGATES[name]})
+    if not r.success:                                  # refused outright: fine
+        assert "DENIED" in r.error
+        return
+    values = [v for row in r.output["rows"] for v in row.values()]
+    assert all(v is None for v in values), (name, r.output["rows"])
+
+
+# (1) differencing. A suppressed cell can be recovered as a total minus what is
+# shown. The fixture has 15 patients, 12 female and 3 male: "male" is suppressed,
+# but 15 - 12 = 3. Each shape below gets the 3 back in ONE query today.
+# Closed (owner's decision 2026-11-03): a filtered or differenced count is its
+# own cell, and it and its complement must each cover 11 people. A shape may
+# still return a number -- the UNION one returns the true total, 15 -- but never
+# the suppressed group.
+SUPPRESSED_MALE_COUNT = 3
+
+
+def _only(rows):
+    return rows[0][next(iter(rows[0]))] if rows else None
+
+
+SINGLE_QUERY_DIFFERENCING = {
+    "total minus a FILTERed count": (
+        "SELECT count(*) - count(*) FILTER (WHERE gender = 'female') AS n FROM gold_patient", _only),
+    "distinct people minus a FILTERed count": (
+        "SELECT count(DISTINCT patient_id) - count(DISTINCT patient_id) FILTER "
+        "(WHERE gender = 'female') AS n FROM gold_patient", _only),
+    "the total and a FILTERed count side by side": (
+        "SELECT count(*) AS total, count(*) FILTER (WHERE gender = 'female') AS f FROM gold_patient",
+        lambda rows: (rows[0]["total"] - rows[0]["f"]
+                      if rows and None not in (rows[0]["total"], rows[0]["f"]) else None)),
+    "one scalar subquery minus another": (
+        "SELECT (SELECT count(*) FROM gold_patient) - "
+        "(SELECT count(*) FROM gold_patient WHERE gender = 'female') AS n", _only),
+    "two CTEs subtracted": (
+        "WITH a AS (SELECT count(*) AS t FROM gold_patient), b AS (SELECT count(*) AS f "
+        "FROM gold_patient WHERE gender = 'female') SELECT a.t - b.f AS n FROM a, b", _only),
+    "a negated count summed over a UNION": (
+        "SELECT sum(x) AS n FROM (SELECT count(*) AS x FROM gold_patient UNION ALL "
+        "SELECT -count(*) FROM gold_patient WHERE gender = 'female') u", _only),
+}
+
+
+@pytest.mark.parametrize("name", list(SINGLE_QUERY_DIFFERENCING))
+def test_a_suppressed_group_cannot_be_recovered_by_differencing_in_one_query(tool, name):
+    sql, derive = SINGLE_QUERY_DIFFERENCING[name]
+    assert tool.execute({"sql": "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender"}
+                        ).output["rows"] == [{"gender": "female", "n": 12}]     # male suppressed
+    r = tool.execute({"sql": sql})
+    disclosed = derive(r.output["rows"]) if r.success else None
+    assert disclosed != SUPPRESSED_MALE_COUNT, f"{name}: recovered the suppressed group"
+
+
+GROUPED_DIFFERENCING = {
+    "a grouped WHERE count beside a total": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS total, g.n FROM (SELECT gender, count(*) AS n "
+        "FROM gold_patient WHERE age_years > 45 GROUP BY gender) g"),
+    "a grouped WHERE count in a UNION with an ungrouped one": (
+        "SELECT count(*) AS n FROM gold_condition UNION ALL SELECT count(*) FROM gold_condition "
+        "WHERE condition_name = 'Hypertension' GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(GROUPED_DIFFERENCING))
+def test_a_grouped_filtered_count_beside_another_aggregate_is_refused(name):
+    d = validate_query(GROUPED_DIFFERENCING[name])
+    assert not d.allowed and "subtracting" in d.reason, d.reason
+
+
+@pytest.fixture
+def even_tool(tmp_path):
+    # 12 women and 15 men: both sides of the split cover 11 people
+    path = build(str(tmp_path / "even.duckdb"))
+    import duckdb
+    con = duckdb.connect(path)
+    con.execute("INSERT INTO gold_patient SELECT 'q' || i, 'G', 'F', 'male', '1960-01-01', false, "
+                "'S', 'Springfield', 'MA', '02134', 50 FROM range(12) t(i)")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+def test_a_split_where_both_sides_cover_11_people_is_still_answered(even_tool):
+    r = even_tool.execute({"sql": "SELECT count(*) AS total, count(*) FILTER "
+                                  "(WHERE gender = 'female') AS f FROM gold_patient"})
+    assert r.output["rows"] == [{"total": 27, "f": 12}]
+    r = even_tool.execute({"sql": "SELECT (SELECT count(*) FROM gold_patient) - (SELECT count(*) "
+                                  "FROM gold_patient WHERE gender = 'female') AS men"})
+    assert r.output["rows"] == [{"men": 15}]
+    pct = even_tool.execute({"sql": ALLOWED["percentage from two scalar counts"]})
+    assert pct.success and pct.output["rows"][0]["pct"] is not None
+
+
+def test_cross_query_differencing_still_recovers_a_suppressed_group_RESIDUAL_RISK(tool):
+    # Documents a residual risk, the owner's open decision (PLAN_v2 §0.4): two
+    # queries, each fine on its own, give the suppressed cell back by
+    # subtraction. One query at a time cannot see this. If a mitigation lands
+    # (rounding, noise), this test fails on purpose: update it and the doc.
+    total = tool.execute({"sql": "SELECT count(*) AS n FROM gold_patient"}).output["rows"]
+    shown = tool.execute({"sql": "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender"}
+                         ).output["rows"]
+    assert total[0]["n"] - sum(r["n"] for r in shown) == SUPPRESSED_MALE_COUNT
 
 
 # --- ages capped at 90+ (HIPAA Safe Harbor; owner's decision 2026-10-31) ---------

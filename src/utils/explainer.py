@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from src.utils.redaction import redact_data, redact_text
 
@@ -126,13 +126,26 @@ GENERIC_SUGGESTION = ("change the request to stay within what the policy and the
 
 def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], policy: dict[str, Any]) -> str:
     """
-    Build a human-readable explanation for runtime decisions.
+    Build the human-readable explanation a CALLER sees (API and MCP).
 
-    Denials include:
-    - concise reason
-    - failing constraint context
-    - minimal least-privilege policy snippet suggestion
+    Denials include the reason, the failing constraint and a suggestion that
+    never loosens policy. They never include a policy snippet: a YAML block
+    that would grant what was just refused is advice for whoever maintains the
+    policy file, so it goes only to the audit log (`policy_snippet`, owner's
+    decision 2026-11-02).
     """
+    return _explain(decision, capability, parameters, policy)[0]
+
+
+def policy_snippet(decision: Any, capability: str, parameters: dict[str, Any],
+                   policy: dict[str, Any]) -> Optional[str]:
+    """The least-privilege policy snippet for a policy denial, for the AUDIT
+    LOG only (None when there is none). Never return it to a caller."""
+    return _explain(decision, capability, parameters, policy)[1]
+
+
+def _explain(decision: Any, capability: str, parameters: dict[str, Any],
+             policy: dict[str, Any]) -> tuple[str, Optional[str]]:
     safe_params = redact_data(parameters or {})
     reason = redact_text(getattr(decision, "reason", "Operation was denied by policy."))
     # Redact details too: they are echoed into the explanation, and a denial on a
@@ -146,8 +159,8 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
                 f"Operation allowed with approval: {capability}\n"
                 f"Reason: {reason}\n"
                 "Next step: request approval through the configured approval flow."
-            )
-        return f"Operation allowed: {capability}\nReason: {reason}"
+            ), None
+        return f"Operation allowed: {capability}\nReason: {reason}", None
 
     lines = [
         f"Operation denied: {capability}",
@@ -161,37 +174,29 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
     if "approval required" in reason_lower:
         lines.append("Constraint: operation requires human approval before execution.")
         lines.append("Next step: request approval and retry the action.")
-        return "\n".join(lines)
+        return "\n".join(lines), None
 
     if "path" in details or "path" in safe_params:
         path_value = str(details.get("path") or safe_params.get("path") or "<path>")
         lines.append(f"Constraint: Requested path is outside allowed policy paths ({path_value}).")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_path_snippet(policy, capability, path_value))
         lines.append("Safe alternative: use a path already covered by existing allow rules.")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_path_snippet(policy, capability, path_value)
 
     if "url" in details or "url" in safe_params or "endpoint" in safe_params:
         endpoint = str(details.get("url") or safe_params.get("url") or safe_params.get("endpoint") or "<url>")
         lines.append(f"Constraint: Endpoint is not allowed by policy ({endpoint}).")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_endpoint_snippet(policy, capability, endpoint))
         lines.append("Safe alternative: use a currently allow-listed HTTPS endpoint.")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_endpoint_snippet(policy, capability, endpoint)
 
     if "explicitly denied" in reason_lower:
         lines.append("Constraint: this capability is configured with allowed: false.")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_capability_snippet(capability))
         lines.append(f"Safe alternative: {POLICY_OWNER_ONLY}")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_capability_snippet(capability)
 
     if "not in policy" in reason_lower or "default_policy" in reason_lower:
         lines.append("Constraint: capability is missing from policy and default deny blocked it.")
-        lines.append("Suggested policy snippet:")
-        lines.append(_build_capability_snippet(capability))
         lines.append(f"Safe alternative: {POLICY_OWNER_ONLY}")
-        return "\n".join(lines)
+        return "\n".join(lines), _build_capability_snippet(capability)
 
     # Guard refusals: the fix is a different query, never a looser policy.
     # (Labelled "Safe query shape:", not "Safe alternative:", which the MCP
@@ -199,7 +204,7 @@ def get_explanation(decision: Any, capability: str, parameters: dict[str, Any], 
     for markers, suggestion in GUARD_SUGGESTIONS:
         if any(m in reason_lower for m in markers):
             lines.append(f"Safe query shape: {suggestion}")
-            return "\n".join(lines)
+            return "\n".join(lines), None
 
     lines.append(f"Safe alternative: {GENERIC_SUGGESTION}")
-    return "\n".join(lines)
+    return "\n".join(lines), None

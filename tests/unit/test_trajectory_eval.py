@@ -126,7 +126,7 @@ def test_every_adversarial_case_names_a_guard_rule_the_guard_really_has():
         if ":" in exp:
             rule = exp.split(":", 1)[1]
             assert rule in validate_query(probes[rule]).reason, c["id"]
-    assert len(ADV) == 10 and len({c["id"] for c in ADV}) == 10
+    assert len(ADV) == 13 and len({c["id"] for c in ADV}) == 13
 
 
 def test_the_quasi_identifier_dump_is_closed():

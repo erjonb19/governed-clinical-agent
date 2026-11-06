@@ -1224,6 +1224,35 @@ def _unknown_columns(a: "_Analysis") -> list:
     return out
 
 
+def _differenced_scopes(rewrites: list) -> list:
+    """The small-cell scopes whose complement must ALSO cover 11 people: those
+    with a WHERE filter, when the query holds more than one such scope (a
+    scalar subquery, CTE, derived table or UNION branch beside another).
+    One filtered count alone can only be differenced against a second query,
+    which no single check can see (documented residual risk, PLAN_v2 §0.4)."""
+    if len(rewrites) < 2:
+        return []
+    return [(sel, keys) for sel, keys in rewrites if sel.args.get("where")]
+
+
+def _complement(sel: exp.Select, keys: list) -> exp.Expression:
+    """`(SELECT count(DISTINCT k) FROM <sel's sources> WHERE (<filter>) IS NOT
+    TRUE) >= 11` for each person key: the people the filter leaves out. Built
+    from the qualified scope, self-contained (its own FROM, so its aliases
+    shadow the outer ones), and ANDed into the scope's HAVING."""
+    conds = []
+    pred = sel.args["where"].this.sql(dialect=DIALECT)
+    for k in keys:
+        c = sel.copy()
+        for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
+                    "windows"):
+            c.set(arg, None)
+        c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT)])
+        c.set("where", exp.Where(this=sqlglot.parse_one(f"({pred}) IS NOT TRUE", read=DIALECT)))
+        conds.append(exp.GTE(this=exp.Subquery(this=c), expression=exp.Literal.number(MIN_CELL)))
+    return exp.and_(*conds)
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1256,6 +1285,20 @@ def check(tree: exp.Expression) -> PhiDecision:
     unknown = _unknown_columns(a)
     if unknown:
         return _no_such_column(unknown)
+    # Differencing (twelfth review, owner's decision 2026-11-03): with several
+    # aggregate scopes in ONE query, a filtered scope's complement is the
+    # difference between it and an unfiltered one, so the complement must
+    # cover 11 people too. Ungrouped scopes get that as a HAVING condition
+    # below; a grouped one would need it per group, which cannot be written
+    # without re-aliasing the scope, so it is refused (fail closed).
+    differenced = _differenced_scopes(a.rewrites)
+    for sel, _ in differenced:
+        if sel.args.get("group"):
+            a.findings.append(
+                "a grouped aggregate over patient rows with a WHERE filter, combined with another "
+                "aggregate in the same query: subtracting one from the other could recover a "
+                f"group of fewer than {MIN_CELL} people; ask for each count in its own query")
+            break
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
         return PhiDecision(False, f"PHI rule: {'; '.join(uniq)}. {_rule_hint(uniq)}",
@@ -1319,16 +1362,24 @@ def check(tree: exp.Expression) -> PhiDecision:
     for flt, keys in a.filters:
         target = o_filters[next(i for i, x in enumerate(q_filters) if x is flt)]
         where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
-        guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL}"
+        pred_sql = target.args["expression"].this.sql(dialect=DIALECT)
+        # the subgroup AND its complement in the group: otherwise the group's
+        # total minus this count is the complement, however small (differencing)
+        guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL} AND "
+                             f"count(DISTINCT {k}) FILTER (WHERE ({pred_sql}) IS NOT TRUE) "
+                             f">= {MIN_CELL}"
                              for k in keys)
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
             gated = exp.alias_(gated, target.sql(dialect=DIALECT), quoted=True)
         target.replace(gated)
+    complements = {id(sel): _complement(sel, keys) for sel, keys in differenced}
     for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]
         cond = _enough(keys)
+        if id(sel) in complements:
+            cond = exp.and_(cond, complements[id(sel)])
         having = target.args.get("having")
         target.set("having", exp.Having(this=exp.and_(having.this, cond) if having else cond))
     root_sel = q if isinstance(q, exp.Select) else None

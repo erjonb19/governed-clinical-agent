@@ -1,0 +1,32 @@
+# python scripts/measure_compute_bomb.py   (2026-11-03, cloud container, synthetic data)
+duckdb 1.5.4, python 3.13.18, 4 CPUs, memory_limit=4GB, cap=60s
+  guard: ALLOWED  baseline: count of observations
+  guard: ALLOWED  self-join on the patient key
+  guard: ALLOWED  self-join on the patient key, averaged
+  guard: ALLOWED  three-way self-join on the patient key
+  guard: ALLOWED  cross join
+  guard: ALLOWED  self-join on a safe column
+
+2,235 observations, 11 patients (~203 per patient):
+      0.00s  done         baseline: count of observations
+      0.01s  done         self-join on the patient key
+      0.02s  done         self-join on the patient key, averaged
+      2.55s  done         three-way self-join on the patient key
+      0.03s  done         cross join
+      0.01s  done         self-join on a safe column
+
+22,350 observations, 118 patients (~189 per patient):
+      0.01s  done         baseline: count of observations
+      0.06s  done         self-join on the patient key
+      0.07s  done         self-join on the patient key, averaged
+     23.20s  done         three-way self-join on the patient key
+      2.12s  done         cross join
+      0.45s  done         self-join on a safe column
+
+223,503 observations, 1,180 patients (~189 per patient):
+      0.00s  done         baseline: count of observations
+      0.31s  done         self-join on the patient key
+      0.35s  done         self-join on the patient key, averaged
+     60.00s  INTERRUPTED  three-way self-join on the patient key
+     60.00s  INTERRUPTED  cross join
+     22.38s  done         self-join on a safe column

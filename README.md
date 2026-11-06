@@ -245,7 +245,11 @@ In plain terms, for the clinical (FHIR) data:
 
 One limit, stated plainly: cell suppression can in principle be undone by
 subtraction, for example a total minus every visible group. It is recorded in
-`docs/PLAN_v2.md` §0.4.
+`docs/PLAN_v2.md` §0.4, with the options for closing it.
+
+Over MCP, the client's own model reads the result rows. Text in the data that
+reads like an instruction reaches that model; the guard still rules on every
+query it sends. Treat result rows as untrusted data on the client side.
 
 The CMS hospital data is public and about facilities, not people, so none of
 this applies to it. The column-by-column labels are in `phi_columns.yaml`; a
@@ -327,7 +331,7 @@ Every run above is committed under `eval_runs/`:
 `eval_single_hospital_20261030T141101Z.json` (FHIR the same day:
 `eval_single_fhir_20261030T141840Z.json`, 72/72 completed runs correct).
 
-**Scoring the whole path, and ten adversarial cases.** `--trajectory` runs every
+**Scoring the whole path, and thirteen adversarial cases.** `--trajectory` runs every
 case through the self-correcting graph and scores the run, not just its rows
 (`trajectory_eval.py`, deterministic, no LLM judge):
 
@@ -447,11 +451,11 @@ that names it.
 
 ## CI
 
-Eight GitHub Actions workflows:
+Nine GitHub Actions workflows:
 
-- **Tests on every push/PR** (`tests.yml`) — the full unit / integration / adversarial-security suite, **989 tests, no deselects**. No API keys needed; only the opt-in `network` marker is skipped.
-- **Quick eval gate on every push/PR** (`eval-on-push.yml`) — a 6-case subset spanning all tiers, ~90 seconds. Fails the build if accuracy drops below threshold.
-- **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each.
+- **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped.
+- **Quick eval gate on every push to any branch and every PR** (`eval-on-push.yml`) — two jobs, one after the other: a 6-case hospital subset, then a 13-case FHIR subset (every tier, both answer modes, every FHIR table; `tests/unit/test_fhir_subset.py` pins that). Accuracy below the gate fails the build; a provider outage only warns, so it cannot block a commit.
+- **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
 - **FHIR eval on a chosen branch** (`eval-fhir-manual.yml`) — started by hand only (`gh workflow run eval-fhir-manual.yml -f ref=<branch>`): all 28 FHIR cases, 3 runs each, on a GitHub runner; fails unless every case passes, and on an inconclusive (provider-unavailable) run. The merge bar for PRs that touch the FHIR guard or planner.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
 - **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay` with `ALLOW_REPLAY=1`, `replay.py`; without that opt-in the provider refuses to start, so a deploy cannot run on it by accident): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
@@ -520,6 +524,13 @@ $env:PLANNER_MIN_INTERVAL_SEC="12"  # pace calls for free/low-tier rate limits (
 With `anthropic`, `ANTHROPIC_MODEL` picks the model (default `claude-haiku-5-5`).
 Current Claude models reject `temperature` and think by default, so this provider
 uses the native SDK at low effort rather than the OpenAI-compat endpoint.
+
+Every query the guard allows is stopped after `QUERY_TIMEOUT_SEC` seconds
+(default 10; zero, negative or unparseable values fall back to 10, so it cannot
+be switched off), on DuckDB by interrupting the connection and on Databricks as
+`STATEMENT_TIMEOUT`. The guard decides what a query may return, not what it
+costs: a self-join or cross join of a patient table passes it, and at the real
+Gold's size some ran past 60 s (`docs/measurements/compute_bomb_2026-11-03.txt`).
 
 Note: `xai` is xAI/Grok (`api.x.ai`, `XAI_API_KEY` starting `xai-`), a different
 vendor from `groq` (`api.groq.com`, `GROQ_API_KEY` starting `gsk_`).
