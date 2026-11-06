@@ -400,6 +400,43 @@ from its last checkpoint with `GovernedAgentGraph.run(trace_id=...)`, and
 the question, the SQL and row counts, never result rows; an approval checkpoint
 keeps the 3 evidence rows the reviewer is shown, as the approval record does.
 
+Every graph step is a span: `plan`, `critic`, `guard` (with the decision and the
+rule), `execute` (row count), `retry`, and `route` for each edge the graph takes
+(`critic -> execute`, `execute -> plan` on a self-correction, `-> finish`).
+
+### Opening a trace in Arize Phoenix (self-hosted, local)
+
+The same spans can be sent to [Arize Phoenix](https://github.com/Arize-ai/phoenix),
+an open-source trace viewer you run yourself ($0). Set `TRACE_OTLP_ENDPOINT` and
+the app exports every finished span over OTLP (`trace_export.py`), after the same
+scrubbing as the local store: the question, the SQL and row counts, never result
+rows. Unset, nothing is exported. `TRACE_OTLP_PROJECT` names the Phoenix project
+(default `governed-clinical-agent`).
+
+**Phoenix runs locally, for demos, not on Render.** Measured 2026-11-06: an idle
+`phoenix serve` (arize-phoenix 21.0.0) uses about **530 MB** of memory, more than
+the free plan's 512 MB before it stores a single trace, and the free plan has no
+lasting disk, so its trace store would be wiped on every restart anyway.
+
+To open the trace of one question:
+
+1. Install and start Phoenix in its own environment (it has many dependencies):
+   `python -m venv .phoenix && .phoenix/bin/pip install arize-phoenix` (Windows:
+   `.phoenix\Scripts\pip`), then `.phoenix/bin/phoenix serve`. Or with Docker:
+   `docker run -p 6006:6006 arizephoenix/phoenix:latest`.
+2. Start the API with `TRACE_OTLP_ENDPOINT=http://localhost:6006/v1/traces` set
+   (and your usual `API_KEY`, `PLANNER_PROVIDER`, key), e.g.
+   `uvicorn app:app --port 8000`.
+3. Ask a question, in the UI's **Ask** view or with `POST /query`. The response's
+   `trace_id` is the run's id.
+4. Open http://localhost:6006, choose the **governed-clinical-agent** project, and
+   click the newest trace. Phoenix shows the id padded to 32 characters with
+   leading zeros (`0000000000000000` + your `trace_id`).
+5. Click a step for its details: `plan` holds the SQL and model, `guard` the
+   decision and rule, `route` where the graph went next and why.
+
+![A denied question's trace in Phoenix: three attempts, each plan, critic, route, guard, retry](docs/screenshots/phoenix-trace.png)
+
 **Standing questions run unattended.** `schedules.yaml` lists questions a quality
 team would otherwise re-ask by hand: the average heart attack (AMI) readmission
 rate, how many EDs lose more than 5% of patients before they are seen, the ten
@@ -544,6 +581,14 @@ python build_hospital_gold.py
 python fetch_synthea.py                          # ~85MB of FHIR bundles
 python build_fhir_gold.py                        # ~367k resources
 ```
+
+## Production readiness
+
+Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
+`docs/PROGRESS.md`). Only finished items are listed.
+
+- [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
+  Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 
 ## Scope and honest limitations
 
