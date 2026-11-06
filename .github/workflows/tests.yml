@@ -5,11 +5,13 @@
 
 name: tests (pytest)
 
+# Every push to any branch, every PR, and nightly (backlog item 1).
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "15 7 * * *"   # nightly, beside eval-nightly.yml (07:00)
   workflow_dispatch:
 
 jobs:
