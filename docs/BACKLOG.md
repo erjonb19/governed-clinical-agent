@@ -59,6 +59,10 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
   - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
   - Today: it fails unless every case passes by majority of its runs. Model noise alone can fail that bar: `main`'s own nightly on 2026-11-05 had `f4_avg_glucose_prediabetic` at 1/3, and #50's run on 2026-11-06 ended inconclusive on Gemini's daily quota.
 
+- [ ] **12. Send the deployed app's traces to a free hosted backend** (owner, 2026-11-06), instead of running Phoenix on Render. Phoenix Cloud's free tier, falling back to Langfuse Cloud Hobby if Phoenix Cloud doesn't fit. Keep the SQLite traces as they are.
+  - Done when: with the owner's two Render environment variables set, a question asked on the deploy appears in the hosted backend with its steps; the SQLite traces and Traces view are unchanged; a test shows a down, refusing or hanging backend never breaks or slows a request; what can leave the server is documented and pinned.
+  - Status (2026-11-06): code, tests and setup steps on branch `claude/jolly-hopper-8ly9iq-hosted-traces`. **Phoenix Cloud no longer appears in Arize's docs** (self-hosting only; the hosted product is Arize AX, free tier 25k spans / 15 days), so Langfuse Cloud Hobby (50k units / month, 30 days, no card) is used. Remaining: the owner adds `TRACE_OTLP_ENDPOINT` and `TRACE_OTLP_HEADERS` in Render, then one live trace is checked.
+
 ## Later (keep, don't start)
 
 - [ ] **MCP server over Streamable HTTP with real auth.**
