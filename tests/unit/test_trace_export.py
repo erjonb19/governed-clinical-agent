@@ -152,22 +152,24 @@ def test_a_tracer_without_the_variable_writes_sqlite_only(tmp_path, monkeypatch)
 def test_a_pending_approval_sends_its_root_only_at_the_decision(tracer, mem):
     # Phoenix keeps the FIRST span it gets for an id, so a root sent while
     # pending would hide the decision (found in review, confirmed on Phoenix)
-    tid = tracer.start_trace("approval", question="q")
-    tracer.event("approval.propose")
-    tracer.end_trace(tid, status="pending_approval")
-    assert "approval" not in _by_name(mem)
-    with tracer.attach(tid):
-        tracer.event("approval.decision", decision="approve")
-    tracer.end_trace(tid, status="ok", decision="approve")
+    with tracer.preserved():          # start_trace sets the current trace; restore it
+        tid = tracer.start_trace("approval", question="q")
+        tracer.event("approval.propose")
+        tracer.end_trace(tid, status="pending_approval")
+        assert "approval" not in _by_name(mem)
+        with tracer.attach(tid):
+            tracer.event("approval.decision", decision="approve")
+        tracer.end_trace(tid, status="ok", decision="approve")
     roots = [s for s in mem.get_finished_spans() if s.name == "approval"]
     assert len(roots) == 1 and roots[0].attributes["agent.decision"] == "approve"
 
 
 def test_a_trace_ended_twice_sends_one_root_and_an_end_span(tracer, mem):
     # a failed run resumed later ends its trace again
-    tid = tracer.start_trace("run")
-    tracer.end_trace(tid, status="error", error="RuntimeError: boom")
-    tracer.end_trace(tid, status="ok", decided_by="executed")
+    with tracer.preserved():
+        tid = tracer.start_trace("run")
+        tracer.end_trace(tid, status="error", error="RuntimeError: boom")
+        tracer.end_trace(tid, status="ok", decided_by="executed")
     spans = mem.get_finished_spans()
     roots = [s for s in spans if s.name == "run"]
     ends = [s for s in spans if s.name == "run.end"]
