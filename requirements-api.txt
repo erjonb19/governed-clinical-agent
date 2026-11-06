@@ -30,3 +30,9 @@ databricks-sql-connector==4.4.0
 
 # MCP over Streamable HTTP, mounted in the API at /mcp (PLAN v2 item 5, D5).
 mcp==1.28.0
+
+# Trace export over OTLP to a self-hosted Arize Phoenix (trace_export.py,
+# backlog item 2). Only used when TRACE_OTLP_ENDPOINT is set; Phoenix itself is
+# NOT a dependency -- it runs beside the app, locally (see README).
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
