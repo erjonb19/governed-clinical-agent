@@ -280,11 +280,22 @@ CASES = [
     },
 ]
 
-# Quick-gate subset for CI: one case per tier, spanning scalar and keyed modes.
+# Quick-gate subset for the on-push CI gate (backlog item 1, owner's decision
+# 2026-11-06: 10-15 cases covering each question type). At least two cases per
+# tier, both comparison modes, and every FHIR table; the full 28 run nightly.
+# tests/unit/test_fhir_subset.py pins the coverage.
 SUBSET_IDS = {
-    "f1_count_patients",
-    "f2_count_hypertension_patients",
-    "f3_top_conditions",
-    "f4_htn_and_obesity",
-    "f5_above_avg_bmi_patients",
+    "f1_count_patients",               # patient, scalar count
+    "f1_avg_age",                      # an age (the 90+ cap changes this one)
+    "f1_max_bmi",                      # observation, MAX
+    "f2_count_hypertension_patients",  # condition, distinct people
+    "f2_count_emergency_encounters",   # encounter, filtered count
+    "f2_avg_glucose",                  # observation, AVG of a filtered measure
+    "f3_top_conditions",               # keyed top-N
+    "f3_top_medications",              # medication, keyed top-N
+    "f3_patients_90_plus",             # an age threshold
+    "f4_htn_and_obesity",              # two conditions, one person
+    "f4_chemoradiation_and_cisplatin", # procedure x medication
+    "f5_above_avg_bmi_patients",       # nested aggregate
+    "f5_emer_rate_by_gender",          # a rate by group
 }

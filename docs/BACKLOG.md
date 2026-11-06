@@ -12,6 +12,7 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 - [ ] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
   - Done when: every push to any branch runs pytest, the hospital subset gate and a **FHIR subset gate (10-15 cases, at least one of each question type)**; the nightly run executes pytest, the full hospital eval and the **full FHIR eval**; a red test or an eval below 80% turns the run red (shown by one deliberately failing run); a nightly eval whose provider is unavailable is **retried once, then turns red**.
   - Owner's decisions (2026-11-06): FHIR subset on push, full FHIR nightly (keeps Gemini's free daily quota); provider-down nightly runs fail after one retry.
+  - Status (2026-11-06): built on branch `claude/jolly-hopper-8ly9iq-ci-coverage`, PR open. Seen working: a push to a non-main branch ran pytest (red on a deliberately failing test, run 42140086754), the hospital subset and the new FHIR subset job. Not yet seen live: the nightly retry-then-red path (proven only on a stub harness, `tests/unit/test_eval_gate.py`) and a FHIR subset run that completes (today's ran into Gemini's exhausted daily quota and warned). Tick after the first nightly on main.
   - Today: pytest runs only on pushes to `main` and on PRs, not nightly. The hospital eval is a 6-case subset on push and the full set nightly. The FHIR eval runs nightly and by manual dispatch, never on push. A nightly run whose provider was unavailable (exit 2) passes green with a warning.
 
 - [ ] **2. Tracing** for every agent step (plan, execute, route, retry, guard decision) with Langfuse or Arize Phoenix, self-hosted for free. If it can't run on Render's free plan, run it locally for demos and say so in the README. Show me how to open a trace for one question.
@@ -52,6 +53,10 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
   - Done when: one monthly (or dispatched) run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
   - Today: verified once by hand; `scripts/publish_gold_to_databricks.py` is manual and no workflow touches Databricks, so Delta goes stale after each refresh.
   - Needs: the owner adds `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`, `DATABRICKS_CATALOG` and `DATABRICKS_SCHEMA` as repository secrets. $0 (Free Edition plus GitHub Actions).
+
+- [ ] **11. The manual FHIR eval compares against main instead of requiring every case to pass** (owner, 2026-11-06; don't change it before then).
+  - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
+  - Today: it fails unless every case passes by majority of its runs. Model noise alone can fail that bar: `main`'s own nightly on 2026-11-05 had `f4_avg_glucose_prediabetic` at 1/3, and #50's run on 2026-11-06 ended inconclusive on Gemini's daily quota.
 
 ## Later (keep, don't start)
 
