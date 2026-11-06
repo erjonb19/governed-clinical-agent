@@ -6,11 +6,11 @@
 
 name: eval (quick gate)
 
-# Every push to any branch (backlog item 1), every PR to main.
+# Every push to any branch (backlog item 1). No pull_request trigger: a push to
+# a PR branch already runs this, and running it twice per push would spend the
+# Gemini free-tier quota twice (the binding limit -- 429s end runs early).
 on:
   push:
-  pull_request:
-    branches: [main]
   workflow_dispatch:        # allows manual runs from the Actions tab
 
 jobs:
