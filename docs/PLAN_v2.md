@@ -359,6 +359,44 @@ one `sql_guard` change, in its own PR, to close it. No other guard rule changed.
   minus a visible part), and `ORDER BY <date-derived value> LIMIT 1` over safe
   columns to single out one person.
 
+**Twelfth review: six adversarial classes (2026-11-03).** Tests in
+`tests/security/test_phi_guard.py` (`TWELFTH_REVIEW_*`, `RARE_AGGREGATES`,
+`SINGLE_QUERY_DIFFERENCING`, `HIDDEN_DATE_KEYS`),
+`tests/integration/test_indirect_injection.py`, `scripts/measure_compute_bomb.py`;
+live cases `adv_diff_suppressed_group`, `adv_rare_singling_out`,
+`adv_inj_data_text` in `eval_bank_adversarial.py`. Guard behaviour unchanged.
+
+| # | Class | Result on the fixture | Smallest fix |
+|---|---|---|---|
+| 1 | Differencing | **Leaks.** Six one-query shapes give a suppressed group back (total minus a FILTERed count, side by side, scalar subqueries, CTEs, a UNION sum); strict xfail. Across two queries it always will | One query: a filtered or differenced count is its own cell, and it and its complement must each cover 11+ (separate PR). Across queries: options below |
+| 2 | Hashed / encoded identifiers | Refused (md5, sha256, hash, reverse, base64, hex, initial plus birth year, as output, GROUP BY key, COUNT DISTINCT or WHERE) | none |
+| 3 | Month / week date grouping | Refused when the month or week is SHOWN. **Gap found:** `GROUP BY month(date)` with only `count(*)` selected is allowed: one unlabelled count per month, each held to 11 people (strict xfail, `HIDDEN_DATE_KEYS`) | apply the year-only rule to GROUP BY keys as to output columns |
+| 4 | Rare-condition singling out | Refused at row level; aggregates (age by sex, min/max age at onset, FILTERed average) come back suppressed | none |
+| 5 | Indirect injection via result text | Not reachable: rows never reach the planner or critic, and a value error is withheld from the retry prompt; planted text is in no prompt, trace or checkpoint | none for this agent (MCP note below) |
+| 6 | Compute bomb | **Allowed and unbounded.** Full size (223,503 synthetic observations, 1,180 patients): key self-join 0.31 s, safe-column self-join 22.4 s, three-way self-join and cross join still running at the 60 s cap (`docs/measurements/compute_bomb_2026-11-03.txt`) | per-statement timeout, default 10 s (separate PR) |
+
+**Indirect injection over MCP.** Over MCP the client's model writes the SQL and
+reads the result rows. Text in the data that reads like an instruction reaches
+THAT model, and this server cannot stop it: rows are the product. The guard
+still rules on every query the client sends, so injected text can change what
+is asked, never what is allowed. Treat result rows as untrusted data on the
+client side.
+
+**Cross-query differencing: options for the owner (decision open).** One query
+cannot see another, so `count(all) - sum(visible groups)` over two calls gives a
+suppressed cell back. Fixture: 15 patients, 12 female shown, 3 male hidden;
+15 - 12 = 3 (`test_cross_query_differencing_still_recovers_a_suppressed_group_RESIDUAL_RISK`).
+
+| Option | What it does | Cost | Residual risk |
+|---|---|---|---|
+| A. Document only (today) | README and this section say it plainly | none | the leak stays for anyone who asks two questions |
+| B. Round every count over patient rows to the nearest 5 | cells and totals are rounded (CMS / some state publications do this) | answers become approximate; eval cases with exact counts need a tolerance or rewrite (owner's call, never silently); derived rates move slightly | rounding alone is undone by enough overlapping queries; combined with the 11 floor it blocks the simple subtraction (15 → 15, 12 → 10, 3 hidden; 15 - 10 = 5 is not 3) |
+| C. Add noise (e.g. Laplace, a per-question budget) | each count gets random noise; repeated questions spend a privacy budget | exact answers are gone; needs a budget store per key, and the eval needs tolerance bands; the most engineering | the only option with a formal guarantee, and only if the budget is enforced |
+
+Recommendation if a change is wanted: B first (small, deterministic, testable),
+C only if the owner wants a formal guarantee. The de-identified layer (§0.6)
+does not remove this risk; suppression is still applied on top of it.
+
 ### 0.5 Guard hotfix beyond the PHI scope (owner-approved, 2026-10-30, #37)
 
 The PHI work (§0.4) was authorised as one `sql_guard` change and "no other
