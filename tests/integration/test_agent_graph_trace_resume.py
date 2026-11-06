@@ -113,7 +113,7 @@ def test_a_run_is_traced_end_to_end(make_agent):
     assert trace["attrs"]["question"] == "how many hospitals?"
     assert trace["attrs"]["decided_by"] == "executed"
     names = [s["name"] for s in trace["spans"]]
-    # every edge the graph takes is a `route` span (backlog item 2)
+    # every routing decision is a `route` span (backlog item 2)
     assert names == ["plan", "critic", "route", "guard", "execute", "route", "answer"]
     plan = trace["spans"][0]
     assert plan["attrs"]["sql"] == "SELECT 1 AS n" and plan["attrs"]["model"] == "stub"

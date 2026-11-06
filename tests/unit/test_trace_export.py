@@ -145,3 +145,49 @@ def test_a_tracer_without_the_variable_writes_sqlite_only(tmp_path, monkeypatch)
     with t.trace("run") as tid:
         t.event("plan")
     assert [s["name"] for s in t.get_trace(tid)["spans"]] == ["plan"]
+
+
+# --- review fixes (2026-11-06) --------------------------------------------------
+
+def test_a_pending_approval_sends_its_root_only_at_the_decision(tracer, mem):
+    # Phoenix keeps the FIRST span it gets for an id, so a root sent while
+    # pending would hide the decision (found in review, confirmed on Phoenix)
+    tid = tracer.start_trace("approval", question="q")
+    tracer.event("approval.propose")
+    tracer.end_trace(tid, status="pending_approval")
+    assert "approval" not in _by_name(mem)
+    with tracer.attach(tid):
+        tracer.event("approval.decision", decision="approve")
+    tracer.end_trace(tid, status="ok", decision="approve")
+    roots = [s for s in mem.get_finished_spans() if s.name == "approval"]
+    assert len(roots) == 1 and roots[0].attributes["agent.decision"] == "approve"
+
+
+def test_a_trace_ended_twice_sends_one_root_and_an_end_span(tracer, mem):
+    # a failed run resumed later ends its trace again
+    tid = tracer.start_trace("run")
+    tracer.end_trace(tid, status="error", error="RuntimeError: boom")
+    tracer.end_trace(tid, status="ok", decided_by="executed")
+    spans = mem.get_finished_spans()
+    roots = [s for s in spans if s.name == "run"]
+    ends = [s for s in spans if s.name == "run.end"]
+    assert len(roots) == 1 and len(ends) == 1
+    assert len({s.context.span_id for s in spans}) == len(spans)        # no duplicate ids
+    assert ends[0].parent.span_id == roots[0].context.span_id
+    assert ends[0].attributes["agent.decided_by"] == "executed"
+
+
+def test_error_text_is_exported_as_its_type_only(tracer, mem):
+    value = "Could not convert string 'Jane Doe 02134' to INT32"
+    with pytest.raises(ValueError):
+        with tracer.trace("run"):
+            with tracer.span("execute"):
+                raise ValueError(value)
+    for s in mem.get_finished_spans():
+        assert "Jane Doe" not in repr(dict(s.attributes)) and "Jane Doe" not in str(s.status.description)
+    assert _by_name(mem)["execute"].attributes["agent.error"] == "ValueError"
+
+
+def test_exporter_false_forces_export_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRACE_OTLP_ENDPOINT", "http://localhost:1/v1/traces")
+    assert tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=False).exporter is None

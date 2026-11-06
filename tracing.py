@@ -160,7 +160,11 @@ class Tracer:
                  exporter: Any = None):
         self.db_path = db_path or TRACE_DB
         self.max_runs = max_runs or TRACE_MAX_RUNS
-        if exporter is None:
+        # exporter: None reads TRACE_OTLP_ENDPOINT (unset: none); False forces
+        # it off whatever the environment says (tests, tools that must not send)
+        if exporter is False:
+            exporter = None
+        elif exporter is None:
             try:
                 import trace_export
                 exporter = trace_export.from_env()

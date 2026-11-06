@@ -23,6 +23,17 @@ IDS: the trace id and span ids are the tracer's own (16 hex chars). A run's
 top-level spans are children of a synthesized `run` root span whose id is
 derived from the trace id, so an approval decided hours later (`attach`) still
 lands under the same trace in Phoenix.
+
+ONE ROOT PER TRACE: Phoenix keeps the FIRST span it receives for an id (tested
+against arize-phoenix 21.0.0), so the root is sent once, at a final status:
+- `pending_approval` is not final; the root goes when the decision ends the trace.
+- a trace that ends again after its root was sent (a failed run resumed) gets a
+  child `<name>.end` span with the new outcome, never a second root. The record
+  of sent roots is per process: after a restart, a re-ended trace's outcome is
+  the first root Phoenix received.
+
+ERROR TEXT: an `error` attribute (and the span status message) is exported as
+the exception's type only; its message can quote a data value.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from typing import Any, Optional
 ENDPOINT_ENV = "TRACE_OTLP_ENDPOINT"
 PROJECT_ENV = "TRACE_OTLP_PROJECT"
 DEFAULT_PROJECT = "governed-clinical-agent"
+NON_FINAL = {"pending_approval"}
 
 # OpenInference span kinds, so Phoenix shows each step with the right icon and
 # lets you filter by kind. Unlisted names are CHAIN.
@@ -80,9 +92,17 @@ def _attr_value(v: Any) -> Any:
     return json.dumps(v, default=str, separators=(",", ":"))
 
 
+def error_type(err: Any) -> str:
+    """'ConversionException: Could not convert ...' -> 'ConversionException'."""
+    return str(err).split(":", 1)[0].strip()[:100] if err else ""
+
+
 def otel_attributes(name: str, attrs: dict) -> dict:
     """Recorded attrs as OTel attributes, plus the OpenInference fields Phoenix
-    reads. `attrs` must already be scrubbed."""
+    reads. `attrs` must already be scrubbed. `error` keeps its type only."""
+    attrs = dict(attrs)
+    if attrs.get("error"):
+        attrs["error"] = error_type(attrs["error"])
     out = {f"agent.{k}": _attr_value(v) for k, v in attrs.items()}
     out = {k: v for k, v in out.items() if v is not None}
     out["openinference.span.kind"] = SPAN_KINDS.get(name, "CHAIN")
@@ -112,6 +132,8 @@ class OTLPExporter:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             span_exporter = OTLPSpanExporter(endpoint=endpoint, timeout=5)
         self.processor = processor or BatchSpanProcessor(span_exporter, schedule_delay_millis=500)
+        self._rooted: set = set()          # traces whose root this process has sent
+        self._rooted_lock = threading.Lock()
 
     def _send(self, name: str, trace_id: str, span_id: int, parent_id: Optional[int],
               start_ts: float, end_ts: float, status: str, attrs: dict) -> None:
@@ -125,7 +147,7 @@ class OTLPExporter:
         parent = (SpanContext(trace_id=tid, span_id=parent_id, is_remote=False,
                               trace_flags=TraceFlags(TraceFlags.SAMPLED))
                   if parent_id else None)
-        st = Status(StatusCode.ERROR, str(attrs.get("error") or "")[:200]) if status == "error" \
+        st = Status(StatusCode.ERROR, error_type(attrs.get("error"))) if status == "error" \
             else Status(StatusCode.OK)
         span = ReadableSpan(name=name, context=ctx, parent=parent, resource=self.resource,
                             attributes=otel_attributes(name, attrs), status=st,
@@ -143,9 +165,24 @@ class OTLPExporter:
 
     def root(self, *, trace_id: str, name: str, start_ts: float, end_ts: float, status: str,
              attrs: dict) -> None:
+        """The trace's root, once, at a final status (see ONE ROOT PER TRACE)."""
         try:
-            self._send(name, trace_id, root_span_id(trace_id), None, start_ts, end_ts, status,
-                       attrs)
+            if status in NON_FINAL:
+                return
+            with self._rooted_lock:
+                again = trace_id in self._rooted
+                self._rooted.add(trace_id)
+                if len(self._rooted) > 10000:      # bounded; oldest order is not needed
+                    self._rooted.clear()
+                    self._rooted.add(trace_id)
+            if again:
+                span_id = _int_id(hashlib.sha256(f"end:{trace_id}:{end_ts}".encode("utf-8"))
+                                  .hexdigest()[:16], 64)
+                self._send(f"{name}.end", trace_id, span_id, root_span_id(trace_id), end_ts,
+                           end_ts, status, attrs)
+            else:
+                self._send(name, trace_id, root_span_id(trace_id), None, start_ts, end_ts,
+                           status, attrs)
         except Exception:
             pass
 

@@ -401,8 +401,9 @@ the question, the SQL and row counts, never result rows; an approval checkpoint
 keeps the 3 evidence rows the reviewer is shown, as the approval record does.
 
 Every graph step is a span: `plan`, `critic`, `guard` (with the decision and the
-rule), `execute` (row count), `retry`, and `route` for each edge the graph takes
-(`critic -> execute`, `execute -> plan` on a self-correction, `-> finish`).
+rule), `execute` (row count), `retry`, and `route` for each routing decision the graph makes
+(`critic -> execute`, `execute -> plan` on a self-correction, `-> finish`): a span for
+every routing decision, the graph's two conditional edges.
 
 ### Opening a trace in Arize Phoenix (self-hosted, local)
 

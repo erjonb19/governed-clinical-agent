@@ -332,7 +332,8 @@ class GovernedAgentGraph:
 
     def _traced_route(self, state: AgentState, src: str, dest: str, why: str) -> str:
         """Record the routing decision as a `route` span (backlog item 2: every
-        edge the graph takes is visible in a trace, not only the loops back)."""
+        routing decision -- both conditional edges -- is visible in a trace, not
+        only the loops back)."""
         with self._traced(state):
             self.tracer.event("route", attempt=state.get("attempts"), source=src,
                               destination=dest, why=why)
