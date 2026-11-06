@@ -1158,21 +1158,35 @@ def _differenced_scopes(rewrites: list) -> list:
     return [(sel, keys) for sel, keys in rewrites if sel.args.get("where")]
 
 
+def _complement_ok(complement: str, whole: str) -> str:
+    """The complement rule, as SQL over two person counts (owner's decision
+    2026-11-06): the people a filter leaves out must number 0 or at least 11,
+    and 0 only when the whole in-scope group itself has at least 11. An empty
+    complement reveals nobody (the group's total minus the filtered count is
+    0); 1 to 10 left out is exactly the differencing leak."""
+    return (f"(({complement}) >= {MIN_CELL} OR (({complement}) = 0 "
+            f"AND ({whole}) >= {MIN_CELL}))")
+
+
 def _complement(sel: exp.Select, keys: list) -> exp.Expression:
-    """`(SELECT count(DISTINCT k) FROM <sel's sources> WHERE (<filter>) IS NOT
-    TRUE) >= 11` for each person key: the people the filter leaves out. Built
-    from the qualified scope, self-contained (its own FROM, so its aliases
-    shadow the outer ones), and ANDed into the scope's HAVING."""
+    """For each person key, `_complement_ok` over two scalar counts built from
+    the qualified scope: the people the scope's WHERE leaves out, and everyone
+    in its sources. Self-contained subqueries (their own FROM, so their aliases
+    shadow the outer ones), ANDed into the scope's HAVING."""
     conds = []
     pred = sel.args["where"].this.sql(dialect=DIALECT)
     for k in keys:
-        c = sel.copy()
-        for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
-                    "windows"):
-            c.set(arg, None)
-        c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT)])
-        c.set("where", exp.Where(this=sqlglot.parse_one(f"({pred}) IS NOT TRUE", read=DIALECT)))
-        conds.append(exp.GTE(this=exp.Subquery(this=c), expression=exp.Literal.number(MIN_CELL)))
+        def count(where):
+            c = sel.copy()
+            for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
+                        "windows"):
+                c.set(arg, None)
+            c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT)])
+            c.set("where", exp.Where(this=sqlglot.parse_one(where, read=DIALECT))
+                  if where else None)
+            return exp.Subquery(this=c).sql(dialect=DIALECT)
+        conds.append(sqlglot.parse_one(
+            _complement_ok(count(f"({pred}) IS NOT TRUE"), count(None)), read=DIALECT))
     return exp.and_(*conds)
 
 
@@ -1265,11 +1279,14 @@ def check(tree: exp.Expression) -> PhiDecision:
         where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
         pred_sql = target.args["expression"].this.sql(dialect=DIALECT)
         # the subgroup AND its complement in the group: otherwise the group's
-        # total minus this count is the complement, however small (differencing)
-        guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL} AND "
-                             f"count(DISTINCT {k}) FILTER (WHERE ({pred_sql}) IS NOT TRUE) "
-                             f">= {MIN_CELL}"
-                             for k in keys)
+        # total minus this count is the complement, however small (differencing).
+        # The complement may be 0 (the filter keeps the whole group, which must
+        # itself hold 11) -- owner's decision 2026-11-06.
+        guard = " AND ".join(
+            f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL} AND "
+            + _complement_ok(f"count(DISTINCT {k}) FILTER (WHERE ({pred_sql}) IS NOT TRUE)",
+                             f"count(DISTINCT {k})")
+            for k in keys)
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had

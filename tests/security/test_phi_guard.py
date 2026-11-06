@@ -1221,3 +1221,94 @@ def test_cross_query_differencing_still_recovers_a_suppressed_group_RESIDUAL_RIS
     shown = tool.execute({"sql": "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender"}
                          ).output["rows"]
     assert total[0]["n"] - sum(r["n"] for r in shown) == SUPPRESSED_MALE_COUNT
+
+
+# --- the complement may be 0, never 1 to 10 (owner's decision 2026-11-06) ------
+# A filter that keeps everyone in its group leaves out nobody: total minus the
+# filtered count is 0, which reveals no one, so the value is kept -- but only
+# when the group itself holds 11 or more. Found by the FHIR eval: the agent
+# wrote avg(value_num) FILTER (WHERE measure_name = 'Glucose') under the same
+# WHERE, the complement was empty, the mean was nulled, and the count beside
+# it was scored instead (374 for 85.73, f4_avg_glucose_prediabetic, 0/3).
+
+@pytest.fixture
+def glucose_tool(tmp_path):
+    """40 patients (20 female, 20 male), 20 of them prediabetic, all with
+    glucose readings."""
+    import duckdb
+    path = build(str(tmp_path / "glucose.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("DELETE FROM gold_patient")
+    con.execute("INSERT INTO gold_patient SELECT 'p' || i, 'G', 'F', CASE WHEN i % 2 = 0 THEN "
+                "'female' ELSE 'male' END, '1970-01-01', false, 'S', 'X', 'MA', '02134', 50 "
+                "FROM range(40) t(i)")
+    con.execute("INSERT INTO gold_condition SELECT 'pd' || i, 'p' || i, 'e', 'SNOMED', '1', "
+                "'Prediabetes', 'active', '2020-01-01', NULL, true, 'female', 'MA', 50 "
+                "FROM range(20) t(i)")
+    con.execute("CREATE TABLE gold_observation AS SELECT 'o' || i AS observation_id, "
+                "'p' || (i % 40) AS patient_id, 'e' AS encounter_id, 'lab' AS category, "
+                "'LOINC' AS code_system, '2339-0' AS code, 'Glucose' AS measure_name, "
+                "80.0 + (i % 20) AS value_num, 'mg/dL' AS value_unit, '2020-01-01' AS "
+                "effective_date, 'female' AS gender, 'MA' AS state, 50 AS age_at_observation "
+                "FROM range(200) t(i)")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+PREDIABETIC = ("o.patient_id IN (SELECT patient_id FROM gold_condition "
+               "WHERE condition_name = 'Prediabetes')")
+GLUCOSE_REFERENCE = (f"SELECT round(avg(o.value_num), 2) AS v FROM gold_observation o "
+                     f"WHERE o.measure_name = 'Glucose' AND {PREDIABETIC}")
+EMPTY_COMPLEMENT_SHAPES = {
+    "FILTER repeating the WHERE (the eval's shape)": (
+        f"SELECT count(DISTINCT o.patient_id) AS n, round(avg(o.value_num) FILTER "
+        f"(WHERE o.measure_name = 'Glucose'), 2) AS v FROM gold_observation o "
+        f"WHERE o.measure_name = 'Glucose' AND {PREDIABETIC}"),
+    "FILTER on IS NOT NULL": (
+        f"SELECT count(DISTINCT o.patient_id) AS n, round(avg(o.value_num) FILTER "
+        f"(WHERE o.value_num IS NOT NULL), 2) AS v FROM gold_observation o "
+        f"WHERE o.measure_name = 'Glucose' AND {PREDIABETIC}"),
+    "a second scope whose WHERE keeps everyone": (
+        f"SELECT (SELECT count(DISTINCT patient_id) FROM gold_patient) AS n, "
+        f"(SELECT round(avg(o.value_num), 2) FROM gold_observation o "
+        f"WHERE o.value_num IS NOT NULL) AS v"),
+}
+
+
+@pytest.mark.parametrize("name", list(EMPTY_COMPLEMENT_SHAPES))
+def test_a_filter_that_leaves_out_nobody_keeps_its_value(glucose_tool, name):
+    r = glucose_tool.execute({"sql": EMPTY_COMPLEMENT_SHAPES[name]})
+    assert r.success, r.error
+    v = r.output["rows"][0]["v"]
+    assert v is not None, name
+    if "second scope" not in name:
+        assert v == glucose_tool.execute({"sql": GLUCOSE_REFERENCE}).output["rows"][0]["v"]
+
+
+def test_the_3_person_leak_stays_blocked_with_an_empty_complement_allowed(tool):
+    # 15 patients, 3 men: a complement of 3 is neither 0 nor 11+
+    for sql in ("SELECT count(*) - count(*) FILTER (WHERE gender = 'female') AS n FROM gold_patient",
+                "SELECT (SELECT count(*) FROM gold_patient) - (SELECT count(*) FROM gold_patient "
+                "WHERE gender = 'female') AS n"):
+        r = tool.execute({"sql": sql})
+        assert r.success and r.output["rows"] in ([{"n": None}], []), (sql, r.output["rows"])
+
+
+EVERYONE_IN_A_SMALL_GROUP = {
+    "FILTER keeping all 3 men": ("SELECT count(*) FILTER (WHERE age_years > 0) AS n "
+                                 "FROM gold_patient WHERE gender = 'male'"),
+    "FILTER keeping all 3 men, grouped": ("SELECT gender, count(*) FILTER (WHERE age_years > 0) "
+                                          "AS n FROM gold_patient GROUP BY gender"),
+    "a second scope keeping all 3 men": (
+        "SELECT (SELECT count(*) FROM gold_patient WHERE gender = 'male') AS a, "
+        "(SELECT count(*) FROM gold_patient WHERE gender = 'male' AND age_years > 0) AS n"),
+}
+
+
+@pytest.mark.parametrize("name", list(EVERYONE_IN_A_SMALL_GROUP))
+def test_an_empty_complement_does_not_unlock_a_group_under_11(tool, name):
+    r = tool.execute({"sql": EVERYONE_IN_A_SMALL_GROUP[name]})
+    assert r.success, r.error
+    shown = [row.get("n") for row in r.output["rows"] if row.get("gender", "male") == "male"]
+    assert all(v is None for v in shown), (name, r.output["rows"])
+    assert 3 not in [v for row in r.output["rows"] for v in row.values()]
