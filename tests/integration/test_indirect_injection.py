@@ -92,7 +92,20 @@ def env(tmp_path, monkeypatch):
     runtime = AgentRuntime(audit_logger=audit)
     runtime.load_policy(POLICY)
     runtime.register_tool(AnalyticsQueryTool(db_path=db, seed_demo=False))
-    tracer = tracing.Tracer(str(tmp_path / "traces.sqlite"))
+    # with an in-memory OTLP exporter when the OTel packages are present, so
+    # the trace export path (trace_export.py) is checked for the planted value too
+    exporter, exported = None, None
+    try:
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        import trace_export
+        exported = InMemorySpanExporter()
+        exporter = trace_export.OTLPExporter("http://unused",
+                                             processor=SimpleSpanProcessor(exported))
+    except ImportError:
+        pass
+    tracer = tracing.Tracer(str(tmp_path / "traces.sqlite"), exporter=exporter or False)
+    monkeypatch.setattr(sys.modules[__name__], "EXPORTED", exported, raising=False)
     made = []
 
     def make(planner):
@@ -165,3 +178,22 @@ def test_a_value_error_on_the_planted_text_is_withheld_from_the_retry(env):
     assert retries and all("onversion" in p for p in retries)   # the channel ran
     assert all(MARKER not in p for p in planner.seen)
     assert MARKER not in str(s.get("reason"))
+
+
+EXPORTED = None
+
+
+def test_planted_text_never_reaches_the_trace_export(env):
+    # A failed execute's reason is exported as `agent.reason`. The engine's
+    # message is reduced to its class and target type before it leaves the
+    # tool (describe_execution_error), so the planted value cannot ride along.
+    if EXPORTED is None:
+        pytest.skip("opentelemetry not installed")
+    make, _ = env
+    s = make(RecordingPlanner([CAST_FAILS, ROWS_BACK])).run("q")
+    assert s["attempts"] == 2
+    spans = EXPORTED.get_finished_spans()
+    reasons = [sp.attributes.get("agent.reason") for sp in spans if sp.attributes.get("agent.reason")]
+    assert any("onversion" in r for r in reasons), reasons     # the failing execute was exported
+    for sp in spans:
+        assert MARKER not in repr(dict(sp.attributes)) + str(sp.status.description), sp.name
