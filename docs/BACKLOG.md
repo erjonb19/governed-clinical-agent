@@ -10,7 +10,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 ## Now, in order
 
 - [ ] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
-  - Done when: every push to any branch and the nightly run execute pytest, the hospital eval and the FHIR eval, and a red test or an eval below 80% turns the run red (shown by one deliberately failing run).
+  - Done when: every push to any branch runs pytest, the hospital subset gate and a **FHIR subset gate (10-15 cases, at least one of each question type)**; the nightly run executes pytest, the full hospital eval and the **full FHIR eval**; a red test or an eval below 80% turns the run red (shown by one deliberately failing run); a nightly eval whose provider is unavailable is **retried once, then turns red**.
+  - Owner's decisions (2026-11-06): FHIR subset on push, full FHIR nightly (keeps Gemini's free daily quota); provider-down nightly runs fail after one retry.
   - Today: pytest runs only on pushes to `main` and on PRs, not nightly. The hospital eval is a 6-case subset on push and the full set nightly. The FHIR eval runs nightly and by manual dispatch, never on push. A nightly run whose provider was unavailable (exit 2) passes green with a warning.
 
 - [ ] **2. Tracing** for every agent step (plan, execute, route, retry, guard decision) with Langfuse or Arize Phoenix, self-hosted for free. If it can't run on Render's free plan, run it locally for demos and say so in the README. Show me how to open a trace for one question.
@@ -19,6 +20,7 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 - [ ] **3. Alerts** when the nightly eval score drops below a threshold or the error rate rises. Use a free channel (email or a GitHub issue). Tell me the thresholds and why.
   - Done when: a nightly score under the threshold, or an error rate over it, opens or updates one GitHub issue, and the next healthy run closes it; the thresholds and the reasoning are in the README.
+  - Owner's decision (2026-11-06): two separate labels and issues, `provider-outage` (the provider was unavailable, inconclusive) and `eval-regression` (the score really dropped), never mixed.
   - Today: `scheduled-runs.yml` and `live-check.yml` already open issues. The nightly eval opens none; a failure shows only as a red run.
 
 - [ ] **4. Version on every answer.** Each logged answer records the prompt version, model, provider and git commit.
@@ -38,7 +40,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
   - Today: `cost_tracker.py` reports per-call latency and p50/p95. There is no p99 and no SLO.
 
 - [ ] **8. Feature flag for the planner backend** as a plain config setting (no paid service), so I can switch LLM providers without a code change.
-  - Done when: one documented setting picks the provider and, optionally, a fallback order, and switching it needs no code change (shown by a test and a README step).
+  - Done when: one documented setting picks the provider; when the chosen provider is down (402/429/5xx), the call automatically falls back to the other of Gemini / Cerebras, and the answer records which provider served it; switching needs no code change (shown by a test and a README step).
+  - Owner's decision (2026-11-06): automatic fallback between Gemini and Cerebras. **Open:** the default when `PLANNER_PROVIDER` is unset (the answer came back as "[Gemini / Cerebras]"); recommendation: Gemini, the provider CI and Render already use.
   - Today: mostly built. `PLANNER_PROVIDER` already switches between gemini, cerebras, groq, xai and anthropic without code changes. If it is unset, it falls back to cerebras rather than the gemini that CI uses, and there is no automatic fallback when a provider is down.
 
 - [ ] **9. Demo UI rebuilt for fast insight.** Leadership found the current demo clunky. The first screen should get a non-technical person to a useful answer in one or two clicks, with plain language and a short definitions section. Write the UI plan and show me before building. Add a note on the page that the first load can take a moment (Render free-plan cold start).
@@ -51,6 +54,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
   - Done when: MCP clients authenticate with OAuth 2.1.
   - Today: the premise is out of date. Streamable HTTP with API-key auth is **already built** (standalone and at `/mcp`, end-to-end tested on every push). What is missing is OAuth 2.1.
 - [ ] **Databricks lift, so the Databricks backend has actually run.**
-  - Done when: the owner confirms what is still wanted. The README and CLAUDE.md record it as **already verified** on a real Free Edition workspace (6-case eval subset at 100%, backend parity). What remains open is ADLS Gen2 plus Databricks Workflows orchestration, or a re-run on current code.
+  - Today: **verified once** on a real Free Edition workspace (6-case eval subset at 100%, backend parity). Gap found 2026-11-06: no workflow touches Databricks. Publishing (`scripts/publish_gold_to_databricks.py`) is manual, so after each monthly hospital refresh the Delta copy goes stale and the UI's "Databricks cloud" option answers from an older vintage; parity is never re-checked.
+  - **Proposed item, awaiting the owner's approval:** after `data-refresh.yml` rebuilds the hospital Gold, publish it to Databricks Delta and re-run the 6-case parity subset with `DATA_BACKEND=databricks`; the workflow fails on a mismatch. $0: Free Edition plus GitHub Actions; needs the `DATABRICKS_*` values as repository secrets.
+  - Done when (if approved): one monthly run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
 - [ ] **Real users:** the owner will find three to five. Add a README section where their feedback is recorded.
   - Done when: the README has a "User feedback" section with one entry per user (date, role, what they tried, what they said).
