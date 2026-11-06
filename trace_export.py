@@ -29,11 +29,18 @@ against arize-phoenix 21.0.0), so the root is sent once, at a final status:
 - `pending_approval` is not final; the root goes when the decision ends the trace.
 - a trace that ends again after its root was sent (a failed run resumed) gets a
   child `<name>.end` span with the new outcome, never a second root. The record
-  of sent roots is per process: after a restart, a re-ended trace's outcome is
-  the first root Phoenix received.
+  of sent roots is per process and bounded (cleared at 10,000 traces): after a
+  restart or a clear, a re-ended trace's outcome is the first root Phoenix got.
+- an approval that is never decided sends no root at all: its steps appear in
+  Phoenix without one, which is better than a root that says "pending" forever.
 
 ERROR TEXT: an `error` attribute (and the span status message) is exported as
-the exception's type only; its message can quote a data value.
+the exception's type only; its message can quote a data value. A step's
+`reason` (a guard denial, a failed execute) is exported as recorded: it is the
+same text the planner is shown on a retry, and an execution error is reduced to
+its class and target type before it leaves the tool (describe_execution_error),
+so it carries no value -- pinned on this path by
+tests/integration/test_indirect_injection.py.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from typing import Any, Optional
 
@@ -93,8 +101,13 @@ def _attr_value(v: Any) -> Any:
 
 
 def error_type(err: Any) -> str:
-    """'ConversionException: Could not convert ...' -> 'ConversionException'."""
-    return str(err).split(":", 1)[0].strip()[:100] if err else ""
+    """'ConversionException: Could not convert ...' -> 'ConversionException'.
+    Anything that does not start with an exception-like name is just 'error',
+    so a plain message containing a colon cannot leak its first part."""
+    if not err:
+        return ""
+    head = str(err).split(":", 1)[0].strip()
+    return head[:100] if re.fullmatch(r"[A-Za-z_][\w.]*", head) else "error"
 
 
 def otel_attributes(name: str, attrs: dict) -> dict:

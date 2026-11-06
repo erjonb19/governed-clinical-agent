@@ -193,3 +193,9 @@ def test_error_text_is_exported_as_its_type_only(tracer, mem):
 def test_exporter_false_forces_export_off(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACE_OTLP_ENDPOINT", "http://localhost:1/v1/traces")
     assert tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=False).exporter is None
+
+
+def test_error_type_keeps_only_an_exception_name():
+    assert trace_export.error_type("ValueError: bad 'Jane'") == "ValueError"
+    assert trace_export.error_type("duckdb.ConversionException: x") == "duckdb.ConversionException"
+    assert trace_export.error_type("patient Jane Doe: not found") == "error"
