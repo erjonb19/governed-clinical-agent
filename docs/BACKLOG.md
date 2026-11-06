@@ -41,21 +41,23 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 - [ ] **8. Feature flag for the planner backend** as a plain config setting (no paid service), so I can switch LLM providers without a code change.
   - Done when: one documented setting picks the provider; when the chosen provider is down (402/429/5xx), the call automatically falls back to the other of Gemini / Cerebras, and the answer records which provider served it; switching needs no code change (shown by a test and a README step).
-  - Owner's decision (2026-11-06): automatic fallback between Gemini and Cerebras. **Open:** the default when `PLANNER_PROVIDER` is unset (the answer came back as "[Gemini / Cerebras]"); recommendation: Gemini, the provider CI and Render already use.
+  - Owner's decision (2026-11-06): when `PLANNER_PROVIDER` is unset the default is **Gemini**, with automatic fallback to **Cerebras** when Gemini is down.
   - Today: mostly built. `PLANNER_PROVIDER` already switches between gemini, cerebras, groq, xai and anthropic without code changes. If it is unset, it falls back to cerebras rather than the gemini that CI uses, and there is no automatic fallback when a provider is down.
 
 - [ ] **9. Demo UI rebuilt for fast insight.** Leadership found the current demo clunky. The first screen should get a non-technical person to a useful answer in one or two clicks, with plain language and a short definitions section. Write the UI plan and show me before building. Add a note on the page that the first load can take a moment (Render free-plan cold start).
   - Done when: the owner has approved a written UI plan; then a first-time visitor reaches a useful answer in at most two clicks (checked by an E2E test), the first screen has a definitions section, and a cold-start note shows while the service wakes.
   - Today: the UI lands on an Overview of four fixed findings; Ask, Review, Data, Guide, Trust, Usage and Traces sit beside it as separate views.
 
+- [ ] **10. Databricks refresh and parity check** (owner approved 2026-11-06). After `data-refresh.yml` rebuilds the hospital Gold each month, publish it to Databricks Delta and re-run the 6-case parity subset with `DATA_BACKEND=databricks`; the workflow fails on a mismatch.
+  - Done when: one monthly (or dispatched) run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
+  - Today: verified once by hand; `scripts/publish_gold_to_databricks.py` is manual and no workflow touches Databricks, so Delta goes stale after each refresh.
+  - Needs: the owner adds `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`, `DATABRICKS_CATALOG` and `DATABRICKS_SCHEMA` as repository secrets. $0 (Free Edition plus GitHub Actions).
+
 ## Later (keep, don't start)
 
 - [ ] **MCP server over Streamable HTTP with real auth.**
   - Done when: MCP clients authenticate with OAuth 2.1.
   - Today: the premise is out of date. Streamable HTTP with API-key auth is **already built** (standalone and at `/mcp`, end-to-end tested on every push). What is missing is OAuth 2.1.
-- [ ] **Databricks lift, so the Databricks backend has actually run.**
-  - Today: **verified once** on a real Free Edition workspace (6-case eval subset at 100%, backend parity). Gap found 2026-11-06: no workflow touches Databricks. Publishing (`scripts/publish_gold_to_databricks.py`) is manual, so after each monthly hospital refresh the Delta copy goes stale and the UI's "Databricks cloud" option answers from an older vintage; parity is never re-checked.
-  - **Proposed item, awaiting the owner's approval:** after `data-refresh.yml` rebuilds the hospital Gold, publish it to Databricks Delta and re-run the 6-case parity subset with `DATA_BACKEND=databricks`; the workflow fails on a mismatch. $0: Free Edition plus GitHub Actions; needs the `DATABRICKS_*` values as repository secrets.
-  - Done when (if approved): one monthly run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
+- [x] **Databricks lift, so the Databricks backend has actually run.** Verified once on a real Free Edition workspace (6-case eval subset at 100%, backend parity). The remaining gap, keeping it fresh and re-checked, is item 10.
 - [ ] **Real users:** the owner will find three to five. Add a README section where their feedback is recorded.
   - Done when: the README has a "User feedback" section with one entry per user (date, role, what they tried, what they said).
