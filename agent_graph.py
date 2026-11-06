@@ -330,16 +330,26 @@ class GovernedAgentGraph:
 
     # ---------------- routing ----------------
 
+    def _traced_route(self, state: AgentState, src: str, dest: str, why: str) -> str:
+        """Record the routing decision as a `route` span (backlog item 2: every
+        edge the graph takes is visible in a trace, not only the loops back)."""
+        with self._traced(state):
+            self.tracer.event("route", attempt=state.get("attempts"), source=src,
+                              destination=dest, why=why)
+        return dest
+
     def _route(self, state: AgentState) -> str:
         """Success -> finish. Failure with retries left -> plan again. Else finish."""
         if state.get("allowed"):
-            return "finish"
+            return self._traced_route(state, "execute", "finish", "answered")
         if state.get("attempts", 0) < self.max_attempts:
             with self._traced(state):
                 self.tracer.event("retry", attempt=state.get("attempts"),
                                   reason=(state.get("last_error") or "")[:500])
-            return "plan"          # self-correct: loop back with last_error in state
-        return "finish"            # bounded: give up gracefully
+            # self-correct: loop back with last_error in state
+            return self._traced_route(state, "execute", "plan", "failed, retries left")
+        # bounded: give up gracefully
+        return self._traced_route(state, "execute", "finish", "failed, attempts spent")
 
     def _route_critic(self, state: AgentState) -> str:
         """approve / unavailable -> execute. revise -> plan, or finish if the
@@ -349,9 +359,11 @@ class GovernedAgentGraph:
                 with self._traced(state):
                     self.tracer.event("retry", attempt=state.get("attempts"), by="critic",
                                       reason=(state.get("last_error") or "")[:500])
-                return "plan"
-            return "finish"
-        return "execute"
+                return self._traced_route(state, "critic", "plan", "critic: revise")
+            return self._traced_route(state, "critic", "finish",
+                                      "critic: revise, attempts spent")
+        return self._traced_route(state, "critic", "execute",
+                                  f"critic: {state.get('critic_verdict') or 'skipped'}")
 
     # ---------------- graph ----------------
 

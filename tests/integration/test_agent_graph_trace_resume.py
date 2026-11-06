@@ -113,16 +113,20 @@ def test_a_run_is_traced_end_to_end(make_agent):
     assert trace["attrs"]["question"] == "how many hospitals?"
     assert trace["attrs"]["decided_by"] == "executed"
     names = [s["name"] for s in trace["spans"]]
-    assert names == ["plan", "critic", "guard", "execute", "answer"]
+    # every edge the graph takes is a `route` span (backlog item 2)
+    assert names == ["plan", "critic", "route", "guard", "execute", "route", "answer"]
     plan = trace["spans"][0]
     assert plan["attrs"]["sql"] == "SELECT 1 AS n" and plan["attrs"]["model"] == "stub"
     # this stub planner has no critique(): the critic fails open (D4)
     assert trace["spans"][1]["attrs"]["verdict"] == "unavailable"
-    guard = trace["spans"][2]
+    assert {k: trace["spans"][2]["attrs"][k] for k in ("source", "destination")} == \
+        {"source": "critic", "destination": "execute"}
+    guard = trace["spans"][3]
     assert guard["attrs"]["allowed"] is True
     # the execute event is nested under the guard span
-    assert trace["spans"][3]["parent_id"] == guard["span_id"]
-    assert trace["spans"][3]["attrs"]["row_count"] == 1
+    assert trace["spans"][4]["parent_id"] == guard["span_id"]
+    assert trace["spans"][4]["attrs"]["row_count"] == 1
+    assert trace["spans"][5]["attrs"]["destination"] == "finish"
 
 
 def test_a_denial_and_retry_are_both_in_the_trace(make_agent):
@@ -132,9 +136,12 @@ def test_a_denial_and_retry_are_both_in_the_trace(make_agent):
 
     assert state["attempts"] == 2 and state["allowed"]
     names = [s["name"] for s in tracer.get_trace(state["trace_id"])["spans"]]
-    assert names == ["plan", "critic", "guard", "retry", "plan", "critic", "guard",
-                     "execute", "answer"]
-    denied = tracer.get_trace(state["trace_id"])["spans"][2]
+    assert names == ["plan", "critic", "route", "guard", "retry", "route",
+                     "plan", "critic", "route", "guard", "execute", "route", "answer"]
+    spans = tracer.get_trace(state["trace_id"])["spans"]
+    # the loop back is visible as an edge, with the reason it was taken
+    assert (spans[5]["attrs"]["source"], spans[5]["attrs"]["destination"]) == ("execute", "plan")
+    denied = spans[3]
     assert denied["attrs"]["allowed"] is False and denied["attrs"]["decided_by"] == "guard"
 
 
