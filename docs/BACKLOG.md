@@ -9,10 +9,15 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Now, in order
 
-- [ ] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
+- [x] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
   - Done when: every push to any branch runs pytest, the hospital subset gate and a **FHIR subset gate (10-15 cases, at least one of each question type)**; the nightly run executes pytest, the full hospital eval and the **full FHIR eval**; a red test or an eval below 80% turns the run red (shown by one deliberately failing run); a nightly eval whose provider is unavailable is **retried once, then turns red**.
   - Owner's decisions (2026-11-06): FHIR subset on push, full FHIR nightly (keeps Gemini's free daily quota); provider-down nightly runs fail after one retry.
-  - Status (2026-11-06): built on branch `claude/jolly-hopper-8ly9iq-ci-coverage`, PR open. Seen working: a push to a non-main branch ran pytest (red on a deliberately failing test, run 42140086754), the hospital subset and the new FHIR subset job. Not yet seen live: the nightly retry-then-red path (proven only on a stub harness, `tests/unit/test_eval_gate.py`) and a FHIR subset run that completes (today's ran into Gemini's exhausted daily quota and warned). Tick after the first nightly on main.
+  - Done 2026-11-06 (PR #53), each part seen live:
+    - every push to any branch runs pytest: red on a deliberately failing test on a non-main branch (run 42140086754);
+    - every push runs the FHIR 13-case subset gate: 13/13, gate PASS (run 42187179828, job fhir-quick-eval);
+    - nightly pytest from the schedule: green (run 42239702871);
+    - nightly evals on main: the first run after the merge (run 42238076116) ended RED, not grey: both jobs were inconclusive on Gemini's exhausted daily quota (hospital: 9 provider errors, one case unanswered; FHIR: 83/84 runs 429), retried once after 5 minutes, then failed with "Eval inconclusive twice". The FHIR job ran although the hospital job was red.
+  - Learned: the nightly is scheduled 07:00 UTC but GitHub starts it around 15:00 UTC, after the day's pushes and manual sweeps have spent the shared Gemini quota (it resets 08:00 UTC). Item 3's alerts should label this `provider-outage`, not `eval-regression`.
   - Today: pytest runs only on pushes to `main` and on PRs, not nightly. The hospital eval is a 6-case subset on push and the full set nightly. The FHIR eval runs nightly and by manual dispatch, never on push. A nightly run whose provider was unavailable (exit 2) passes green with a warning.
 
 - [x] **2. Tracing** for every agent step (plan, execute, route, retry, guard decision) with Langfuse or Arize Phoenix, self-hosted for free. If it can't run on Render's free plan, run it locally for demos and say so in the README. Show me how to open a trace for one question.

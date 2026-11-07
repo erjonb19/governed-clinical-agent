@@ -588,6 +588,10 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **CI covers everything**: pytest on every push and nightly, a hospital and a
+  FHIR eval gate on every push, the full evals nightly; a failing test, an eval
+  below the gate, or an inconclusive nightly (after one retry) turns the build red
+  (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 
