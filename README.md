@@ -457,14 +457,22 @@ cover self-hosting only, and Arize's hosted product is Arize AX. Langfuse Hobby
 is the fallback, and also the larger free allowance. One question records a trace
 of roughly 8 to 20 spans, so 50k units is roughly 2,500 to 5,500 questions a month.
 
-**What leaves the server:** exactly what the SQLite store keeps, minus error
-messages (exported as the exception type only). Result rows never; an execution
-error carries no data value (`tests/integration/test_indirect_injection.py`).
-Text typed by **people** is sent as typed: the **question**, and on an approval
-decision the reviewer's **reason** and the reviewer and escalation **identities**.
-The demo is public, so treat anything a visitor types as leaving the server.
-`tests/unit/test_trace_export_hosted.py` pins the list of free-text attributes, so
-a new one needs a deliberate review.
+**What leaves the server** (owner's decision 2026-11-07): less than the SQLite
+store keeps, which is unchanged. Result rows never; an execution error carries no
+data value (`tests/integration/test_indirect_injection.py`); error messages go
+as their type only. Text typed by **people** is withheld from a hosted backend:
+- the visitor's **question** is replaced by a short hash and its length (the
+  codebase has no free-text PHI redactor; the guard works on SQL, so the question
+  stays home until one is approved);
+- **string literals in the SQL** are masked (`'<value>'`), so typed text can't
+  ride out in a WHERE clause;
+- an approval decision's **reason** and the **reviewer** and **escalation**
+  identities are dropped.
+
+The full record stays in the local SQLite traces (and a local Phoenix, which is
+on this machine). Any endpoint other than localhost counts as hosted.
+`tests/unit/test_trace_export_hosted.py` checks all of this and pins the list of
+free-text attributes, so a new one needs a deliberate review.
 
 **If Langfuse is down, slow or rejects the key, requests are unaffected.** Export
 runs on a background thread from a bounded queue (2,048 spans; beyond that, new
@@ -474,8 +482,8 @@ returns 503, returns 401 and hangs (`tests/unit/test_trace_export_hosted.py`).
 
 Setting it up (the key is a secret: it goes in Render's dashboard, never in code):
 
-1. Sign up at https://cloud.langfuse.com (EU data region; https://us.cloud.langfuse.com
-   for the US). No credit card.
+1. Sign up at https://us.cloud.langfuse.com (US data region, the owner's choice;
+   https://cloud.langfuse.com is the EU one). No credit card.
 2. Create an organization and a project, e.g. `governed-clinical-agent`.
 3. In the project's **Settings → API Keys**, create a key. Copy the **public key**
    (`pk-lf-...`) and the **secret key** (`sk-lf-...`); the secret is shown once.
@@ -483,8 +491,7 @@ Setting it up (the key is a secret: it goes in Render's dashboard, never in code
    bash `echo -n "pk-lf-...:sk-lf-..." | base64 -w 0`, or PowerShell
    `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("pk-lf-...:sk-lf-..."))`.
 5. In Render, open the service → **Environment** and add two variables:
-   - `TRACE_OTLP_ENDPOINT` = `https://cloud.langfuse.com/api/public/otel/v1/traces`
-     (US region: `https://us.cloud.langfuse.com/api/public/otel/v1/traces`)
+   - `TRACE_OTLP_ENDPOINT` = `https://us.cloud.langfuse.com/api/public/otel/v1/traces`
    - `TRACE_OTLP_HEADERS` = `Authorization=Basic <the string from step 4>,x-langfuse-ingestion-version=4`
      (mark it secret)
 
