@@ -157,13 +157,16 @@ def test_header_parsing_keeps_base64_padding_and_skips_junk():
     assert h == {"Authorization": "Basic YWI6Y2Q=", "x-langfuse-ingestion-version": "4"}
 
 
-# What can leave the process. Result rows never do, and an execution error is
-# reduced to its class (tests/integration/test_indirect_injection.py). Free text
-# typed by PEOPLE is exported as recorded: the question, and an approval
-# decision's reason and reviewer identities. This test pins that list, so a new
-# free-text attribute is a deliberate decision, not an accident.
+# Free-text attributes the tracer records (in SQLite, and to a local Phoenix).
+# Result rows never; an execution error is reduced to its class
+# (tests/integration/test_indirect_injection.py). A HOSTED backend gets less
+# (owner's decision 2026-11-07, test below): no question (a hash instead), SQL
+# literals masked, no approval reason, reviewer or escalation identity. This
+# list is pinned, so a new free-text attribute needs a privacy review first.
 FREE_TEXT_EXPORTED = {"question", "sql", "reason", "issues", "why", "decided_by",
                       "escalated_to", "error"}
+# withheld from a hosted backend, whatever span carries them
+NEVER_HOSTED = {"question", "escalated_to"}
 
 
 def test_every_free_text_attribute_is_a_reviewed_one():
@@ -189,3 +192,62 @@ def test_every_free_text_attribute_is_a_reviewed_one():
     # keyword arguments that are not span attributes (python syntax in the calls)
     unreviewed -= {"exporter", "name", "end", "this"}
     assert not unreviewed, f"new trace attributes need a privacy review: {sorted(unreviewed)}"
+
+
+
+PERSON = "Jane Doe 02134"
+HOSTED_URL = "https://us.cloud.langfuse.com/api/public/otel/v1/traces"
+
+
+def _traced(tmp_path, endpoint, mem):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    exp = trace_export.OTLPExporter(endpoint, processor=SimpleSpanProcessor(mem))
+    t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
+    with t.trace("run", question=f"how many visits did {PERSON} have?") as tid:
+        with t.span("plan", sql=f"SELECT count(*) FROM gold_encounter WHERE x = '{PERSON}'",
+                    model="m"):
+            pass
+    with t.attach(tid):
+        t.event("approval.decision", decision="escalate", decided_by="dr.reviewer@example.org",
+                escalated_to="nurse.lead@example.org", reason=f"saw {PERSON} in the rows",
+                terminal=False)
+    return t, tid
+
+
+def test_a_hosted_backend_gets_no_question_reviewer_text_or_identities(tmp_path):
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    mem = InMemorySpanExporter()
+    t, tid = _traced(tmp_path, HOSTED_URL, mem)
+    spans = {s.name: s for s in mem.get_finished_spans()}
+    sent = repr([dict(s.attributes) for s in spans.values()])
+    for withheld in (PERSON, "Jane Doe", "dr.reviewer@example.org", "nurse.lead@example.org"):
+        assert withheld not in sent, withheld
+    sent_keys = {k for s in spans.values() for k in s.attributes}
+    for key in NEVER_HOSTED:
+        assert f"agent.{key}" not in sent_keys, key
+    assert "agent.reason" not in dict(spans["approval.decision"].attributes)
+    assert "agent.decided_by" not in dict(spans["approval.decision"].attributes)
+    assert spans["approval.decision"].attributes["agent.decision"] == "escalate"
+    run = dict(spans["run"].attributes)
+    assert len(run["agent.question_sha256"]) == 16 and run["agent.question_chars"] > 0
+    assert "input.value" not in run
+    assert spans["plan"].attributes["agent.sql"].endswith("x = '<value>'")
+    # the local record keeps everything
+    local = repr(t.get_trace(tid))
+    assert PERSON in local and "dr.reviewer@example.org" in local
+
+
+def test_a_local_phoenix_still_gets_the_full_record(tmp_path):
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    mem = InMemorySpanExporter()
+    _traced(tmp_path, "http://localhost:6006/v1/traces", mem)
+    run = {s.name: s for s in mem.get_finished_spans()}["run"]
+    assert PERSON in run.attributes["input.value"]
+
+
+@pytest.mark.parametrize("url, hosted", [
+    ("http://localhost:6006/v1/traces", False), ("http://127.0.0.1:6006/v1/traces", False),
+    (HOSTED_URL, True), ("https://cloud.langfuse.com/api/public/otel/v1/traces", True),
+    ("http://phoenix.internal:6006/v1/traces", True)])
+def test_anything_off_this_machine_counts_as_hosted(url, hosted):
+    assert trace_export.is_hosted(url) is hosted

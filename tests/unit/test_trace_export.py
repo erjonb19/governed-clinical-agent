@@ -28,7 +28,7 @@ def mem():
 
 @pytest.fixture
 def tracer(tmp_path, mem):
-    exp = trace_export.OTLPExporter("http://unused", processor=SimpleSpanProcessor(mem))
+    exp = trace_export.OTLPExporter("http://localhost/unused", processor=SimpleSpanProcessor(mem))
     return tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
 
 
@@ -109,7 +109,7 @@ def test_a_failing_exporter_never_breaks_the_run(tmp_path):
         def on_end(self, span):
             raise OSError("collector unreachable")
 
-    exp = trace_export.OTLPExporter("http://unused", processor=Broken())
+    exp = trace_export.OTLPExporter("http://localhost/unused", processor=Broken())
     t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
     with t.trace("run") as tid:
         with t.span("plan"):
