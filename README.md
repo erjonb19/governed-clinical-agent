@@ -438,6 +438,68 @@ To open the trace of one question:
 
 ![A denied question's trace in Phoenix: three attempts, each plan, critic, route, guard, retry](docs/screenshots/phoenix-trace.png)
 
+### Sending the deployed app's traces to Langfuse Cloud (free Hobby plan)
+
+The deploy can't run Phoenix, but it can send the same spans to a hosted
+backend. The SQLite traces and the **Traces** view stay exactly as they are; the
+export is extra, and off unless both variables below are set. Checked on the
+vendors' own pages on 2026-11-06:
+
+| | Langfuse Cloud **Hobby** (chosen) | Arize **AX Free** |
+|---|---|---|
+| Price | free, no credit card | free, no credit card |
+| Volume | 50k units / month (a unit is a trace, a span or a score) | 25k spans / month, 1 GB |
+| History | 30 days visible (older data stays stored) | 15 days |
+| Over the limit | no paid overage on Hobby; the docs don't say what happens at the cap | not stated |
+
+**Phoenix Cloud** no longer appears in Arize's documentation: the Phoenix docs
+cover self-hosting only, and Arize's hosted product is Arize AX. Langfuse Hobby
+is the fallback, and also the larger free allowance. One question records a trace
+of roughly 8 to 20 spans, so 50k units is roughly 2,500 to 5,500 questions a month.
+
+**What leaves the server** (owner's decision 2026-11-07): less than the SQLite
+store keeps, which is unchanged. Result rows never; an execution error carries no
+data value (`tests/integration/test_indirect_injection.py`); error messages go
+as their type only. Text typed by **people** is withheld from a hosted backend:
+- the visitor's **question** is replaced by a short hash and its length (the
+  codebase has no free-text PHI redactor; the guard works on SQL, so the question
+  stays home until one is approved);
+- **string literals in the SQL** are masked (`'<value>'`), so typed text can't
+  ride out in a WHERE clause;
+- an approval decision's **reason** and the **reviewer** and **escalation**
+  identities are dropped.
+
+The full record stays in the local SQLite traces (and a local Phoenix, which is
+on this machine). Any endpoint other than localhost counts as hosted.
+`tests/unit/test_trace_export_hosted.py` checks all of this and pins the list of
+free-text attributes, so a new one needs a deliberate review.
+
+**If Langfuse is down, slow or rejects the key, requests are unaffected.** Export
+runs on a background thread from a bounded queue (2,048 spans; beyond that, new
+spans are dropped), each attempt times out after 5 s, and failures are only
+logged ("Failed to export spans"). Tested against a backend that is down,
+returns 503, returns 401 and hangs (`tests/unit/test_trace_export_hosted.py`).
+
+Setting it up (the key is a secret: it goes in Render's dashboard, never in code):
+
+1. Sign up at https://us.cloud.langfuse.com (US data region, the owner's choice;
+   https://cloud.langfuse.com is the EU one). No credit card.
+2. Create an organization and a project, e.g. `governed-clinical-agent`.
+3. In the project's **Settings → API Keys**, create a key. Copy the **public key**
+   (`pk-lf-...`) and the **secret key** (`sk-lf-...`); the secret is shown once.
+4. Combine them into one auth string, on your own machine:
+   bash `echo -n "pk-lf-...:sk-lf-..." | base64 -w 0`, or PowerShell
+   `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("pk-lf-...:sk-lf-..."))`.
+5. In Render, open the service → **Environment** and add two variables:
+   - `TRACE_OTLP_ENDPOINT` = `https://us.cloud.langfuse.com/api/public/otel/v1/traces`
+   - `TRACE_OTLP_HEADERS` = `Authorization=Basic <the string from step 4>,x-langfuse-ingestion-version=4`
+     (mark it secret)
+
+   Save; Render redeploys.
+6. Ask one question in the deployed UI, then open Langfuse → **Tracing**: the run
+   appears with its steps. A wrong key shows nothing in Langfuse and a "401" line
+   in Render's logs, and the app keeps working.
+
 **Standing questions run unattended.** `schedules.yaml` lists questions a quality
 team would otherwise re-ask by hand: the average heart attack (AMI) readmission
 rate, how many EDs lose more than 5% of patients before they are seen, the ten

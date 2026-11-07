@@ -100,7 +100,7 @@ def env(tmp_path, monkeypatch):
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
         import trace_export
         exported = InMemorySpanExporter()
-        exporter = trace_export.OTLPExporter("http://unused",
+        exporter = trace_export.OTLPExporter("http://localhost/unused",
                                              processor=SimpleSpanProcessor(exported))
     except ImportError:
         pass

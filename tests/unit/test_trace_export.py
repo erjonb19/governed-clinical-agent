@@ -28,7 +28,7 @@ def mem():
 
 @pytest.fixture
 def tracer(tmp_path, mem):
-    exp = trace_export.OTLPExporter("http://unused", processor=SimpleSpanProcessor(mem))
+    exp = trace_export.OTLPExporter("http://localhost/unused", processor=SimpleSpanProcessor(mem))
     return tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
 
 
@@ -109,7 +109,7 @@ def test_a_failing_exporter_never_breaks_the_run(tmp_path):
         def on_end(self, span):
             raise OSError("collector unreachable")
 
-    exp = trace_export.OTLPExporter("http://unused", processor=Broken())
+    exp = trace_export.OTLPExporter("http://localhost/unused", processor=Broken())
     t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
     with t.trace("run") as tid:
         with t.span("plan"):
@@ -128,9 +128,11 @@ def test_a_non_hex_trace_id_still_maps_to_a_valid_otel_id():
 
 
 def test_the_deploy_never_exports_or_runs_phoenix():
-    # Owner's requirement (2026-11-06): Phoenix is opt-in and local only; Render
-    # keeps the SQLite traces. The deploy sets no export endpoint, installs no
-    # Phoenix, and a tracer built without the variable has no exporter.
+    # Owner's requirements (2026-11-06): Phoenix is local only, and Render keeps
+    # the SQLite traces. Export from Render is opt-in: the owner sets
+    # TRACE_OTLP_ENDPOINT / TRACE_OTLP_HEADERS in the Render dashboard (backlog
+    # item 12, a hosted backend), never in render.yaml; nothing installs Phoenix,
+    # and a tracer built without the variable has no exporter.
     root = os.path.join(os.path.dirname(__file__), "..", "..")
     render = open(os.path.join(root, "render.yaml"), encoding="utf-8").read()
     assert "TRACE_OTLP_ENDPOINT" not in render and "phoenix" not in render.lower()

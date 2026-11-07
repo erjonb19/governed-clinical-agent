@@ -49,11 +49,20 @@ import hashlib
 import json
 import os
 import re
+from urllib.parse import unquote
 import threading
 from typing import Any, Optional
 
 ENDPOINT_ENV = "TRACE_OTLP_ENDPOINT"
 PROJECT_ENV = "TRACE_OTLP_PROJECT"
+# Auth for a hosted backend (backlog item 12), in the OpenTelemetry header format
+# "key=value,key2=value2" -- e.g. Langfuse Cloud:
+#   Authorization=Basic <base64 of public:secret key>,x-langfuse-ingestion-version=4
+# A secret: set it in the host's environment (Render dashboard), never in code;
+# it is sent only as request headers and never logged or recorded.
+HEADERS_ENV = "TRACE_OTLP_HEADERS"
+QUEUE_MAX = 2048                 # spans waiting for export; beyond this, new ones are dropped
+EXPORT_TIMEOUT_SEC = 5
 DEFAULT_PROJECT = "governed-clinical-agent"
 NON_FINAL = {"pending_approval"}
 
@@ -110,10 +119,54 @@ def error_type(err: Any) -> str:
     return head[:100] if re.fullmatch(r"[A-Za-z_][\w.]*", head) else "error"
 
 
-def otel_attributes(name: str, attrs: dict) -> dict:
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def is_hosted(endpoint: str) -> bool:
+    """Is the backend somewhere other than this machine? (Langfuse Cloud, any
+    remote collector.) A local Phoenix gets the full recorded attributes; a
+    hosted backend gets the reduced set (`hosted_attributes`)."""
+    from urllib.parse import urlparse
+    host = (urlparse(endpoint).hostname or "").lower()
+    return host not in _LOCAL_HOSTS
+
+
+def _mask_sql_literals(sql: str) -> str:
+    # the existing literal redaction (the one used for SQL error messages):
+    # every single-quoted literal becomes '<value>', so text a person typed
+    # into the question cannot ride out inside a WHERE clause
+    from analytics_query_tool import redact_values
+    return redact_values(sql)
+
+
+def hosted_attributes(name: str, attrs: dict) -> dict:
+    """What a HOSTED backend receives (owner's decision 2026-11-07). The local
+    SQLite traces and a local Phoenix keep everything; off this machine:
+    - the visitor's question is replaced by its hash and length: the codebase
+      has no free-text PHI redactor (the guard works on SQL), so the question
+      is withheld until one is approved;
+    - SQL string literals are masked;
+    - an approval decision's reason and the reviewer identity, and every
+      escalation target, are dropped."""
+    out = dict(attrs)
+    q = out.pop("question", None)
+    if q:
+        out["question_sha256"] = hashlib.sha256(str(q).encode("utf-8")).hexdigest()[:16]
+        out["question_chars"] = len(str(q))
+    if out.get("sql"):
+        out["sql"] = _mask_sql_literals(str(out["sql"]))
+    out.pop("escalated_to", None)
+    if name == "approval.decision":
+        out.pop("reason", None)
+        out.pop("decided_by", None)
+    return out
+
+
+def otel_attributes(name: str, attrs: dict, hosted: bool = False) -> dict:
     """Recorded attrs as OTel attributes, plus the OpenInference fields Phoenix
-    reads. `attrs` must already be scrubbed. `error` keeps its type only."""
-    attrs = dict(attrs)
+    reads. `attrs` must already be scrubbed. `error` keeps its type only; with
+    `hosted`, the reduced set from `hosted_attributes`."""
+    attrs = hosted_attributes(name, attrs) if hosted else dict(attrs)
     if attrs.get("error"):
         attrs["error"] = error_type(attrs["error"])
     out = {f"agent.{k}": _attr_value(v) for k, v in attrs.items()}
@@ -134,17 +187,25 @@ class OTLPExporter:
     """Queues recorded spans for export. Every public method is best effort."""
 
     def __init__(self, endpoint: str, project: str = DEFAULT_PROJECT, span_exporter=None,
-                 processor=None):
+                 processor=None, headers: Optional[dict] = None,
+                 timeout_sec: float = EXPORT_TIMEOUT_SEC):
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
         self.endpoint = endpoint
+        self.hosted = is_hosted(endpoint)
         self.resource = Resource.create({"service.name": project,
                                          "openinference.project.name": project})
         if span_exporter is None:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            span_exporter = OTLPSpanExporter(endpoint=endpoint, timeout=5)
-        self.processor = processor or BatchSpanProcessor(span_exporter, schedule_delay_millis=500)
+            span_exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers or None,
+                                             timeout=timeout_sec)
+        # Export runs on the processor's own thread from a bounded queue: a slow,
+        # failing or unreachable backend delays no request, and when the queue is
+        # full new spans are dropped rather than held (tests/unit/test_trace_export.py)
+        self.processor = processor or BatchSpanProcessor(
+            span_exporter, max_queue_size=QUEUE_MAX, schedule_delay_millis=500,
+            export_timeout_millis=int(timeout_sec * 1000))
         self._rooted: set = set()          # traces whose root this process has sent
         self._rooted_lock = threading.Lock()
 
@@ -163,7 +224,7 @@ class OTLPExporter:
         st = Status(StatusCode.ERROR, error_type(attrs.get("error"))) if status == "error" \
             else Status(StatusCode.OK)
         span = ReadableSpan(name=name, context=ctx, parent=parent, resource=self.resource,
-                            attributes=otel_attributes(name, attrs), status=st,
+                            attributes=otel_attributes(name, attrs, self.hosted), status=st,
                             start_time=int(start_ts * 1e9), end_time=int(end_ts * 1e9))
         self.processor.on_end(span)
 
@@ -216,18 +277,35 @@ _lock = threading.Lock()
 _cached: dict = {}
 
 
+def parse_headers(value: str) -> dict:
+    """'k=v,k2=v2' (the OTEL_EXPORTER_OTLP_HEADERS format) -> {'k': 'v', ...}.
+    Splits each pair on its FIRST '=', so base64 padding survives; values are
+    percent-decoded as the OpenTelemetry spec says. Malformed pairs are skipped."""
+    out = {}
+    for pair in (value or "").split(","):
+        if "=" not in pair:
+            continue
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        if k:
+            out[k] = unquote(v.strip())
+    return out
+
+
 def from_env() -> Optional[OTLPExporter]:
-    """The exporter for TRACE_OTLP_ENDPOINT, built once per endpoint; None when
-    unset or when the OpenTelemetry packages are missing."""
+    """The exporter for TRACE_OTLP_ENDPOINT (with TRACE_OTLP_HEADERS), built
+    once per configuration; None when unset or when the OpenTelemetry packages
+    are missing."""
     endpoint = os.environ.get(ENDPOINT_ENV, "").strip()
     if not endpoint:
         return None
     project = os.environ.get(PROJECT_ENV, "").strip() or DEFAULT_PROJECT
-    key = (endpoint, project)
+    headers = parse_headers(os.environ.get(HEADERS_ENV, ""))
+    key = (endpoint, project, hashlib.sha256(repr(sorted(headers.items())).encode()).hexdigest())
     with _lock:
         if key not in _cached:
             try:
-                _cached[key] = OTLPExporter(endpoint, project)
+                _cached[key] = OTLPExporter(endpoint, project, headers=headers)
             except Exception:
                 _cached[key] = None
         return _cached[key]
