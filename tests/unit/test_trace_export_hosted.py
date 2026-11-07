@@ -190,7 +190,8 @@ def test_every_free_text_attribute_is_a_reviewed_one():
                        "provider", "prompt_tokens", "completion_tokens", "latency_ms"}
     unreviewed = keys - numeric_or_enum - FREE_TEXT_EXPORTED
     # keyword arguments that are not span attributes (python syntax in the calls)
-    unreviewed -= {"exporter", "name", "end", "this"}
+    # (`read=` is sqlglot's dialect argument inside a node .set(...) call in phi_guard)
+    unreviewed -= {"exporter", "name", "end", "this", "read"}
     assert not unreviewed, f"new trace attributes need a privacy review: {sorted(unreviewed)}"
 
 
