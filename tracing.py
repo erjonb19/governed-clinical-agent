@@ -13,8 +13,12 @@ names, so an OTLP exporter can be added later without a schema change):
     traces: trace_id, name, start_ts, end_ts, latency_ms, status, attrs
     spans:  span_id, trace_id, parent_id, name, start_ts, end_ts, latency_ms, status, attrs
 
-Span names used by the graphs and the API: `run`, `plan`, `guard`, `execute`, `retry`,
-`approval.propose`, `approval.decision`, `answer`.
+Span names used by the graphs and the API: `run`, `plan`, `critic`, `guard`, `execute`,
+`route`, `retry`, `approval.propose`, `approval.decision`, `answer`.
+
+EXPORT (backlog item 2): with `TRACE_OTLP_ENDPOINT` set, every finished span and trace
+is also sent over OTLP to a self-hosted backend such as Arize Phoenix
+(`trace_export.py`), after the same `_scrub`. Unset (the default), nothing is sent.
 
 HARD RULES THIS FILE KEEPS
 - PHI (CLAUDE.md rule 3): spans store the question, the SQL, its hash and row COUNTS.
@@ -152,9 +156,21 @@ class Span:
 class Tracer:
     """Writes traces and spans to SQLite; reads them back for the API."""
 
-    def __init__(self, db_path: Optional[str] = None, max_runs: Optional[int] = None):
+    def __init__(self, db_path: Optional[str] = None, max_runs: Optional[int] = None,
+                 exporter: Any = None):
         self.db_path = db_path or TRACE_DB
         self.max_runs = max_runs or TRACE_MAX_RUNS
+        # exporter: None reads TRACE_OTLP_ENDPOINT (unset: none); False forces
+        # it off whatever the environment says (tests, tools that must not send)
+        if exporter is False:
+            exporter = None
+        elif exporter is None:
+            try:
+                import trace_export
+                exporter = trace_export.from_env()
+            except Exception:
+                exporter = None
+        self.exporter = exporter      # None: SQLite only (the default)
         self._lock = threading.Lock()
         self._ready = False
         self._runs_since_prune = 0
@@ -230,6 +246,10 @@ class Tracer:
         self._write(
             "UPDATE traces SET end_ts = ?, latency_ms = ?, status = ?, attrs = ? WHERE trace_id = ?",
             (now, int((now - start) * 1000), status, _dumps(merged), trace_id))
+        if self.exporter is not None:
+            name = self._read("SELECT name FROM traces WHERE trace_id = ?", (trace_id,))
+            self.exporter.root(trace_id=trace_id, name=name[0][0] if name else "run",
+                               start_ts=start, end_ts=now, status=status, attrs=_scrub(merged))
         self._runs_since_prune += 1
         if self._runs_since_prune >= 50:
             self._runs_since_prune = 0
@@ -305,6 +325,11 @@ class Tracer:
                     " end_ts, latency_ms, status, attrs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (span.span_id, trace_id, span.parent_id, span.name, span.start_ts, end,
                      int((end - span.start_ts) * 1000), span.status, _dumps(span.attrs)))
+                if self.exporter is not None:
+                    self.exporter.span(trace_id=trace_id, span_id=span.span_id,
+                                       parent_id=span.parent_id, name=span.name,
+                                       start_ts=span.start_ts, end_ts=end, status=span.status,
+                                       attrs=_scrub(span.attrs))
 
     def event(self, name: str, **attrs: Any) -> None:
         """A zero-length span: something that happened at a point in time."""

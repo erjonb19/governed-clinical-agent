@@ -400,6 +400,106 @@ from its last checkpoint with `GovernedAgentGraph.run(trace_id=...)`, and
 the question, the SQL and row counts, never result rows; an approval checkpoint
 keeps the 3 evidence rows the reviewer is shown, as the approval record does.
 
+Every graph step is a span: `plan`, `critic`, `guard` (with the decision and the
+rule), `execute` (row count), `retry`, and `route` for each routing decision the graph makes
+(`critic -> execute`, `execute -> plan` on a self-correction, `-> finish`): a span for
+every routing decision, the graph's two conditional edges.
+
+### Opening a trace in Arize Phoenix (self-hosted, local)
+
+The same spans can be sent to [Arize Phoenix](https://github.com/Arize-ai/phoenix),
+an open-source trace viewer you run yourself ($0). Set `TRACE_OTLP_ENDPOINT` and
+the app exports every finished span over OTLP (`trace_export.py`), after the same
+scrubbing as the local store: the question, the SQL and row counts, never result
+rows. Unset, nothing is exported. `TRACE_OTLP_PROJECT` names the Phoenix project
+(default `governed-clinical-agent`).
+
+**Phoenix runs locally, for demos, not on Render.** Measured 2026-11-06: an idle
+`phoenix serve` (arize-phoenix 21.0.0) uses about **530 MB** of memory, more than
+the free plan's 512 MB before it stores a single trace, and the free plan has no
+lasting disk, so its trace store would be wiped on every restart anyway.
+
+To open the trace of one question:
+
+1. Install and start Phoenix in its own environment (it has many dependencies):
+   `python -m venv .phoenix && .phoenix/bin/pip install arize-phoenix` (Windows:
+   `.phoenix\Scripts\pip`), then `.phoenix/bin/phoenix serve`. Or with Docker:
+   `docker run -p 6006:6006 arizephoenix/phoenix:latest`.
+2. Start the API with `TRACE_OTLP_ENDPOINT=http://localhost:6006/v1/traces` set
+   (and your usual `API_KEY`, `PLANNER_PROVIDER`, key), e.g.
+   `uvicorn app:app --port 8000`.
+3. Ask a question, in the UI's **Ask** view or with `POST /query`. The response's
+   `trace_id` is the run's id.
+4. Open http://localhost:6006, choose the **governed-clinical-agent** project, and
+   click the newest trace. Phoenix shows the id padded to 32 characters with
+   leading zeros (`0000000000000000` + your `trace_id`).
+5. Click a step for its details: `plan` holds the SQL and model, `guard` the
+   decision and rule, `route` where the graph went next and why.
+
+![A denied question's trace in Phoenix: three attempts, each plan, critic, route, guard, retry](docs/screenshots/phoenix-trace.png)
+
+### Sending the deployed app's traces to Langfuse Cloud (free Hobby plan)
+
+The deploy can't run Phoenix, but it can send the same spans to a hosted
+backend. The SQLite traces and the **Traces** view stay exactly as they are; the
+export is extra, and off unless both variables below are set. Checked on the
+vendors' own pages on 2026-11-06:
+
+| | Langfuse Cloud **Hobby** (chosen) | Arize **AX Free** |
+|---|---|---|
+| Price | free, no credit card | free, no credit card |
+| Volume | 50k units / month (a unit is a trace, a span or a score) | 25k spans / month, 1 GB |
+| History | 30 days visible (older data stays stored) | 15 days |
+| Over the limit | no paid overage on Hobby; the docs don't say what happens at the cap | not stated |
+
+**Phoenix Cloud** no longer appears in Arize's documentation: the Phoenix docs
+cover self-hosting only, and Arize's hosted product is Arize AX. Langfuse Hobby
+is the fallback, and also the larger free allowance. One question records a trace
+of roughly 8 to 20 spans, so 50k units is roughly 2,500 to 5,500 questions a month.
+
+**What leaves the server** (owner's decision 2026-11-07): less than the SQLite
+store keeps, which is unchanged. Result rows never; an execution error carries no
+data value (`tests/integration/test_indirect_injection.py`); error messages go
+as their type only. Text typed by **people** is withheld from a hosted backend:
+- the visitor's **question** is replaced by a short hash and its length (the
+  codebase has no free-text PHI redactor; the guard works on SQL, so the question
+  stays home until one is approved);
+- **string literals in the SQL** are masked (`'<value>'`), so typed text can't
+  ride out in a WHERE clause;
+- an approval decision's **reason** and the **reviewer** and **escalation**
+  identities are dropped.
+
+The full record stays in the local SQLite traces (and a local Phoenix, which is
+on this machine). Any endpoint other than localhost counts as hosted.
+`tests/unit/test_trace_export_hosted.py` checks all of this and pins the list of
+free-text attributes, so a new one needs a deliberate review.
+
+**If Langfuse is down, slow or rejects the key, requests are unaffected.** Export
+runs on a background thread from a bounded queue (2,048 spans; beyond that, new
+spans are dropped), each attempt times out after 5 s, and failures are only
+logged ("Failed to export spans"). Tested against a backend that is down,
+returns 503, returns 401 and hangs (`tests/unit/test_trace_export_hosted.py`).
+
+Setting it up (the key is a secret: it goes in Render's dashboard, never in code):
+
+1. Sign up at https://us.cloud.langfuse.com (US data region, the owner's choice;
+   https://cloud.langfuse.com is the EU one). No credit card.
+2. Create an organization and a project, e.g. `governed-clinical-agent`.
+3. In the project's **Settings → API Keys**, create a key. Copy the **public key**
+   (`pk-lf-...`) and the **secret key** (`sk-lf-...`); the secret is shown once.
+4. Combine them into one auth string, on your own machine:
+   bash `echo -n "pk-lf-...:sk-lf-..." | base64 -w 0`, or PowerShell
+   `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("pk-lf-...:sk-lf-..."))`.
+5. In Render, open the service → **Environment** and add two variables:
+   - `TRACE_OTLP_ENDPOINT` = `https://us.cloud.langfuse.com/api/public/otel/v1/traces`
+   - `TRACE_OTLP_HEADERS` = `Authorization=Basic <the string from step 4>,x-langfuse-ingestion-version=4`
+     (mark it secret)
+
+   Save; Render redeploys.
+6. Ask one question in the deployed UI, then open Langfuse → **Tracing**: the run
+   appears with its steps. A wrong key shows nothing in Langfuse and a "401" line
+   in Render's logs, and the app keeps working.
+
 **Standing questions run unattended.** `schedules.yaml` lists questions a quality
 team would otherwise re-ask by hand: the average heart attack (AMI) readmission
 rate, how many EDs lose more than 5% of patients before they are seen, the ten
@@ -544,6 +644,18 @@ python build_hospital_gold.py
 python fetch_synthea.py                          # ~85MB of FHIR bundles
 python build_fhir_gold.py                        # ~367k resources
 ```
+
+## Production readiness
+
+Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
+`docs/PROGRESS.md`). Only finished items are listed.
+
+- [x] **CI covers everything**: pytest on every push and nightly, a hospital and a
+  FHIR eval gate on every push, the full evals nightly; a failing test, an eval
+  below the gate, or an inconclusive nightly (after one retry) turns the build red
+  (see [CI](#ci)).
+- [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
+  Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 
 ## Scope and honest limitations
 
