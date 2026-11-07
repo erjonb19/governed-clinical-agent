@@ -1184,9 +1184,12 @@ GROUPED_DIFFERENCING = {
 
 
 @pytest.mark.parametrize("name", list(GROUPED_DIFFERENCING))
-def test_a_grouped_filtered_count_beside_another_aggregate_is_refused(name):
+def test_a_grouped_filtered_count_beside_another_aggregate_gets_a_per_group_check(name):
+    # refused outright until 2026-11-07; now each group's left-out people must
+    # be 0 or 11+ (a correlated check over a renamed copy of the scope)
     d = validate_query(GROUPED_DIFFERENCING[name])
-    assert not d.allowed and "subtracting" in d.reason, d.reason
+    assert d.allowed, d.reason
+    assert "__c" in d.safe_sql and "IS NOT DISTINCT FROM" in d.safe_sql, d.safe_sql
 
 
 @pytest.fixture
@@ -1312,3 +1315,85 @@ def test_an_empty_complement_does_not_unlock_a_group_under_11(tool, name):
     shown = [row.get("n") for row in r.output["rows"] if row.get("gender", "male") == "male"]
     assert all(v is None for v in shown), (name, r.output["rows"])
     assert 3 not in [v for row in r.output["rows"] for v in row.values()]
+
+
+# --- per-group complement (owner's decision 2026-11-07) -------------------------
+# A grouped, WHERE-filtered count beside another count is no longer refused
+# outright: each group's left-out people must be 0 or 11+. Two left-out sets are
+# checked everywhere (FILTER, ungrouped and grouped scopes): A, people with a row
+# the filter drops (what a ROW count subtracts), and B, people with no row the
+# filter keeps (what a PEOPLE count subtracts) -- B was missing until this test.
+
+@pytest.fixture
+def encounter_tool(tmp_path):
+    """30 patients, 2 visits each: 15 women (12 had an ER visit, 3 did not) and
+    15 men (all 15 had one)."""
+    import duckdb
+    path = build(str(tmp_path / "enc.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("""CREATE TABLE gold_encounter AS
+      SELECT 'e' || i || '_' || j AS encounter_id, 'p' || i AS patient_id,
+             CASE WHEN i < 15 THEN 'female' ELSE 'male' END AS gender, 'MA' AS state,
+             CASE WHEN j = 0 AND NOT (i BETWEEN 12 AND 14) THEN 'EMER' ELSE 'AMB' END AS class_code,
+             'x' AS encounter_type, '2020-01-01' AS start_date, '2020-01-02' AS end_date,
+             1 AS length_of_stay_days, 50 AS age_at_encounter
+      FROM range(30) a(i), range(2) b(j)""")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+PER_GENDER_RATE = (
+    "WITH e AS (SELECT gender, count(*) AS n FROM gold_encounter WHERE class_code = 'EMER' "
+    "GROUP BY gender), t AS (SELECT gender, count(*) AS n FROM gold_encounter GROUP BY gender) "
+    "SELECT e.gender, round(100.0 * e.n / t.n, 2) AS v FROM e JOIN t ON e.gender = t.gender ORDER BY 1")
+
+
+def test_the_per_gender_rate_shape_runs_and_hides_only_the_unsafe_group(encounter_tool):
+    # was refused outright before the per-group check (FHIR eval 2026-11-07)
+    r = encounter_tool.execute({"sql": PER_GENDER_RATE})
+    assert r.success, r.error
+    # men: nobody left out (0) and 15 in the group -> shown; women: 3 had no ER
+    # visit, so "all women minus women with one" would be 3 -> hidden
+    assert r.output["rows"] == [{"gender": "male", "v": 50.0}]
+
+
+PEOPLE_SUBTRACTED = {
+    "FILTER, people subtracted": (
+        "SELECT count(DISTINCT patient_id) - count(DISTINCT patient_id) FILTER "
+        "(WHERE class_code = 'EMER') AS n FROM gold_encounter WHERE gender = 'female'"),
+    "grouped FILTER, people subtracted": (
+        "SELECT gender, count(DISTINCT patient_id) - count(DISTINCT patient_id) FILTER "
+        "(WHERE class_code = 'EMER') AS n FROM gold_encounter GROUP BY gender"),
+    "grouped CTEs, people subtracted": (
+        "WITH e AS (SELECT gender, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "WHERE class_code = 'EMER' GROUP BY gender), t AS (SELECT gender, count(DISTINCT "
+        "patient_id) AS n FROM gold_encounter GROUP BY gender) SELECT e.gender, t.n - e.n AS n "
+        "FROM e JOIN t ON e.gender = t.gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(PEOPLE_SUBTRACTED))
+def test_subtracting_people_cannot_recover_the_3_women_without_an_er_visit(encounter_tool, name):
+    r = encounter_tool.execute({"sql": PEOPLE_SUBTRACTED[name]})
+    assert r.success, r.error
+    values = [row.get("n") for row in r.output["rows"]]
+    assert 3 not in values, (name, r.output["rows"])
+
+
+def test_a_grouping_the_check_cannot_correlate_is_refused():
+    d = validate_query(
+        "SELECT (SELECT count(*) FROM gold_encounter) AS t, x.n FROM (SELECT gender, count(*) AS n "
+        "FROM gold_encounter WHERE class_code = 'EMER' GROUP BY ROLLUP (gender)) x")
+    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
+
+@pytest.mark.xfail(strict=True, reason="known gap: two scopes with NESTED filters in one query "
+                                       "(owner's decision pending, PLAN_v2 §0.4)")
+def test_nested_filters_in_two_scopes_cannot_recover_a_small_group(encounter_tool):
+    # each scope's complement is checked against the whole table (30 people),
+    # not against the other scope's narrower filter (women): 15 - 12 = 3
+    r = encounter_tool.execute({"sql": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') - "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
+        "AND class_code = 'EMER') AS n")})
+    assert r.output["rows"] in ([], [{"n": None}]), r.output["rows"]
