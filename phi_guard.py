@@ -1235,21 +1235,137 @@ def _differenced_scopes(rewrites: list) -> list:
     return [(sel, keys) for sel, keys in rewrites if sel.args.get("where")]
 
 
+def _complement_ok(complement: str, whole: str) -> str:  # noqa: D401
+    """The complement rule, as SQL over two person counts (owner's decision
+    2026-11-06): the people a filter leaves out must number 0 or at least 11,
+    and 0 only when the whole in-scope group itself has at least 11. An empty
+    complement reveals nobody (the group's total minus the filtered count is
+    0); 1 to 10 left out is exactly the differencing leak."""
+    return (f"(({complement}) >= {MIN_CELL} OR (({complement}) = 0 "
+            f"AND ({whole}) >= {MIN_CELL}))")
+
+
 def _complement(sel: exp.Select, keys: list) -> exp.Expression:
-    """`(SELECT count(DISTINCT k) FROM <sel's sources> WHERE (<filter>) IS NOT
-    TRUE) >= 11` for each person key: the people the filter leaves out. Built
-    from the qualified scope, self-contained (its own FROM, so its aliases
-    shadow the outer ones), and ANDed into the scope's HAVING."""
+    """For each person key, `_complement_ok` over two scalar counts built from
+    the qualified scope: the people the scope's WHERE leaves out, and everyone
+    in its sources. Self-contained subqueries (their own FROM, so their aliases
+    shadow the outer ones), ANDed into the scope's HAVING."""
     conds = []
     pred = sel.args["where"].this.sql(dialect=DIALECT)
     for k in keys:
-        c = sel.copy()
-        for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
-                    "windows"):
-            c.set(arg, None)
-        c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT)])
-        c.set("where", exp.Where(this=sqlglot.parse_one(f"({pred}) IS NOT TRUE", read=DIALECT)))
-        conds.append(exp.GTE(this=exp.Subquery(this=c), expression=exp.Literal.number(MIN_CELL)))
+        def count(where):
+            c = sel.copy()
+            for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
+                        "windows"):
+                c.set(arg, None)
+            c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT)])
+            c.set("where", exp.Where(this=sqlglot.parse_one(where, read=DIALECT))
+                  if where else None)
+            return exp.Subquery(this=c).sql(dialect=DIALECT)
+        whole = count(None)
+        conds.append(sqlglot.parse_one(
+            _complement_ok(count(f"({pred}) IS NOT TRUE"), whole), read=DIALECT))
+        # B: people in the sources with no row the WHERE keeps = everyone minus
+        # the scope's own people (count(DISTINCT k) in this HAVING is the scope's)
+        conds.append(sqlglot.parse_one(
+            _complement_ok(f"({whole} - count(DISTINCT {k}))", whole), read=DIALECT))
+    return exp.and_(*conds)
+
+
+class _CannotCorrelate(Exception):
+    """A grouped scope whose complement cannot be written safely: refused."""
+
+
+def _own_sources(sel: exp.Select) -> set:
+    """Aliases of the tables and derived tables a SELECT reads directly."""
+    out = set()
+    for node in [sel.args.get("from"), sel.args.get("from_"), *(sel.args.get("joins") or [])]:
+        if node is None:
+            continue
+        src = node.this if isinstance(node, (exp.From, exp.Join)) else node
+        if isinstance(src, (exp.Table, exp.Subquery)) and src.alias_or_name:
+            out.add(src.alias_or_name.lower())
+    return out
+
+
+def _rename_sources(copy: exp.Select, suffix: str) -> dict:
+    """Give the copy's own sources fresh aliases (alias -> alias+suffix) and
+    rename every column that refers to them, except inside a nested SELECT that
+    defines the same alias itself (that one is the nested query's own).
+    Returns the alias map. Raises _CannotCorrelate when an alias is ambiguous."""
+    own = _own_sources(copy)
+    if not own:
+        raise _CannotCorrelate("no named source")
+    rename = {a: f"{a}{suffix}" for a in own}
+    for node in [copy.args.get("from"), copy.args.get("from_"), *(copy.args.get("joins") or [])]:
+        if node is None:
+            continue
+        src = node.this if isinstance(node, (exp.From, exp.Join)) else node
+        a = (src.alias_or_name or "").lower()
+        if a in rename:
+            src.set("alias", exp.TableAlias(this=exp.to_identifier(rename[a])))
+    for col in list(copy.find_all(exp.Column)):
+        t = (col.table or "").lower()
+        if t not in rename:
+            continue
+        shadowed = False
+        node = col.parent
+        while node is not None and node is not copy:
+            if isinstance(node, exp.Select) and t in _own_sources(node):
+                shadowed = True
+                break
+            node = node.parent
+        if not shadowed:
+            col.set("table", exp.to_identifier(rename[t]))
+    return rename
+
+
+def _group_complement(sel: exp.Select, keys: list) -> exp.Expression:
+    """The per-group form of `_complement` (owner's decision 2026-11-07): for
+    each group, the people of THAT group whom the scope's WHERE leaves out must
+    number 0 or at least 11, and 0 only when the whole group has 11. Written as
+    correlated subqueries over a copy of the scope with fresh aliases, matched
+    to the outer group on every GROUP BY expression (IS NOT DISTINCT FROM, so a
+    NULL group matches too). Fails closed (_CannotCorrelate) on positional or
+    ROLLUP/CUBE/GROUPING SETS/ALL grouping."""
+    group = sel.args.get("group")
+    if group is None or any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets",
+                                                         "all", "totals")):
+        raise _CannotCorrelate("grouping form")
+    outer_keys = list(group.expressions)
+    if not outer_keys or any(isinstance(g, exp.Literal) for g in outer_keys):
+        raise _CannotCorrelate("positional group key")
+    pred = sel.args["where"].this
+    conds = []
+    for k in keys:
+        def count(with_filter: bool) -> str:
+            c = sel.copy()
+            inner_keys = [g.copy() for g in c.args["group"].expressions]
+            holder = exp.Tuple(expressions=inner_keys)
+            c.set("expressions", [sqlglot.parse_one(f"count(DISTINCT {k})", read=DIALECT), holder])
+            rename = _rename_sources(c, "__c")
+            count_expr, holder = c.expressions
+            renamed_keys = list(holder.expressions)
+            for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
+                        "windows"):
+                c.set(arg, None)
+            c.set("expressions", [count_expr])
+            match = [f"({ik.sql(dialect=DIALECT)}) IS NOT DISTINCT FROM ({ok.sql(dialect=DIALECT)})"
+                     for ik, ok in zip(renamed_keys, outer_keys)]
+            where = list(match)
+            if with_filter:
+                inner_pred = c.args["where"].this.sql(dialect=DIALECT)
+                where.insert(0, f"({inner_pred}) IS NOT TRUE")
+            c.set("where", exp.Where(this=sqlglot.parse_one(" AND ".join(where), read=DIALECT)))
+            if not rename:
+                raise _CannotCorrelate("no source renamed")
+            return exp.Subquery(this=c).sql(dialect=DIALECT)
+        whole = count(False)
+        conds.append(sqlglot.parse_one(_complement_ok(count(True), whole), read=DIALECT))
+        # B per group: everyone in the group minus the group's own people
+        conds.append(sqlglot.parse_one(
+            _complement_ok(f"({whole} - count(DISTINCT {k}))", whole), read=DIALECT))
+    del pred
     return exp.and_(*conds)
 
 
@@ -1292,12 +1408,20 @@ def check(tree: exp.Expression) -> PhiDecision:
     # below; a grouped one would need it per group, which cannot be written
     # without re-aliasing the scope, so it is refused (fail closed).
     differenced = _differenced_scopes(a.rewrites)
-    for sel, _ in differenced:
-        if sel.args.get("group"):
+    complements = {}
+    for sel, keys in differenced:
+        try:
+            complements[id(sel)] = (_group_complement(sel, keys) if sel.args.get("group")
+                                    else _complement(sel, keys))
+        except _CannotCorrelate:
+            # fail closed: a grouped filtered count whose per-group complement
+            # cannot be written safely (positional or ROLLUP-style grouping, an
+            # ambiguous alias) is refused, as every grouped one used to be
             a.findings.append(
                 "a grouped aggregate over patient rows with a WHERE filter, combined with another "
-                "aggregate in the same query: subtracting one from the other could recover a "
-                f"group of fewer than {MIN_CELL} people; ask for each count in its own query")
+                "aggregate in the same query, in a form whose per-group complement cannot be "
+                f"checked: subtracting could recover a group of fewer than {MIN_CELL} people; "
+                "name the GROUP BY columns explicitly, or ask for each count in its own query")
             break
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
@@ -1364,17 +1488,26 @@ def check(tree: exp.Expression) -> PhiDecision:
         where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
         pred_sql = target.args["expression"].this.sql(dialect=DIALECT)
         # the subgroup AND its complement in the group: otherwise the group's
-        # total minus this count is the complement, however small (differencing)
-        guard = " AND ".join(f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL} AND "
-                             f"count(DISTINCT {k}) FILTER (WHERE ({pred_sql}) IS NOT TRUE) "
-                             f">= {MIN_CELL}"
-                             for k in keys)
+        # total minus this count is the complement, however small (differencing).
+        # The complement may be 0 (the filter keeps the whole group, which must
+        # itself hold 11) -- owner's decision 2026-11-06.
+        # Two left-out sets, both 0 or 11+ (owner's rule; the second found
+        # 2026-11-07): A = people with a row the filter drops (what a ROW count
+        # subtracts), B = people with no row the filter keeps (what a PEOPLE
+        # count subtracts: everyone in the group minus the filtered people).
+        guard = " AND ".join(
+            f"count(DISTINCT {k}) FILTER ({where_sql}) >= {MIN_CELL} AND "
+            + _complement_ok(f"count(DISTINCT {k}) FILTER (WHERE ({pred_sql}) IS NOT TRUE)",
+                             f"count(DISTINCT {k})")
+            + " AND "
+            + _complement_ok(f"(count(DISTINCT {k}) - count(DISTINCT {k}) FILTER ({where_sql}))",
+                             f"count(DISTINCT {k})")
+            for k in keys)
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
             gated = exp.alias_(gated, target.sql(dialect=DIALECT), quoted=True)
         target.replace(gated)
-    complements = {id(sel): _complement(sel, keys) for sel, keys in differenced}
     for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]
         cond = _enough(keys)

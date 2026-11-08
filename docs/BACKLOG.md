@@ -9,15 +9,21 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Now, in order
 
-- [ ] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
+- [x] **1. CI covers everything.** pytest and the FHIR eval run in CI with the hospital eval, on every push and nightly. A failing test or an eval below threshold fails the build.
   - Done when: every push to any branch runs pytest, the hospital subset gate and a **FHIR subset gate (10-15 cases, at least one of each question type)**; the nightly run executes pytest, the full hospital eval and the **full FHIR eval**; a red test or an eval below 80% turns the run red (shown by one deliberately failing run); a nightly eval whose provider is unavailable is **retried once, then turns red**.
   - Owner's decisions (2026-11-06): FHIR subset on push, full FHIR nightly (keeps Gemini's free daily quota); provider-down nightly runs fail after one retry.
-  - Status (2026-11-06): built on branch `claude/jolly-hopper-8ly9iq-ci-coverage`, PR open. Seen working: a push to a non-main branch ran pytest (red on a deliberately failing test, run 42140086754), the hospital subset and the new FHIR subset job. Not yet seen live: the nightly retry-then-red path (proven only on a stub harness, `tests/unit/test_eval_gate.py`) and a FHIR subset run that completes (today's ran into Gemini's exhausted daily quota and warned). Tick after the first nightly on main.
+  - Done 2026-11-06 (PR #53), each part seen live:
+    - every push to any branch runs pytest: red on a deliberately failing test on a non-main branch (run 42140086754);
+    - every push runs the FHIR 13-case subset gate: 13/13, gate PASS (run 42187179828, job fhir-quick-eval);
+    - nightly pytest from the schedule: green (run 42239702871);
+    - nightly evals on main: the first run after the merge (run 42238076116) ended RED, not grey: both jobs were inconclusive on Gemini's exhausted daily quota (hospital: 9 provider errors, one case unanswered; FHIR: 83/84 runs 429), retried once after 5 minutes, then failed with "Eval inconclusive twice". The FHIR job ran although the hospital job was red.
+  - Learned: the nightly is scheduled 07:00 UTC but GitHub starts it around 15:00 UTC, after the day's pushes and manual sweeps have spent the shared Gemini quota (it resets 08:00 UTC). Item 3's alerts should label this `provider-outage`, not `eval-regression`.
   - Today: pytest runs only on pushes to `main` and on PRs, not nightly. The hospital eval is a 6-case subset on push and the full set nightly. The FHIR eval runs nightly and by manual dispatch, never on push. A nightly run whose provider was unavailable (exit 2) passes green with a warning.
 
-- [ ] **2. Tracing** for every agent step (plan, execute, route, retry, guard decision) with Langfuse or Arize Phoenix, self-hosted for free. If it can't run on Render's free plan, run it locally for demos and say so in the README. Show me how to open a trace for one question.
+- [x] **2. Tracing** for every agent step (plan, execute, route, retry, guard decision) with Langfuse or Arize Phoenix, self-hosted for free. If it can't run on Render's free plan, run it locally for demos and say so in the README. Show me how to open a trace for one question.
   - Done when: one question asked locally shows plan, critic, guard, execute, route and retry spans in the self-hosted tool, and the README has numbered steps to open it.
   - Today: `tracing.py` already records one trace per run and one span per step in SQLite, with a waterfall in the UI's Traces view. It is not exported to Langfuse or Phoenix, and on Render it resets with each deploy.
+  - Done 2026-11-06: Arize Phoenix (Langfuse's self-hosted v3 needs Postgres, ClickHouse and Redis). `trace_export.py` exports over OTLP when `TRACE_OTLP_ENDPOINT` is set; every graph edge is now a `route` span. Phoenix runs locally only: idle it uses ~530 MB, over Render free's 512 MB. Verified live: two questions on recorded LLM responses, both traces in Phoenix with the right tree and span kinds, no result rows.
 
 - [ ] **3. Alerts** when the nightly eval score drops below a threshold or the error rate rises. Use a free channel (email or a GitHub issue). Tell me the thresholds and why.
   - Done when: a nightly score under the threshold, or an error rate over it, opens or updates one GitHub issue, and the next healthy run closes it; the thresholds and the reasoning are in the README.
@@ -57,6 +63,14 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 - [ ] **11. The manual FHIR eval compares against main instead of requiring every case to pass** (owner, 2026-11-06; don't change it before then).
   - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
   - Today: it fails unless every case passes by majority of its runs. Model noise alone can fail that bar: `main`'s own nightly on 2026-11-05 had `f4_avg_glucose_prediabetic` at 1/3, and #50's run on 2026-11-06 ended inconclusive on Gemini's daily quota.
+
+- [ ] **12. Send the deployed app's traces to a free hosted backend** (owner, 2026-11-06), instead of running Phoenix on Render. Phoenix Cloud's free tier, falling back to Langfuse Cloud Hobby if Phoenix Cloud doesn't fit. Keep the SQLite traces as they are.
+  - Done when: with the owner's two Render environment variables set, a question asked on the deploy appears in the hosted backend with its steps; the SQLite traces and Traces view are unchanged; a test shows a down, refusing or hanging backend never breaks or slows a request; what can leave the server is documented and pinned.
+  - Status (2026-11-07): code, tests and setup steps in PR #55 (US region). **Phoenix Cloud no longer appears in Arize's docs** (self-hosting only; the hosted product is Arize AX, free tier 25k spans / 15 days), so Langfuse Cloud Hobby (50k units / month, 30 days, no card) is used. Owner's decision 2026-11-07: the hosted export drops the approval reason and reviewer/escalation identities and masks SQL literals; the question was to go "after the existing PHI redaction", but no free-text PHI redactor exists, so it is withheld (hash only) until the owner decides whether to build one. Remaining: the owner adds `TRACE_OTLP_ENDPOINT` and `TRACE_OTLP_HEADERS` in Render, then one live trace is checked.
+
+- [ ] **13. Push gate on Cerebras, nightly stays on Gemini** (owner, 2026-11-07). Pushes and the nightly share one Gemini free daily quota; on 2026-11-06 the nightly found it spent and ended inconclusive.
+  - Done when: `eval-on-push.yml` runs both subsets with `PLANNER_PROVIDER=cerebras` (a `CEREBRAS_API_KEY` repository secret, added by the owner), `eval-nightly.yml` and `eval-fhir-manual.yml` stay on Gemini, the README says which provider each gate tests, and one push shows completed Cerebras runs.
+  - Effect: the push gate stops testing the default provider. It still catches what does not depend on the model (guard, schema notes, prompt and harness changes, a planner that breaks for every model), but no longer catches a Gemini-only regression (a Gemini model update, the Gemini adapter, a prompt Gemini misreads); those surface at the next Gemini nightly, up to a day later, not on the push. Cerebras's own free-tier limits are not checked yet.
 
 ## Later (keep, don't start)
 

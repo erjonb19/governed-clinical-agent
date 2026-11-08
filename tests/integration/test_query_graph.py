@@ -102,7 +102,7 @@ def test_query_runs_the_graph_and_answers(make_client):
     assert body["planner_metrics"]["calls"] == 2
     assert body["dataset"] == "hospital"
     names = [s["name"] for s in c.get(f"/traces/{body['trace_id']}", headers=H).json()["spans"]]
-    assert names == ["plan", "critic", "guard", "execute", "answer"]
+    assert names == ["plan", "critic", "route", "guard", "execute", "route", "answer"]
     # both model calls reach the cost log behind /metrics
     lines = (tmp / "metrics.jsonl").read_text().splitlines()
     assert len(lines) == 2

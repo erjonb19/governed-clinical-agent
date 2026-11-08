@@ -230,17 +230,42 @@ _REASON_CHARS = 600
 def _note_run(sql=None, reason=None) -> None:
     _LAST_RUN.clear()
     _LAST_RUN.update({"sql": sql, "reason": (reason or None) and str(reason)[:_REASON_CHARS]})
+# The SQL of the latest run, for the per-run log of failures (owner, 2026-11-07:
+# a failing case's SQL must be readable in the GitHub Actions log, where the
+# report artifact is the only other place it would be). Set by each run_once*;
+# kept out of their return values, which callers and tests unpack by shape.
+LAST_RUN_SQL: dict = {"sql": None}
+
+
+def _one_line(text, limit: int = 600) -> str:
+    return " ".join(str(text or "").split())[:limit]
+
+
+def failure_log_lines(case_id: str, outcomes: list, details: list, sqls: list) -> list:
+    """One line per run that was neither correct nor a provider error (a 429
+    says nothing about the SQL): its mode, the detail and the SQL the agent
+    wrote. The bank's questions and the generated SQL hold no patient values;
+    FHIR answers are not printed beyond what score_one's detail already shows."""
+    lines = []
+    for i, (mode, detail, sql) in enumerate(zip(outcomes, details, sqls), 1):
+        if mode in (F_CORRECT, F_PROVIDER_ERROR):
+            continue
+        lines.append(f"    run {i} [{mode}] {_one_line(detail, 160)}")
+        lines.append(f"      sql: {_one_line(sql) or '(none: no SQL was produced)'}")
+    return lines
 
 
 def run_once(case, runtime, planner) -> tuple[str, str]:
     """One agent attempt at one case. Returns (failure_mode, detail)."""
     _note_run()
+    LAST_RUN_SQL["sql"] = None
     try:
         sql = planner.generate_sql(case["question"])
     except Exception as e:
         mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
         return mode, str(e)[:120]
     _note_run(sql)
+    LAST_RUN_SQL["sql"] = sql
     result = runtime.execute_tool(CAPABILITY, {"sql": sql})
     if not getattr(result, "allowed", False):
         reason = getattr(result, "explanation", "") or ""
@@ -265,11 +290,13 @@ def run_once_graph(case, agent):
     comparison is apples-to-apples. Only the execution path differs.
     """
     _note_run()
+    LAST_RUN_SQL["sql"] = None
     try:
         state = agent.run(case["question"])
     except Exception as e:
         mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
         return mode, str(e)[:120], 1
+    LAST_RUN_SQL["sql"] = state.get("sql")
     attempts = state.get("attempts", 1)
     _note_run(state.get("sql"))
     if not state.get("allowed"):
@@ -293,6 +320,7 @@ def run_once_trajectory(case, agent):
     (no reference) it is correct iff every safety dimension passed.
     """
     adversarial = "reference_sql" not in case
+    LAST_RUN_SQL["sql"] = None
     try:
         state = agent.run(case["question"], dataset=case.get("dataset"))
     except Exception as e:
@@ -304,6 +332,7 @@ def run_once_trajectory(case, agent):
         # nothing ran, so this is a model failure, not a safety miss; it still
         # counts against the gate
         return F_MODEL_ERROR, str(e)[:120], 1, dims
+    LAST_RUN_SQL["sql"] = state.get("sql")
     attempts = state.get("attempts", 1)
     if adversarial:
         dims = trajectory_eval.score(case, state)
@@ -470,6 +499,9 @@ def main():
         run_details = []
         for _ in range(runs):
             _note_run()
+        run_sqls = []
+        for _ in range(runs):
+            LAST_RUN_SQL["sql"] = None
             if provider_down:
                 # Provider already proven unreachable -- record the run without
                 # attempting it, so the totals stay consistent and the report is
@@ -489,6 +521,7 @@ def main():
             outcomes.append(mode)
             details.append(detail)
             run_details.append({"outcome": mode, **_LAST_RUN})
+            run_sqls.append(LAST_RUN_SQL["sql"])
             failure_counts[mode] += 1
             if mode == F_PROVIDER_ERROR and not provider_error_sample:
                 provider_error_sample = detail
@@ -526,6 +559,8 @@ def main():
         flag = "PASS" if passed else "FAIL"
         bar = "".join("O" if o == F_CORRECT else "x" for o in outcomes)
         print(f"[{flag}] t{case.get('tier', '-')} {case['id']:26} {bar}  ({correct}/{runs})  {details[0][:50]}")
+        for line in failure_log_lines(case["id"], outcomes, details, run_sqls):
+            print(line)
 
     elapsed = time.time() - t_start
     n_pass = sum(1 for c in case_results if c["passed"])
