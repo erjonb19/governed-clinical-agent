@@ -68,6 +68,12 @@ def test_a_scored_regression_closes_the_outage_issue():
     assert ("close", 13) in [(a["action"], a.get("number")) for a in acts]
 
 
+def test_a_crashed_retry_after_an_outage_does_not_close_the_outage_issue():
+    # rc=1 with the first attempt's outage report as the newest one
+    acts = na.actions("fhir", na.REGRESSION, OUT, {OUT_T: 13})
+    assert all(a["action"] != "close" for a in acts)
+
+
 def test_datasets_have_their_own_issues():
     acts = na.actions("hospital", na.REGRESSION, REPORT, {REG_T: 12})
     assert acts[0]["action"] == "open" and acts[0]["title"] == "nightly eval regression: hospital"

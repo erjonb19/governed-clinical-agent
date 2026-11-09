@@ -10,6 +10,12 @@ on:
     - cron: "0 7 * * *"         # 07:00 UTC daily (~2-3am ET)
   workflow_dispatch:            # allows manual full runs any time
 
+# one nightly at a time: a manual run overlapping the scheduled one could open
+# the same alert issue twice
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: write       # nightly_alerts.py opens, comments on and closes alert issues (item 3)
@@ -78,6 +84,7 @@ jobs:
       # healthy night closes it. Only when the gate actually ran.
       - name: Alert (open, update or close the issue)
         if: always() && steps.gate.outputs.rc != ''
+        continue-on-error: true   # a GitHub API hiccup must not turn a green night red
         env:
           GH_TOKEN: ${{ github.token }}
         run: python nightly_alerts.py --dataset hospital --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"
@@ -167,6 +174,7 @@ jobs:
 
       - name: Alert (open, update or close the issue)
         if: always() && steps.gate.outputs.rc != ''
+        continue-on-error: true   # a GitHub API hiccup must not turn a green night red
         env:
           GH_TOKEN: ${{ github.token }}
         run: python nightly_alerts.py --dataset fhir --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"

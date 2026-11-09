@@ -1,6 +1,5 @@
-"""
-nightly_alerts.py
-=================
+"""Alerts for the nightly eval as GitHub issues (backlog item 3).
+
 Alerts for the nightly eval (backlog item 3): a GitHub issue, never mixed
 between two kinds (owner's decision 2026-11-06):
 
@@ -56,7 +55,8 @@ def classify(gate_exit: int, report: dict | None) -> str:
 
 def _numbers(report: dict | None) -> str:
     if not report:
-        return "No report was written: the harness stopped before scoring (see the run log)."
+        return ("No report was written during this job: the harness stopped before scoring, "
+                "or every attempt ran past its time limit (see the run log).")
     total = (report.get("completed_runs") or 0) + (report.get("provider_error_runs") or 0)
     lines = [
         f"- status: `{report.get('status')}`",
@@ -92,8 +92,11 @@ def actions(dataset: str, verdict: str, report: dict | None,
         out.append({"action": "comment", "number": n, "body": body} if n else
                    {"action": "open", "title": title[verdict], "label": LABELS[verdict],
                     "body": body})
-    # the provider answered (pass or fail): an open outage issue is over
-    if verdict in (REGRESSION, HEALTHY) and report and open_issues.get(title[OUTAGE]):
+    # the provider answered (pass or fail): an open outage issue is over. Only
+    # on a report that really scored -- after an outage, a crashed retry leaves
+    # the outage report as the newest one
+    scored = bool(report) and report.get("status") not in ("provider_unavailable", "incomplete")
+    if verdict in (REGRESSION, HEALTHY) and scored and open_issues.get(title[OUTAGE]):
         out.append({"action": "close", "number": open_issues[title[OUTAGE]],
                     "body": f"The provider answered again ({when}).{link}"})
     if verdict == HEALTHY and open_issues.get(title[REGRESSION]):
