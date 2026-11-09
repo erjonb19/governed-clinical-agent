@@ -1,0 +1,30 @@
+# The API image (Dockerfile, backlog item 17) needs the app's Python, the web
+# UI, the policy and the committed hospital Gold. Not: git history, local state,
+# tests, raw data, secrets.
+.git
+.github
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+*.egg-info
+logs/
+eval_runs/
+data/
+tests/
+reference/
+docs/
+.phoenix/
+venv*/
+.venv/
+# the bronze/silver parquet and the demo gold.duckdb are not read by the API
+medallion/*.parquet
+medallion/gold.duckdb
+# derived and gitignored; mount it if you have it (see docker-compose.yml)
+medallion/fhir_gold.duckdb
+medallion/fhir_deid.duckdb
+medallion/*.wal

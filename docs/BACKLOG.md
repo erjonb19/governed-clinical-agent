@@ -178,6 +178,7 @@ What real AI, data and software engineering teams would add, checked against the
     on every push; the image's memory at idle is measured (Render budget).
   - Today: no Dockerfile for the API (`docker/Dockerfile.sandbox` is the Milestone-1 tool
     sandbox); Render builds from `requirements-api.txt`.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 17".** `Dockerfile` (python:3.11-slim, `requirements-api.txt`, non-root `app` user owning only `logs/`, `HEALTHCHECK` on `/health`, `GIT_COMMIT` build arg reported by `/health`), `.dockerignore`, `docker-compose.yml` (API + `arizephoenix/phoenix:version-21.0.0`), `container.yml` (build, start, wait healthy, non-root check, smoke test of `/v1/health`, auth and the guard, memory, and a Trivy CRITICAL-fixable gate run from `aquasec/trivy` pinned by digest, 0.58.2, not the movable `trivy-action` tag). **Measured locally:** healthy, 109 MiB idle, 118 MiB after 30 guarded queries, 743 MB image -- inside the Render budget. **Not yet verified:** `docker compose up` end to end with Phoenix (this sandbox's Docker daemon had no route to Docker Hub for the Phoenix pull) and the first Trivy result (CI). **Owner (ask):** pushing the image to GHCR, and whether Render switches to it. Unticked until compose and the scan are seen working.
 
 - [ ] **18. A package layout** (plan first, then the owner's OK). About 60 modules sit at the
   repo root beside `src/` (the Milestone-1 runtime). Move them into one package with
