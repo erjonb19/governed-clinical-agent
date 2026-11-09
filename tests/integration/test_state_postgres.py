@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import state_db
 
 pytestmark = pytest.mark.skipif(
-    not state_db.is_postgres(), reason="needs STATE_DB_URL=postgresql://... (CI job)"
+    not os.environ.get("TEST_STATE_DB_URL"),
+    reason="needs TEST_STATE_DB_URL=postgresql://.../<name containing test> (CI job)",
 )
 
 
@@ -45,6 +46,5 @@ def test_the_decision_chain_survives_too(tmp_path):
 
 
 def test_health_names_the_store_without_credentials():
-    d = state_db.describe()
-    creds = os.environ["STATE_DB_URL"].split("//", 1)[1].split("@", 1)[0]  # user:password
-    assert d.startswith("postgres://") and "@" not in d and creds not in d
+    # /health is unauthenticated: the kind of store only, no host or credentials
+    assert state_db.describe() == "postgres"

@@ -21,6 +21,7 @@ langgraph-checkpoint-sqlite==3.1.1
 # Imported only when it is set; SQLite stays the default.
 psycopg[binary]==3.3.8
 langgraph-checkpoint-postgres==3.2.0
+psycopg-pool==3.3.3
 slowapi==0.1.10
 python-dotenv==1.2.2
 

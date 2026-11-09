@@ -39,11 +39,8 @@ def is_postgres(u: Optional[str] = None) -> bool:
 
 def describe() -> str:
     """For /health: which store, without the credentials in the URL."""
-    if not is_postgres():
-        return "sqlite"
-    rest = url().split("://", 1)[1]
-    host = rest.split("@", 1)[-1]
-    return "postgres://" + host.split("?", 1)[0]
+    # /health is unauthenticated: name the kind of store, not its host
+    return "postgres" if is_postgres() else "sqlite"
 
 
 class _PGConn:
@@ -107,7 +104,8 @@ def columns(con: Any, table: str) -> set[str]:
     """The column names of a table, in either dialect."""
     if con.dialect == "postgres":
         rows = con.execute(
-            "SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?",
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?",
             (table,),
         ).fetchall()
     else:
@@ -131,9 +129,26 @@ def checkpointer(sqlite_path: str) -> Any:
 
         @contextlib.contextmanager
         def _pg() -> Iterator[Any]:
-            with PostgresSaver.from_conn_string(url()) as saver:
+            # A pool, not one long-lived connection: free hosted plans drop
+            # idle connections, and a dead one would fail every graph run until
+            # a restart. check= revalidates a connection before handing it out.
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+
+            pool = ConnectionPool(
+                url(),
+                min_size=1,
+                max_size=4,
+                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+                check=ConnectionPool.check_connection,
+                open=True,
+            )
+            try:
+                saver = PostgresSaver(pool)
                 saver.setup()
                 yield saver
+            finally:
+                pool.close()
 
         return _pg()
     from langgraph.checkpoint.sqlite import SqliteSaver
