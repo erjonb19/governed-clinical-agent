@@ -1522,3 +1522,43 @@ def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
         "AS n FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER' GROUP BY state) "
         "SELECT a.state, a.n - b.n AS n FROM a JOIN b ON a.state = b.state")
     assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
+
+# second adversarial review (2026-11-09): a GROUP BY is a filter per group
+GROUPED_LEAKS = {
+    "ROLLUP subtotal beside its parts": (
+        "SELECT gender, class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY ROLLUP (gender, class_code)"),
+    "GROUPING SETS": (
+        "SELECT gender, class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY GROUPING SETS ((gender), (gender, class_code))"),
+    "two scopes at different grain, joined": (
+        "WITH a AS (SELECT gender, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY gender), b AS (SELECT gender, class_code, count(DISTINCT patient_id) AS n "
+        "FROM gold_encounter GROUP BY gender, class_code) SELECT a.gender, b.class_code, "
+        "a.n AS total, b.n AS sub FROM a JOIN b ON a.gender = b.gender"),
+    "two GROUP BYs in a UNION": (
+        "SELECT gender, NULL AS class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY gender UNION ALL SELECT gender, class_code, count(DISTINCT patient_id) "
+        "FROM gold_encounter GROUP BY gender, class_code"),
+    "a grouped scope beside a filtered one": (
+        "SELECT g.gender, g.n, (SELECT count(DISTINCT patient_id) FROM gold_encounter "
+        "WHERE gender = 'female' AND class_code = 'EMER') AS er FROM (SELECT gender, "
+        "count(DISTINCT patient_id) AS n FROM gold_encounter GROUP BY gender) g"),
+}
+
+
+@pytest.mark.parametrize("name", list(GROUPED_LEAKS))
+def test_groupings_at_different_grain_cannot_recover_the_3_women(encounter_tool, name):
+    r = encounter_tool.execute({"sql": GROUPED_LEAKS[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (15 in nums and 12 in nums), (name, r.output["rows"])
+
+
+def test_two_scopes_grouped_the_same_way_still_run(encounter_tool):
+    r = encounter_tool.execute({"sql": PER_GENDER_RATE})
+    assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
+

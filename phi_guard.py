@@ -1520,8 +1520,33 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
     region of their Venn diagram (relative to the unfiltered rows) holds 0 or
     11+ people, and, for row counts, so do the people with a row in each
     in/out pattern. Raises _CannotCorrelate when that cannot be written."""
+    for sel, _ in rewrites:
+        group = sel.args.get("group")
+        if group is not None and any(group.args.get(k) for k in ("rollup", "cube",
+                                                                  "grouping_sets")):
+            # several groupings in one scope: a subtotal beside its parts is a
+            # difference the check cannot see (women 15 beside women-with-ER 12)
+            raise _CannotCorrelate("ROLLUP / CUBE / GROUPING SETS over patient rows")
     if len(rewrites) >= 2 and any(_hidden_filter(sel, root) for sel, _ in rewrites):
         raise _CannotCorrelate("a row filter outside WHERE / FILTER beside another scope")
+    if len(rewrites) >= 2:
+        # A GROUP BY is a filter per group. Two grouped scopes at different
+        # grain (by gender vs by gender and class) can be subtracted group by
+        # group, and a column that varies within a person makes the groups
+        # overlap; a grouped scope beside a FILTERED ungrouped one (women 15
+        # beside "women with an ER visit" 12) likewise. Still allowed (owner,
+        # 2026-11-07): grouped scopes on the same keys, each WHERE checked per
+        # group, beside unfiltered totals.
+        keysets = {frozenset(g.sql(dialect=DIALECT).split(".")[-1].lower()
+                             for g in sel.args["group"].expressions)
+                   for sel, _ in rewrites if sel.args.get("group") is not None}
+        if len(keysets) > 1:
+            raise _CannotCorrelate("aggregate scopes grouped differently")
+        if keysets and any(sel.args.get("group") is None
+                           and (sel.args.get("where") is not None
+                                or any(f.find_ancestor(exp.Select) is sel for f, _ in filters))
+                           for sel, _ in rewrites):
+            raise _CannotCorrelate("a grouped scope beside a filtered ungrouped one")
     units = _filtered_units(rewrites, filters)
     by_sel: dict = {}
     for u in units:
