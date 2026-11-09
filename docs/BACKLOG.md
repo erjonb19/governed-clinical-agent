@@ -64,9 +64,10 @@ Langfuse), **26** (the data intake platform's Stage 22).
   - Owner's decision (2026-11-06): two separate labels and issues, `provider-outage` (the provider was unavailable, inconclusive) and `eval-regression` (the score really dropped), never mixed.
   - Today: `scheduled-runs.yml` and `live-check.yml` already open issues. The nightly eval opens none; a failure shows only as a red run.
 
-- [ ] **4. Version on every answer.** Each logged answer records the prompt version, model, provider and git commit.
+- [x] **4. Version on every answer.** Each logged answer records the prompt version, model, provider and git commit.
   - Done when: every `/query` response, its trace and its audit line carry `prompt_version`, `model`, `provider` and `git_commit`, and a test pins all four.
   - Today: model and provider are recorded per call. There is no prompt version and no git commit.
+  - **Done 2026-11-09 (overnight run), PR "Item 4".** `versioning.py`: `prompt_version` is `p-` + 12 hex of sha256 over the exact system and critic prompts for the dataset (derived, so it cannot be forgotten); `git_commit` from `RENDER_GIT_COMMIT`, `GITHUB_SHA`, `GIT_COMMIT`, then `git rev-parse HEAD`, else `unknown`; `model`/`provider` of the last plan call (the one that ran). On the `/query` response (`version`), the trace's attrs, and a new `answer` audit event, on both query modes and on planner errors. Pinned by `test_every_answer_carries_its_version_in_response_trace_and_audit` (graph and single).
 
 - [ ] **5. API basics:** `/v1` API versioning, semantic version tags on releases, rate limiting per API key, and a `/health` endpoint.
   - Done when: every endpoint answers under `/v1` (old paths kept working or redirected, as decided in the PR), a `vX.Y.Z` tag and GitHub release exist, and `/health` reports the version and git commit.
