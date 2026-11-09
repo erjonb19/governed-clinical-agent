@@ -1,10 +1,14 @@
 # .github/workflows/eval-fhir-manual.yml
 # The full 28-case FHIR eval on a CHOSEN BRANCH, started by hand (owner's
 # request 2026-11-02: run it on a GitHub runner, not the laptop). Same build and
-# provider as the nightly FHIR job, but it checks out the branch you name and,
-# by default, fails unless EVERY case passes -- the bar for merging a PR that
-# touches the FHIR guard or planner. Exit 2 (provider unavailable) fails too
-# here: an inconclusive run must not read as a pass for a merge decision.
+# provider as the nightly FHIR job. By default (backlog item 11) it scores the
+# branch AND main in the same workflow and passes only if the branch's accuracy
+# over completed runs is at least main's -- the bar for merging a PR that
+# touches the FHIR guard or planner. Either run inconclusive (provider
+# unavailable, a case unanswered) fails too: not a pass for a merge decision.
+# Comparing costs two sweeps of Gemini's free daily quota (~2 x 84 calls);
+# compare_main=false scores the branch alone against the 80% gate, and
+# require_all_cases=true restores the old every-case bar.
 #
 #   gh workflow run eval-fhir-manual.yml -f ref=feat/my-branch
 #
@@ -23,11 +27,16 @@ on:
         description: "Runs per case"
         required: false
         default: "3"
-      require_all_cases:
-        description: "Fail unless every case passes (majority of its runs)"
+      compare_main:
+        description: "Also score main and pass only if the branch is at least as accurate (2 sweeps of quota)"
         type: boolean
         required: false
         default: true
+      require_all_cases:
+        description: "Also fail unless every case passes (majority of its runs) -- the old bar"
+        type: boolean
+        required: false
+        default: false
       cases:
         description: "Only these case ids, comma-separated (empty = all 28). For a cheap targeted check."
         required: false
@@ -40,7 +49,7 @@ concurrency:
 jobs:
   fhir-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v7
         with:
@@ -83,8 +92,18 @@ jobs:
           python fetch_synthea.py
           python build_fhir_gold.py
 
-      - name: Run FHIR eval
+      - name: Check out main beside it (to compare)
+        if: inputs.compare_main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: main_ref
+
+      - name: Run FHIR eval (branch)
+        id: branch
         env:
+          EVAL_OUT_DIR: ${{ github.workspace }}/eval_runs/branch
+          COMPARE_MAIN: ${{ inputs.compare_main }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PLANNER_PROVIDER: "gemini"
           PLANNER_MIN_INTERVAL_SEC: "5"
@@ -100,14 +119,38 @@ jobs:
           if [ "$code" -eq 2 ]; then
             echo "::error title=Provider unavailable::Inconclusive: Gemini was unavailable for most runs. Not a regression, but not a pass either."
           fi
-          exit $code
+          echo "rc=$code" >> "$GITHUB_OUTPUT"
+          # comparing: the verdict is the comparison's, so main still runs
+          if [ "$COMPARE_MAIN" != "true" ]; then exit $code; fi
+
+      - name: Run FHIR eval (main, same Gold)
+        if: inputs.compare_main
+        working-directory: main_ref
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PLANNER_PROVIDER: "gemini"
+          PLANNER_MIN_INTERVAL_SEC: "5"
+          EVAL_DATASET: "fhir"
+          PLANNER_SCHEMA: "fhir"
+          RUNS: ${{ inputs.runs }}
+          EVAL_CASES: ${{ inputs.cases }}
+          EVAL_OUT_DIR: ${{ github.workspace }}/eval_runs/main
+        run: |
+          mkdir -p medallion
+          cp ../medallion/fhir_gold.duckdb medallion/fhir_gold.duckdb
+          python -u eval_harness.py --runs "$RUNS" || true
+
+      # main's copy of the script: the branch under test is the untrusted side
+      - name: Branch vs main
+        if: inputs.compare_main
+        run: python main_ref/scripts/compare_evals.py eval_runs/branch eval_runs/main
 
       - name: Require every case to pass
         if: inputs.require_all_cases
         run: |
           python - <<'PY'
           import glob, json, os, sys
-          path = max(glob.glob("eval_runs/eval_*_fhir_*.json"), key=os.path.getmtime)
+          path = max(glob.glob("eval_runs/branch/eval_*_fhir_*.json"), key=os.path.getmtime)
           r = json.load(open(path))
           failed = [c for c in r["cases"] if not c["passed"]]
           for c in r["cases"]:

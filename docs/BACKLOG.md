@@ -105,6 +105,13 @@ Langfuse), **26** (the data intake platform's Stage 22).
 - [ ] **11. The manual FHIR eval compares against main instead of requiring every case to pass** (owner, 2026-11-06; don't change it before then).
   - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
   - Today: it fails unless every case passes by majority of its runs. Model noise alone can fail that bar: `main`'s own nightly on 2026-11-05 had `f4_avg_glucose_prediabetic` at 1/3, and #50's run on 2026-11-06 ended inconclusive on Gemini's daily quota.
+  - **Status 2026-11-09: built, in the PR "Item 11", not yet run live.** `eval-fhir-manual.yml` checks out `main` beside the branch, runs the eval on both against the same Gold, and decides with `scripts/compare_evals.py`:
+    - it passes only if the branch's accuracy over completed runs is at least `main`'s;
+    - an inconclusive run on either side is not a pass;
+    - per-case scores go side by side in the job summary.
+    - It always runs main's copy of the script, never the branch's.
+    - The cost is two sweeps of the Gemini daily quota. `compare_main=false` gives one sweep, and `require_all_cases=true` keeps the old bar as an option.
+    - Unit-tested on reports. The first live run waits for a day with quota to spare. Unticked until then.
 
 - [ ] **12. Send the deployed app's traces to a free hosted backend** (owner, 2026-11-06), instead of running Phoenix on Render. Phoenix Cloud's free tier, falling back to Langfuse Cloud Hobby if Phoenix Cloud doesn't fit. Keep the SQLite traces as they are.
   - Done when: with the owner's two Render environment variables set, a question asked on the deploy appears in the hosted backend with its steps; the SQLite traces and Traces view are unchanged; a test shows a down, refusing or hanging backend never breaks or slows a request; what can leave the server is documented and pinned.
