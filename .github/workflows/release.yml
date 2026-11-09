@@ -27,6 +27,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0        # to check the tagged commit is on main
+
+      - name: The tagged commit must be on main
+        run: |
+          git fetch -q origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error title=Not on main::$GITHUB_REF_NAME points at a commit that is not on main"; exit 1
+          fi
 
       - name: The tag must match VERSION and be X.Y.Z
         run: |

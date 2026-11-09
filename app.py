@@ -314,8 +314,11 @@ class _APIVersionPrefix:
         path = scope.get("path", "")
         if path == self.PREFIX or path.startswith(self.PREFIX + "/"):
             new = path[len(self.PREFIX):] or "/"
-            scope = {**scope, "path": new,
-                     "raw_path": new.encode("utf-8")}
+            raw = scope.get("raw_path") or path.encode("utf-8")
+            # strip the prefix from the ORIGINAL bytes, so percent-encoding in
+            # the rest of the path survives for logs and anything reading raw_path
+            raw = raw[len(self.PREFIX):] or b"/"
+            scope = {**scope, "path": new, "raw_path": raw}
 
         async def send_with_version(message):
             if message["type"] == "http.response.start":

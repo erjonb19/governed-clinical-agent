@@ -87,3 +87,17 @@ def test_only_the_exact_prefix_is_stripped(client):
     c, _ = client
     assert c.get("/v1health").status_code == 404      # not a /v1/ path
     assert c.get("/v2/health").status_code == 404     # no other version exists
+
+
+def test_the_prefix_is_stripped_from_the_raw_bytes_too():
+    import asyncio
+    import app as app_module
+    seen = {}
+
+    async def inner(scope, receive, send):
+        seen.update(path=scope["path"], raw=scope["raw_path"])
+
+    mw = app_module._APIVersionPrefix(inner)
+    asyncio.run(mw({"type": "http", "path": "/v1/traces/a/b",
+                    "raw_path": b"/v1/traces/a%2Fb"}, None, None))
+    assert seen == {"path": "/traces/a/b", "raw": b"/traces/a%2Fb"}
