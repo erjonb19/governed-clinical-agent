@@ -112,7 +112,8 @@ def actions(
     # the provider answered (pass or fail): an open outage issue is over. Only
     # on a report that really scored -- after an outage, a crashed retry leaves
     # the outage report as the newest one
-    scored = report is not None and report.get("status") not in (
+    # bool(): an empty report is not a scored one (as before the typing change)
+    scored = bool(report) and (report or {}).get("status") not in (
         "provider_unavailable",
         "incomplete",
     )

@@ -33,8 +33,9 @@ def git_commit() -> str:
         if v:
             return v[:40]
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                             text=True, timeout=5)
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=5
+        )
         sha = out.stdout.strip()
         if out.returncode == 0 and len(sha) == 40:
             return sha
@@ -46,13 +47,13 @@ def git_commit() -> str:
 @functools.lru_cache(maxsize=16)
 def prompt_version(schema_doc: Optional[str] = None) -> str:
     from nl_to_sql_planner import SCHEMA_DOC, build_critic_prompt, build_system_prompt
+
     doc = schema_doc or SCHEMA_DOC
     blob = build_system_prompt(doc) + "\n\0critic\0\n" + build_critic_prompt(doc)
     return "p-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
-def answer_version(metrics: Any, schema_doc: Optional[str] = None,
-                   planner: Any = None) -> dict:
+def answer_version(metrics: Any, schema_doc: Optional[str] = None, planner: Any = None) -> dict:
     """The four fields for one answer. `metrics` is a CallMetrics, its as_dict(),
     or None (no call completed, e.g. the provider was down); then the configured
     planner's provider and model are given, since that is who was asked."""
