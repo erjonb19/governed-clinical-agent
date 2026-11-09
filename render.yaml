@@ -35,6 +35,13 @@ services:
         value: groq
       - key: GROQ_API_KEY
         sync: false
+
+      # ---- Durable state (backlog item 19) -----------------------------------
+      # A Postgres URL keeps approvals and graph checkpoints across redeploys
+      # (state_db.py). Unset = SQLite on Render's non-lasting disk. A secret:
+      # the owner creates the free database and sets it in the dashboard.
+      - key: STATE_DB_URL
+        sync: false
       # Paces planner calls so a burst queues instead of tripping the Gemini
       # free-tier per-minute cap. This DELAYS rather than fails: with normal
       # single-user traffic the interval never engages.

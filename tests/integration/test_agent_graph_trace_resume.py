@@ -168,15 +168,9 @@ def test_no_result_rows_are_ever_written_to_the_checkpoint(make_agent, tmp_path)
     state = agent.run("rows please")
     assert state["rows"] == [{"facility_name": "Mercy General", "rate": 21.4}]
     assert agent._rows == {}   # nothing held after the run
-    import sqlite3
+    from tests.state_helpers import checkpoint_values
 
-    con = sqlite3.connect(str(tmp_path / "checkpoints.sqlite"))
-    tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    blobs = []
-    for t in tables:
-        for row in con.execute(f"SELECT * FROM {t}"):
-            blobs += [v if isinstance(v, bytes) else str(v).encode() for v in row if v is not None]
-    con.close()
+    blobs = checkpoint_values(tmp_path / "checkpoints.sqlite")   # SQLite or Postgres
     assert blobs, "the run was checkpointed"
     assert not any(b"Mercy General" in b for b in blobs)
 

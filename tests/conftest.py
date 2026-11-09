@@ -43,13 +43,48 @@ def minimal_policy() -> dict:
         "version": "1.0",
         "default_policy": "deny",
         "capabilities": [
-            {"name": "filesystem.read", "allowed": True, "constraints": {"paths": {"allow": ["/workspace/**"], "deny": []}}},
+            {
+                "name": "filesystem.read",
+                "allowed": True,
+                "constraints": {"paths": {"allow": ["/workspace/**"], "deny": []}},
+            },
             {"name": "shell.execute", "allowed": False},
         ],
     }
 
 
 @pytest.fixture(autouse=True)
+def _fresh_postgres_state(monkeypatch):
+    """Tests NEVER use STATE_DB_URL (item 19). The app loads a .env on import,
+    so a real database URL there would otherwise receive -- and have dropped --
+    every test's state. Only TEST_STATE_DB_URL (set by the CI job's Postgres
+    service container) puts the suite on Postgres, and only on a database whose
+    name contains "test"; each test then starts from empty state tables, as it
+    does with a fresh SQLite file under tmp_path."""
+    import os
+
+    monkeypatch.delenv("STATE_DB_URL", raising=False)
+    u = os.environ.get("TEST_STATE_DB_URL", "")
+    if not u.startswith(("postgres://", "postgresql://")):
+        yield
+        return
+    dbname = u.rsplit("/", 1)[-1].split("?", 1)[0]
+    if "test" not in dbname.lower():
+        raise RuntimeError(
+            f"TEST_STATE_DB_URL must name a database containing 'test' "
+            f"(got {dbname!r}); the suite drops its tables"
+        )
+    monkeypatch.setenv("STATE_DB_URL", u)
+    import psycopg
+
+    with psycopg.connect(u, autocommit=True) as con:
+        con.execute(
+            "DROP TABLE IF EXISTS approval_events, approvals, checkpoints, "
+            "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE"
+        )
+    yield
+
+
 def _no_answer_cache_by_default(tmp_path, monkeypatch):
     """The answer cache (llm_cache.py, item 6) is off in tests unless a test
     turns it on, and it never writes into the repo's logs/: one test's model
@@ -58,12 +93,14 @@ def _no_answer_cache_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_CACHE_DB", str(tmp_path / "llm_cache.sqlite"))
     try:
         import llm_cache
+
         llm_cache.set_cache(None)
     except ImportError:
         pass
     yield
     try:
         import llm_cache
+
         llm_cache.set_cache(None)
     except ImportError:
         pass
