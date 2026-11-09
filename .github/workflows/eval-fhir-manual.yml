@@ -140,7 +140,10 @@ jobs:
           cp ../medallion/fhir_gold.duckdb medallion/fhir_gold.duckdb
           python -u eval_harness.py --runs "$RUNS" || true
 
-      # main's copy of the script: the branch under test is the untrusted side
+      # main's copy of the script, so a branch cannot ship a lenient comparison
+      # by accident. Not a defence against a hostile branch: its code runs
+      # first in the same workspace (and with the Gemini secret) -- only
+      # dispatch branches you trust, as the header says.
       - name: Branch vs main
         if: inputs.compare_main
         run: python main_ref/scripts/compare_evals.py eval_runs/branch eval_runs/main
