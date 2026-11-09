@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import socket
@@ -63,8 +64,10 @@ def _post(url: str, body: dict, timeout: float = 60) -> tuple[int, float]:
 
 
 def _pct(xs: list[float], p: float) -> float:
+    """Nearest-rank percentile: the smallest value with at least p% of the
+    sample at or below it. (p50 is reported as the interpolated median.)"""
     xs = sorted(xs)
-    k = max(0, min(len(xs) - 1, int(round(p / 100 * len(xs) + 0.5)) - 1))
+    k = max(0, min(len(xs) - 1, math.ceil(p / 100 * len(xs)) - 1))
     return xs[k]
 
 
@@ -129,7 +132,9 @@ def main() -> int:
         "AUDIT_LOG_DIR": os.path.join(tmp, "audit"),
         "PLANNER_METRICS_LOG": os.path.join(tmp, "metrics.jsonl"),
     }
-    env.pop("STATE_DB_URL", None)
+    # nothing leaves the machine: no hosted trace export, no shared state store
+    for name in ("STATE_DB_URL", "TRACE_OTLP_ENDPOINT", "TRACE_OTLP_HEADERS"):
+        env.pop(name, None)
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app:app", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT,

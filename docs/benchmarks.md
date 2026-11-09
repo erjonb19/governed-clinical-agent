@@ -22,10 +22,17 @@ CPUs, Python 3.13.
 
 **The bottleneck is visible in the shape, not just the numbers:** throughput
 stays flat at about 40 requests a second whatever the concurrency, and latency
-grows in step with the number of users (about 25 ms x users). That is a
-queue: every query runs under one global lock (`app.py`, `_LOCK`), so the API
-answers one question at a time. With a real model the per-request time is
-seconds, not 25 ms, so the queue is that much longer.
+grows in step with the number of users (about 25 ms x users). That is the
+shape of a queue. What is known to be serialised: every DuckDB execution runs
+under one global lock (`app.py`, `_LOCK`; in the graph path it wraps
+`runtime.execute_tool`, `agent_graph.py`). What is NOT under that lock: the
+plan and critic calls, so with a real model, whose calls take seconds,
+concurrent requests do overlap on the slow part. On replayed answers the model
+step is near-instant, so this table measures everything else. It does not prove
+the lock is the only cap: the GIL, the SQLite tracer and the checkpointer may
+also contribute. Part 2 will show how much the lock alone accounts for.
+
+Percentiles: p95/p99 are nearest-rank, p50 is the interpolated median.
 
 Not yet measured: the same on a GitHub runner (`load-test.yml`, dispatch only),
 and the "after" numbers, which come with the lock change (item 20, part 2).
