@@ -279,17 +279,57 @@ async def lifespan(app: FastAPI):
     _STATE.clear()
 
 
+# The app's semantic version lives in one file, VERSION (backlog item 5); a
+# release is the tag vX.Y.Z that matches it (.github/workflows/release.yml).
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+          encoding="utf-8") as _vf:
+    APP_VERSION = _vf.read().strip()
+API_VERSION = "v1"
+
 app = FastAPI(
     title="Security-Constrained Agent Runtime",
     description="Governed natural-language analytics over CMS Medicare data.",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
+
+
+class _APIVersionPrefix:
+    """Every endpoint answers under /v1 as well (backlog item 5).
+
+    /v1/<path> is served by the route for /<path>: one set of routes, so the
+    two can never drift, and the old paths keep working (the UI, the MCP
+    clients and the E2Es use them). Every response says which API version
+    answered (`API-Version: v1`). A future /v2 gets its own routes here.
+    """
+
+    PREFIX = "/" + API_VERSION
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        if path == self.PREFIX or path.startswith(self.PREFIX + "/"):
+            new = path[len(self.PREFIX):] or "/"
+            scope = {**scope, "path": new,
+                     "raw_path": new.encode("utf-8")}
+
+        async def send_with_version(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"api-version", API_VERSION.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+        await self.app(scope, receive, send_with_version)
 
 # wire the limiter: state, the 429 handler, and the middleware that enforces it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
 
 
 class _MCPEndpoint:
@@ -498,6 +538,9 @@ def run_governed_sql(sql: str, backend: Optional[str] = None,
 def health() -> dict:
     return {
         "status": "ok",
+        "version": APP_VERSION,                 # backlog item 5
+        "api_version": API_VERSION,
+        "git_commit": versioning.git_commit(),
         "gold_db": GOLD_DB,
         "gold_db_present": os.path.exists(GOLD_DB),
         "runtime_ready": _STATE.get("runtime") is not None,

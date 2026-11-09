@@ -1,0 +1,56 @@
+# .github/workflows/release.yml
+# A GitHub release for a semantic version tag (backlog item 5).
+#
+# The app's version lives in VERSION; a release is the tag vX.Y.Z that matches
+# it. Pushing the tag is the OWNER's step (a release is published, so it is an
+# "ask" item): nothing in CI creates tags.
+#
+#   1. bump VERSION in a PR and merge it
+#   2. git tag v$(cat VERSION) && git push origin v$(cat VERSION)
+#
+# This workflow then checks the tag matches VERSION and that pytest passes on
+# the tagged commit, and creates the release with generated notes. Building and
+# pushing a container image (item 17) is not done here.
+
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write     # create the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The tag must match VERSION and be X.Y.Z
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          want="v$(cat VERSION)"
+          echo "tag=$tag VERSION=$want"
+          if ! echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error title=Not a release tag::$tag is not vX.Y.Z"; exit 1
+          fi
+          if [ "$tag" != "$want" ]; then
+            echo "::error title=Tag and VERSION differ::the tag is $tag but VERSION says $want; bump VERSION first"; exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Tests on the tagged commit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt -r requirements.txt pytest
+          pytest -q -m "not network"          # as tests.yml
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
