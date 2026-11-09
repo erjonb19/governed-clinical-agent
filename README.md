@@ -22,7 +22,7 @@ A natural-language request to `/query`:
 { "question": "For heart failure care coordination, which in-network hospitals should we steer members to, balancing readmission performance against cost?" }
 ```
 
-returns the SQL the model wrote, the SQL the guard actually ran, the decision, the rows, and what the call cost:
+returns the SQL the model wrote, the SQL the guard actually ran, the decision, the rows, and what the call cost (an older sample response, recorded when the planner ran on Cerebras, a provider removed on 2026-11-08; today it says `gemini`, or `groq` with `"fallback_from": "gemini"` when Gemini was down):
 
 ```json
 {
@@ -60,14 +60,14 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### The agent
 
-- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic**: Gemini, Cerebras, Groq and xAI through an OpenAI-compatible client, Anthropic through its native SDK (default `claude-haiku-5-5`, override with `ANTHROPIC_MODEL`), all switchable with one environment variable. Per-model cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
+- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic**: Gemini (the default), Groq and xAI through an OpenAI-compatible client, Anthropic through its native SDK (default `claude-haiku-5-5`, override with `ANTHROPIC_MODEL`), all switchable with one environment variable. When the chosen provider is unavailable (402/429/5xx, network), the call is retried once on `PLANNER_FALLBACK` (default `groq`, needs `GROQ_API_KEY`; `none` turns it off), and the answer's `planner_metrics` names the provider that served it plus `fallback_from`. The eval harness turns the fallback off, so a score always measures one provider. **Every answer says which version produced it** (`versioning.py`, backlog item 4): a `version` object with `prompt_version` (`p-` plus a hash of the exact system and critic prompts for the dataset, so any prompt or schema-note edit is a new version), `model`, `provider` (who served the call) and `git_commit` (Render's `RENDER_GIT_COMMIT`, CI's `GITHUB_SHA`, else `git rev-parse HEAD`). The same four go on the run's trace and on an `answer` line in the audit log (outcome and trace id, no question, SQL or rows). Per-model cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
 - **Stateful graph** (`agent_graph.py`) — LangGraph, and the path every `/query` takes (`QUERY_MODE=graph`, the default; `single` keeps one plan and one guard decision). The agent plans, a **critic** reviews the SQL (`critic.py`), it executes through the guard, and on failure feeds the denial reason back into the next attempt and revises. The critic can only ask for a rewrite (`revise`, which costs an attempt); it never informs or skips the guard, and if it errors the run goes on to the guard (`unavailable`). `CRITIC_ENABLED=0` removes it, `CRITIC_ROUTING=0` keeps it as a recorder only. On a paced free tier a graph `/query` is at least two model calls, so expect several seconds per answer. **Bounded retries** (an unbounded agent loop is a real production failure mode). **Full trajectory capture** — every step, what it cost, how long it took. **Checkpointed**: every node's output is saved under the run's trace id (SQLite, `CHECKPOINT_DB`), so `GovernedAgentGraph.run(trace_id=...)` resumes a run that died part-way from its last checkpoint instead of starting over, and `state(trace_id)` reports where it stopped.
 - **Analytics tool** (`analytics_query_tool.py`) — runs the planner's SQL through the guard, then executes the validated query.
 - **Backend-agnostic data layer** (`data_backends.py`) — local DuckDB or Databricks Delta behind one interface, selected by `DATA_BACKEND`. The governance is identical either way.
 
 ### Service and observability
 
-- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes.
+- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes. **Versioned API** (backlog item 5): every path also answers under `/v1` (`/v1/query`, `/v1/health`, ... served by the same routes, so they cannot drift; the old paths keep working for the UI, MCP clients and E2Es), every response carries `API-Version: v1`, and `/health` reports the app `version` (from `VERSION`, semantic) and `git_commit`. Per-API-key rate limiting (slowapi) on every data route.
 - **Tracing** (`tracing.py`) — one trace per run, one span per step (`plan`, `guard`, `execute`, `retry`, `approval.propose`, `approval.decision`, `answer`), with OpenTelemetry-shaped fields in local SQLite (`TRACE_DB`, default `logs/traces.sqlite`, newest `TRACE_MAX_RUNS` kept). Every `/query`, `/raw-sql` and `/propose` response carries a `trace_id`; `GET /traces` lists runs and `GET /traces/{id}` returns the span tree, and the **Traces** view in the UI draws it as a waterfall. For an approval the trace id is the checkpoint thread id, so a decision submitted hours later appends to the same trace. Spans store the question, the SQL, its hash and row **counts**, never result rows (a test pins that). Best effort: a tracer never fails a request. The store sits on the instance disk, so on Render it resets with each deploy.
 - **Cost tracking** (`cost_tracker.py`) — per-call token counts and estimated cost in every response; aggregate totals, averages, and latency p50/p95 at `/metrics`. Percentiles rather than averages, because the average hides the slow tail.
 - **Audit log** — the runtime's `AuditLogger` is attached on the service path (`AUDIT_LOG_DIR`, default `logs`; empty disables), so every policy decision and tool execution the deployed service makes lands in `logs/audit_api_*.jsonl`, which is what the AIOps panel reads.
@@ -553,9 +553,19 @@ that names it.
 
 Nine GitHub Actions workflows:
 
-- **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped.
-- **Quick eval gate on every push to any branch and every PR** (`eval-on-push.yml`) — two jobs, one after the other: a 6-case hospital subset, then a 13-case FHIR subset (every tier, both answer modes, every FHIR table; `tests/unit/test_fhir_subset.py` pins that). Accuracy below the gate fails the build; a provider outage only warns, so it cannot block a commit.
+- **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
+- **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
+  - **Hospital 6-case and FHIR 13-case subsets, on replayed answers** (`PLANNER_PROVIDER=replay`, `tests/evals/recordings/push_gate.json`). No model is called, so they cost no tokens and none of Gemini's daily quota. They run the real harness, guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns them red. The recorded answers are each case's reference SQL (marked `"authored"`), so these gates **do not measure a model**.
+  - **A prompt, schema note or question changed without re-recording fails the push** (a `REPLAY MISS`, and `tests/unit/test_push_gate_recordings.py` in pytest). Fix: `python scripts/record_push_gate.py` in the same PR (`--live groq` records a real model instead).
+  - **A live 3-case check on Groq** (the fallback model, item 8), paced for Groq's free tier. It needs the `GROQ_API_KEY` repository secret (set) and skips with a warning without it; a provider outage warns, a real accuracy drop is red.
+  - **Model accuracy** is measured by the nightly (`eval-nightly.yml`) and the manual FHIR eval, both live on Gemini, the default provider. A Gemini-only regression shows up there, up to a day after the push.
+- **Releases** (`release.yml`, backlog item 5): pushing a tag `vX.Y.Z` that matches `VERSION` runs pytest on the tagged commit and creates a GitHub release with generated notes. Pushing the tag is the owner's step; nothing in CI creates tags.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
+  - **Alerts** (`nightly_alerts.py`, backlog item 3). A red nightly opens a GitHub issue, one per kind and dataset, and the two kinds are never mixed. A repeat comments on the open issue, and the next healthy night closes it.
+    - **`eval-regression`** (`nightly eval regression: <dataset>`) opens when accuracy over completed runs is **under 80%**, or when the harness broke before scoring.
+    - **`provider-outage`** (`nightly provider outage: <dataset>`) opens when the run is **inconclusive after the retry**. That means **more than 20% of planned runs never reached the provider**, a case was answered fewer than 2 times, or an attempt ran past its time limit.
+    - Why these bars: they are the gate's own (`THRESHOLD`, `MIN_COMPLETED_FRACTION`), so an issue means exactly "the nightly went red" and says why. A tighter accuracy bar would alert on model noise: one FHIR case at 1 of 3 runs moves the score about 2.4 points, and main's own nightly has had one.
+    - An outage leaves an open regression issue alone, since it proves nothing either way. A night that scores, pass or fail, closes an open outage issue, because the provider answered.
 - **FHIR eval on a chosen branch** (`eval-fhir-manual.yml`) — started by hand only (`gh workflow run eval-fhir-manual.yml -f ref=<branch>`): all 28 FHIR cases, 3 runs each, on a GitHub runner; fails unless every case passes, and on an inconclusive (provider-unavailable) run. The merge bar for PRs that touch the FHIR guard or planner.
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
 - **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay` with `ALLOW_REPLAY=1`, `replay.py`; without that opt-in the provider refuses to start, so a deploy cannot run on it by accident): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
@@ -616,7 +626,8 @@ streamlit run aiops_panel.py       # observability dashboard
 Switching provider or dataset:
 
 ```bash
-$env:PLANNER_PROVIDER="gemini"      # gemini | groq | cerebras | xai | anthropic
+$env:PLANNER_PROVIDER="gemini"      # gemini (default) | groq | xai | anthropic
+$env:PLANNER_FALLBACK="groq"        # retried once here when the provider is down; "none" = off
 $env:PLANNER_SCHEMA="fhir"          # hospital | fhir
 $env:PLANNER_MIN_INTERVAL_SEC="12"  # pace calls for free/low-tier rate limits (Groq free tier ~8K TPM)
 ```
@@ -656,6 +667,17 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
+- [x] **A version on every answer**: each `/query` response, its trace and its audit
+  line carry `prompt_version`, `model`, `provider` and `git_commit`.
+- [x] **One setting picks the planner's provider, with an automatic fallback**:
+  `PLANNER_PROVIDER` (default `gemini`); a call the provider cannot serve
+  (402/429/5xx) is retried once on Groq (`PLANNER_FALLBACK`), and the answer says
+  which provider served it. Shown by unit tests; on the deploy it needs
+  `GROQ_API_KEY` in Render (it is a CI secret; whether Render has it is unchecked).
+- [x] **Push gate that spends no model quota**: the hospital and FHIR subsets replay
+  committed answers (they test the guard, harness, Gold and scoring, not a model),
+  a prompt or schema change without re-recording fails the push, and 3 cases run
+  live on Groq; model accuracy stays with the live Gemini nightly (see [CI](#ci)).
 
 ## Scope and honest limitations
 

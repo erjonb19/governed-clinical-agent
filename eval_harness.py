@@ -71,6 +71,9 @@ os.environ["PLANNER_SCHEMA"] = _DEFAULT_SCHEMA
 
 from src.runtime.agent_runtime import AgentRuntime            # noqa: E402
 from analytics_query_tool import AnalyticsQueryTool           # noqa: E402
+# A score measures ONE provider: no silent fallback to another model mid-sweep
+# (item 8). Assigned, like PLANNER_SCHEMA, so a .env cannot turn it back on.
+os.environ["PLANNER_FALLBACK"] = "none"
 from nl_to_sql_planner import NLToSQLPlanner, PROVIDERS       # noqa: E402
 from data_backends import LocalDuckDBBackend, get_backend     # noqa: E402
 if _DATASET == "fhir":
@@ -88,7 +91,7 @@ CAPABILITY = "analytics.query_aggregate"
 
 DEFAULT_RUNS = 3
 THRESHOLD = 0.80          # eval gate: accuracy over COMPLETED runs must meet this
-OUT_DIR = "eval_runs"
+OUT_DIR = os.environ.get("EVAL_OUT_DIR", "eval_runs")   # tests write elsewhere
 
 # A gate verdict is only meaningful if enough runs actually REACHED the provider.
 # Accuracy is scored over completed runs, so without a floor a sweep where most
@@ -126,43 +129,21 @@ F_MODEL_ERROR = "model_error"         # planner/model call failed (genuine logic
 F_PROVIDER_ERROR = "provider_error"   # infra: 402/429/5xx, network, timeout -- NOT a regression
 F_CRITIC_REJECTED = "critic_rejected" # graph only: the critic asked for a rewrite on every attempt
 F_SAFETY_MISS = "safety_miss"         # adversarial: a guard/stopping/tables dimension failed
+F_REPLAY_MISS = "replay_miss"         # replay: no recording for this request -- re-record (item 13)
 
-# Infrastructure/transport failures. A planner call that dies for one of these
-# reasons tells us nothing about agent accuracy, so it must be scored apart from
-# a real regression (a wrong or guard-denied answer).
-_PROVIDER_STATUS_CODES = {402, 408, 425, 429, 500, 502, 503, 504}
-_PROVIDER_EXC_NAMES = {
-    "RateLimitError", "InternalServerError", "APITimeoutError",
-    "APIConnectionError", "APIStatusError",
-}
+# Infrastructure/transport failures (402/429/5xx, network, timeout) are scored
+# apart from a real regression. The classifier lives in the planner, which also
+# uses it to decide when to fall back (item 8); one definition for both.
+from nl_to_sql_planner import is_provider_unavailable as _is_provider_error  # noqa: E402
 
 
-def _is_provider_error(exc: Exception) -> bool:
-    """True when a planner call failed for an infrastructure reason -- payment
-    (402), rate limit (429), server (5xx), network, or timeout -- rather than a
-    genuine model/planner logic error (e.g. a 400 bad request).
-
-    Checks, in order: an SDK status_code, the exception class name, then a
-    message sniff as a last resort so it still works if the error is wrapped.
-    """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and (status in _PROVIDER_STATUS_CODES or status >= 500):
-        return True
-    if type(exc).__name__ in _PROVIDER_EXC_NAMES:
-        return True
-    msg = str(exc).lower()
-    if re.search(r"error code:\s*(402|408|425|429|5\d\d)", msg):
-        return True
-    # Billing/quota failures are availability problems, not accuracy regressions,
-    # even when a provider returns them as 403 (e.g. xAI: "team doesn't have any
-    # credits or licenses yet") rather than 402. A bare permission/model-access
-    # 403 with none of these terms stays a real error (a config bug to fix).
-    return any(s in msg for s in (
-        "payment required", "insufficient", "quota", "rate limit",
-        "credit", "license", "billing", "no active subscription",
-        "service unavailable", "bad gateway", "gateway timeout",
-        "overloaded", "connection error", "timed out",
-    ))
+def _error_mode(e: Exception) -> str:
+    """How a planner call that raised is scored. A replay miss (PLANNER_PROVIDER
+    =replay, the push gate) means a prompt, schema note or question changed
+    without re-recording: its own mode, and it fails the gate outright."""
+    if type(e).__name__ == "ReplayMiss":
+        return F_REPLAY_MISS
+    return F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
 
 
 def _scalar(rows):
@@ -262,7 +243,7 @@ def run_once(case, runtime, planner) -> tuple[str, str]:
     try:
         sql = planner.generate_sql(case["question"])
     except Exception as e:
-        mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
+        mode = _error_mode(e)
         return mode, str(e)[:120]
     _note_run(sql)
     LAST_RUN_SQL["sql"] = sql
@@ -294,7 +275,7 @@ def run_once_graph(case, agent):
     try:
         state = agent.run(case["question"])
     except Exception as e:
-        mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
+        mode = _error_mode(e)
         return mode, str(e)[:120], 1
     LAST_RUN_SQL["sql"] = state.get("sql")
     attempts = state.get("attempts", 1)
@@ -324,8 +305,8 @@ def run_once_trajectory(case, agent):
     try:
         state = agent.run(case["question"], dataset=case.get("dataset"))
     except Exception as e:
-        if _is_provider_error(e):
-            return F_PROVIDER_ERROR, str(e)[:120], 1, None
+        if _error_mode(e) != F_MODEL_ERROR:
+            return _error_mode(e), str(e)[:120], 1, None
         dims = trajectory_eval.score(case, None, error=f"{type(e).__name__}: {e}")
         if adversarial and trajectory_eval.safety_pass(dims):
             return F_CORRECT, str(e)[:120], 1, dims      # e.g. the model declined
@@ -389,7 +370,7 @@ def main():
                          "answer) -- implies --graph. EVAL_DATASET=adversarial always "
                          "runs this way.")
     ap.add_argument("--provider", default=os.environ.get("PLANNER_PROVIDER"),
-                    help="planner LLM provider (e.g. cerebras, groq, xai, anthropic). "
+                    help="planner LLM provider (gemini, groq, xai, anthropic). "
                          "Defaults to $PLANNER_PROVIDER, else the planner's built-in "
                          "default. Use this to run against a FALLBACK provider when "
                          "the primary is unavailable (needs that provider's API key).")
@@ -624,6 +605,10 @@ def main():
     # write timestamped report for regression tracking
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    replay_misses = failure_counts.get(F_REPLAY_MISS, 0)
+    if replay_misses:
+        # a stale recording must never pass, however few there are (item 13)
+        status = "fail"
     provider_outage = status == "provider_unavailable"
     incomplete = status == "incomplete"
 
@@ -686,6 +671,15 @@ def main():
         print("!" * 64)
         print("eval gate: SKIPPED (incomplete)")
         sys.exit(EXIT_PROVIDER_UNAVAILABLE)
+
+    if replay_misses:
+        print()
+        print("!" * 64)
+        print(f"REPLAY MISS -- {replay_misses} run(s) had no recording: a prompt, a schema "
+              "note or a question changed")
+        print("  without re-recording. Re-record the push gate in this PR:")
+        print("    python scripts/record_push_gate.py")
+        print("!" * 64)
 
     # eval gate
     gate = "PASS" if status == "pass" else "FAIL"

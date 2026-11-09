@@ -72,6 +72,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 import critic
 import tracing
+import versioning
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
@@ -206,7 +207,8 @@ class GovernedAgentGraph:
             sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
                    provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                    completion_tokens=metrics.completion_tokens,
-                   est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
+                   est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms,
+                   fallback_from=getattr(metrics, "fallback_from", None))
         step = {
             "step": "plan",
             "attempt": attempt,
@@ -240,7 +242,8 @@ class GovernedAgentGraph:
             sp.set(verdict=v["verdict"], reason=v["reason"][:500], issues=v["issues"],
                    model=m.get("model"), provider=m.get("provider"),
                    prompt_tokens=m.get("prompt_tokens"), completion_tokens=m.get("completion_tokens"),
-                   est_cost_usd=m.get("est_cost_usd"), latency_ms=m.get("latency_ms"))
+                   est_cost_usd=m.get("est_cost_usd"), latency_ms=m.get("latency_ms"),
+                   fallback_from=m.get("fallback_from"))
         critic.audit(self.runtime, CAPABILITY, v, tracing.sql_sha256(sql))
         step = {"step": "critic", "attempt": attempt, "verdict": v["verdict"],
                 "reason": v["reason"][:200], "tokens": m.get("total_tokens", 0),
@@ -453,17 +456,28 @@ class GovernedAgentGraph:
                 final = self.graph.invoke(payload, cfg)
             except BaseException as exc:
                 self.tracer.end_trace(tid, status="error",
-                                      error=f"{type(exc).__name__}: {exc}"[:500])
+                                      error=f"{type(exc).__name__}: {exc}"[:500],
+                                      **versioning.answer_version(
+                                          getattr(exc, "metrics", None),
+                                          self.schema_docs.get(dataset), self.planner))
                 raise
             finally:
                 rows = self._rows.pop(tid, None)
             final["rows"] = rows
             if final.get("allowed") and rows is None:
                 final["rows_unavailable"] = True
+            # which prompt, model, provider and commit answered (item 4): the
+            # LAST plan call is the one whose SQL ran or was refused
+            plans = [st.get("metrics") for st in final.get("trajectory") or []
+                     if st.get("step") == "plan"]
+            final["version"] = versioning.answer_version(
+                plans[-1] if plans else None, self.schema_docs.get(final.get("dataset")),
+                self.planner)
             self.tracer.end_trace(
                 tid, status="ok", decided_by=final.get("decided_by"),
                 attempts=final.get("attempts"), total_tokens=final.get("total_tokens"),
-                total_cost_usd=final.get("total_cost_usd"), row_count=final.get("row_count"))
+                total_cost_usd=final.get("total_cost_usd"), row_count=final.get("row_count"),
+                **final["version"])
         final["trace_id"] = tid
         return final
 

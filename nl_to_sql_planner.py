@@ -10,14 +10,17 @@ wants, including unsafe SQL, and the guard still only lets read-only, allowliste
 row-capped queries through. The governance constrains the model, not your own
 hand-written queries.
 
-Provider-agnostic by design. Cerebras, Groq, xAI and Gemini expose
+Provider-agnostic by design. Gemini, Groq and xAI expose
 OpenAI-compatible endpoints; Anthropic goes through its native SDK (see the
 PROVIDERS comment for why). Either way the caller gets the same (sql,
 CallMetrics), so switching providers is PLANNER_PROVIDER, nothing else.
+When the chosen provider is unavailable (402/429/5xx, network), the call is
+retried once on PLANNER_FALLBACK (default groq; `none` turns it off), and the
+metrics say which provider served it (`provider`, `fallback_from`).
 
 Setup:
     pip install openai
-    setx CEREBRAS_API_KEY "csk-..."     (PowerShell: then reopen the shell)
+    setx GEMINI_API_KEY "..."           (PowerShell: then reopen the shell)
 
 Run the end-to-end demo (needs medallion\\hospital_gold.duckdb + the runtime):
     python nl_to_sql_planner.py
@@ -47,12 +50,9 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 # Provider config. Switch ACTIVE_PROVIDER to move between vendors. One line.
 # ---------------------------------------------------------------------------
+# Cerebras was removed 2026-11-08: it is no longer free on the owner's account,
+# and an unknown provider now fails at startup rather than calling a paid one.
 PROVIDERS = {
-    "cerebras": {
-        "base_url": "https://api.cerebras.ai/v1",
-        "api_key_env": "CEREBRAS_API_KEY",
-        "model": "gpt-oss-120b",   # available on this account; also: zai-glm-4.7
-    },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "api_key_env": "GROQ_API_KEY",
@@ -107,18 +107,25 @@ PROVIDERS = {
 # One line to switch providers, or set PLANNER_PROVIDER in the environment.
 # The guard, policy, eval suite, and API are all unchanged by this choice --
 # governance holds regardless of which model writes the SQL.
-ACTIVE_PROVIDER = os.environ.get("PLANNER_PROVIDER", "cerebras")
+# Unset means Gemini, the provider CI, both eval suites and the deploy run on
+# (owner's decision 2026-11-06; it used to fall back to Cerebras).
+DEFAULT_PROVIDER = "gemini"
+ACTIVE_PROVIDER = os.environ.get("PLANNER_PROVIDER") or DEFAULT_PROVIDER
+
+# Automatic fallback when the chosen provider is unavailable (backlog item 8):
+# one retry on this provider. `none` (or empty) turns it off; the eval harness
+# turns it off so a score always measures one provider.
+DEFAULT_FALLBACK = "groq"
 
 # Cost is tokens x rate. Tokens are ground truth and never go stale; the RATE
-# is the volatile part (providers change prices -- Cerebras changed tiers in
-# July 2026), so it lives in ONE place. Update this, not the code, when pricing
+# is the volatile part (providers change prices and free tiers), so it lives
+# in ONE place. Update this, not the code, when pricing
 # moves. USD per 1M tokens, a labeled ESTIMATE, not a bill.
 #
 # Rates are PER PROVIDER: a frontier model costs materially more than a fast
 # open model, so a single global rate would silently misreport cost the moment
 # you switch backends.
 PROVIDER_RATES = {
-    "cerebras":  {"input": 0.85, "output": 0.85},
     "groq":      {"input": 0.59, "output": 0.79},
     "anthropic": {"input": 0.10, "output": 0.50},    # = the default model, claude-haiku-5-5
     "xai":       {"input": 3.00, "output": 15.00},   # grok-3 estimate
@@ -157,6 +164,61 @@ def rate_for(provider: str, model: str) -> dict:
     if provider == "anthropic" and model:
         return max(MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
     return PROVIDER_RATES.get(provider, _DEFAULT_RATE)
+
+
+# Infrastructure/transport failures: the provider could not answer (payment,
+# rate limit, server, network, timeout). They say nothing about the model's
+# accuracy, so the eval harness scores them apart, and they are the only errors
+# the fallback retries on. A 400 or 401 is a real error (a bug or a bad key).
+_PROVIDER_STATUS_CODES = {402, 408, 425, 429, 500, 502, 503, 504}
+_PROVIDER_EXC_NAMES = {
+    "RateLimitError", "InternalServerError", "APITimeoutError",
+    "APIConnectionError", "APIStatusError",
+}
+
+
+def is_provider_unavailable(exc: BaseException) -> bool:
+    """True when a planner call failed for an infrastructure reason -- payment
+    (402), rate limit (429), server (5xx), network, or timeout -- rather than a
+    genuine model/planner logic error (e.g. a 400 bad request).
+
+    Checks, in order: an SDK status_code, the exception class name, then a
+    message sniff as a last resort so it still works if the error is wrapped.
+    """
+    if isinstance(exc, PlannerError):
+        return False             # the model answered; the answer was unusable
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and (status in _PROVIDER_STATUS_CODES or status >= 500):
+        return True
+    if type(exc).__name__ in _PROVIDER_EXC_NAMES:
+        return True
+    msg = str(exc).lower()
+    if re.search(r"error code:\s*(402|408|425|429|5\d\d)", msg):
+        return True
+    # Billing/quota failures are availability problems, not accuracy regressions,
+    # even when a provider returns them as 403 (e.g. xAI: "team doesn't have any
+    # credits or licenses yet") rather than 402. A bare permission/model-access
+    # 403 with none of these terms stays a real error (a config bug to fix).
+    return any(s in msg for s in (
+        "payment required", "insufficient", "quota", "rate limit",
+        "credit", "license", "billing", "no active subscription",
+        "service unavailable", "bad gateway", "gateway timeout",
+        "overloaded", "connection error", "timed out",
+    ))
+
+
+def _should_fall_back(exc: BaseException) -> bool:
+    """The fallback's rule: provider-unavailable by STATUS CODE or SDK error
+    class only. The message sniff in is_provider_unavailable is right for
+    scoring (an outage is never a regression) but too loose for serving: a 403
+    "insufficient permissions" is a config error to surface, not to hide behind
+    another model. A bare APIStatusError counts only with a retryable status."""
+    if isinstance(exc, PlannerError):
+        return False
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in _PROVIDER_STATUS_CODES or status >= 500
+    return type(exc).__name__ in (_PROVIDER_EXC_NAMES - {"APIStatusError"})
 
 
 class PlannerError(RuntimeError):
@@ -209,6 +271,9 @@ class CallMetrics:
         self.total_tokens = self.prompt_tokens + self.completion_tokens
         self.model = model
         self.provider = provider
+        # set when the chosen provider was unavailable and this call was served
+        # by the fallback: the provider that failed (item 8)
+        self.fallback_from: str | None = None
         rate = rate_for(provider, model)
         self.est_cost_usd = round(
             (self.prompt_tokens / 1_000_000) * rate["input"]
@@ -225,6 +290,7 @@ class CallMetrics:
             "est_cost_usd": self.est_cost_usd,
             "model": self.model,
             "provider": self.provider,
+            **({"fallback_from": self.fallback_from} if self.fallback_from else {}),
         }
 
 
@@ -433,8 +499,17 @@ Rules:
 
 
 class NLToSQLPlanner:
-    def __init__(self, provider: str = ACTIVE_PROVIDER):
+    def __init__(self, provider: str | None = None, fallback: str | None = None):
+        provider = provider or ACTIVE_PROVIDER
+        if provider not in PROVIDERS:
+            hint = (" (Cerebras was removed 2026-11-08: no longer free)"
+                    if provider == "cerebras" else "")
+            raise SystemExit(f"unknown PLANNER_PROVIDER {provider!r}{hint}; "
+                             f"choose one of: {', '.join(sorted(PROVIDERS))}")
         cfg = PROVIDERS[provider]
+        self._fallback_name: str | None = None
+        self._fallback: "NLToSQLPlanner | None" = None
+        self._fallback_lock = threading.Lock()
         if cfg.get("sdk") == "replay":
             # Test-only. Without an explicit opt-in a deploy with
             # PLANNER_PROVIDER=replay would start keyless, look healthy, and
@@ -447,7 +522,7 @@ class NLToSQLPlanner:
             self._replay = replay.ReplayStore.from_env()
             # record mode only: the real provider that answers misses
             src = os.environ.get("REPLAY_SOURCE_PROVIDER")
-            self._source = (NLToSQLPlanner(provider=src)
+            self._source = (NLToSQLPlanner(provider=src, fallback="none")   # record what src wrote
                             if self._replay.record and src and src != "replay" else None)
             return
         key = os.environ.get(cfg["api_key_env"])
@@ -463,6 +538,41 @@ class NLToSQLPlanner:
             self._client = OpenAI(base_url=cfg["base_url"], api_key=key)
         self._model = cfg["model"]
         self.provider = provider
+        self._fallback_name = self._pick_fallback(fallback)
+
+    def _pick_fallback(self, fallback: str | None) -> str | None:
+        """The provider to retry on when this one is unavailable, or None.
+
+        Read from PLANNER_FALLBACK (default groq). An unknown name fails at
+        startup, like an unknown provider; a fallback without its key is simply
+        off (the deploy still runs on its primary), and said so once.
+        """
+        name = fallback if fallback is not None else os.environ.get(
+            "PLANNER_FALLBACK", DEFAULT_FALLBACK)
+        name = (name or "").strip().lower()
+        if name in ("", "none", "off", "0", self.provider):
+            return None
+        if name not in PROVIDERS or PROVIDERS[name].get("sdk") == "replay":
+            raise SystemExit(f"unknown PLANNER_FALLBACK {name!r}; choose one of: "
+                             f"{', '.join(sorted(p for p in PROVIDERS if p != 'replay'))}"
+                             " or none")
+        if not os.environ.get(PROVIDERS[name]["api_key_env"]):
+            print(f"[planner] fallback {name} is off: {PROVIDERS[name]['api_key_env']} "
+                  "is not set", file=sys.stderr)
+            return None
+        return name
+
+    @property
+    def fallback_provider(self) -> str | None:
+        return self._fallback_name
+
+    def _fallback_planner(self) -> "NLToSQLPlanner | None":
+        if self._fallback_name is None:
+            return None
+        with self._fallback_lock:
+            if self._fallback is None:
+                self._fallback = type(self)(provider=self._fallback_name, fallback="none")
+            return self._fallback
 
     @staticmethod
     def _extract_sql(text: str) -> str:
@@ -502,10 +612,35 @@ class NLToSQLPlanner:
         return self._complete(system, user, role="critic")
 
     def _complete(self, system: str, user: str, role: str = "plan"):
-        """One paced model call. Returns (text, CallMetrics)."""
-        import time
+        """One model call, retried once on the fallback provider when this one
+        is unavailable (item 8). Returns (text, CallMetrics); a call served by
+        the fallback has metrics.provider = the fallback and
+        metrics.fallback_from = this provider. Only provider-unavailable errors
+        fall back: a refusal, a 400 or a bad key is raised as it is."""
         if self._sdk == "replay":
             return self._complete_replay(system, user, role)
+        try:
+            # pacing (_pace_call) is process-wide and shared with the fallback
+            # call below: harmless, a retry waits the same interval
+            return self._complete_direct(system, user, role)
+        except Exception as primary:
+            if not _should_fall_back(primary):
+                raise
+            backup = self._fallback_planner()
+            if backup is None:
+                raise
+            print(f"[planner] {self.provider} unavailable ({type(primary).__name__}); "
+                  f"retrying on {backup.provider}", file=sys.stderr)
+            try:
+                text, metrics = backup._complete_direct(system, user, role)
+            except Exception as second:
+                raise second from primary
+            metrics.fallback_from = self.provider
+            return text, metrics
+
+    def _complete_direct(self, system: str, user: str, role: str = "plan"):
+        """One paced call to this provider, no fallback. Returns (text, CallMetrics)."""
+        import time
         _pace_call()                     # respect provider rate limits, if configured
         t0 = time.perf_counter()
         if self._sdk == "anthropic":

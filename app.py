@@ -62,6 +62,7 @@ from nl_to_sql_planner import (NLToSQLPlanner, SCHEMA_DOC,
 import cost_tracker
 import schema_check
 import tracing
+import versioning
 from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
@@ -278,17 +279,60 @@ async def lifespan(app: FastAPI):
     _STATE.clear()
 
 
+# The app's semantic version lives in one file, VERSION (backlog item 5); a
+# release is the tag vX.Y.Z that matches it (.github/workflows/release.yml).
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+          encoding="utf-8") as _vf:
+    APP_VERSION = _vf.read().strip()
+API_VERSION = "v1"
+
 app = FastAPI(
     title="Security-Constrained Agent Runtime",
     description="Governed natural-language analytics over CMS Medicare data.",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
+
+
+class _APIVersionPrefix:
+    """Every endpoint answers under /v1 as well (backlog item 5).
+
+    /v1/<path> is served by the route for /<path>: one set of routes, so the
+    two can never drift, and the old paths keep working (the UI, the MCP
+    clients and the E2Es use them). Every response says which API version
+    answered (`API-Version: v1`). A future /v2 gets its own routes here.
+    """
+
+    PREFIX = "/" + API_VERSION
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        if path == self.PREFIX or path.startswith(self.PREFIX + "/"):
+            new = path[len(self.PREFIX):] or "/"
+            raw = scope.get("raw_path") or path.encode("utf-8")
+            # strip the prefix from the ORIGINAL bytes, so percent-encoding in
+            # the rest of the path survives for logs and anything reading raw_path
+            raw = raw[len(self.PREFIX):] or b"/"
+            scope = {**scope, "path": new, "raw_path": raw}
+
+        async def send_with_version(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"api-version", API_VERSION.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+        await self.app(scope, receive, send_with_version)
 
 # wire the limiter: state, the 429 handler, and the middleware that enforces it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
 
 
 class _MCPEndpoint:
@@ -397,6 +441,8 @@ class GovernedResponse(BaseModel):
     attempts: Optional[int] = None           # plan->(critic)->execute cycles used
     critic: Optional[str] = None             # the last critic verdict
     trajectory: Optional[list] = None        # every step, in order (no rows)
+    # backlog item 4: prompt_version, model, provider, git_commit of this answer
+    version: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +541,9 @@ def run_governed_sql(sql: str, backend: Optional[str] = None,
 def health() -> dict:
     return {
         "status": "ok",
+        "version": APP_VERSION,                 # backlog item 5
+        "api_version": API_VERSION,
+        "git_commit": versioning.git_commit(),
         "gold_db": GOLD_DB,
         "gold_db_present": os.path.exists(GOLD_DB),
         "runtime_ready": _STATE.get("runtime") is not None,
@@ -606,10 +655,13 @@ def raw_sql(request: Request, req: SqlRequest) -> dict:
 def query(request: Request, req: QueryRequest) -> dict:
     planner = _STATE.get("planner")
     if planner is None:
+        version = versioning.answer_version(None, DATASETS[_dataset(req.dataset)]["schema_doc"])
+        _audit_answer(False, "planner_error", version, None)
         return {
             "allowed": False,
             "decided_by": "planner_error",
             "reason": f"planner not configured: {_STATE.get('planner_error')}",
+            "version": version,
         }
     ds = _dataset(req.dataset)
     if _STATE.get("graph_agent") is not None:
@@ -628,9 +680,12 @@ def query(request: Request, req: QueryRequest) -> dict:
         except Exception as e:
             _record_failed_call(e, req.question)
             tracer.event("answer", outcome="planner_error")
-            tracer.end_trace(tid, status="error", decided_by="planner_error")
+            version = versioning.answer_version(getattr(e, "metrics", None),
+                                                DATASETS[ds]["schema_doc"], planner)
+            tracer.end_trace(tid, status="error", decided_by="planner_error", **version)
+            _audit_answer(False, "planner_error", version, tid)
             return {"allowed": False, "decided_by": "planner_error",
-                    "reason": f"planner error: {e}", "trace_id": tid}
+                    "reason": f"planner error: {e}", "trace_id": tid, "version": version}
         out = run_governed_sql(sql, req.backend, ds)
         note = _unanswerable(out)
         if note:
@@ -644,10 +699,27 @@ def query(request: Request, req: QueryRequest) -> dict:
         tracer.event("answer", outcome="unanswerable" if note else
                      ("answered" if out.get("allowed") else "refused"),
                      decided_by=out.get("decided_by"), row_count=out.get("row_count"))
+        version = versioning.answer_version(metrics, DATASETS[ds]["schema_doc"], planner)
+        out["version"] = version
         tracer.end_trace(tid, decided_by=out.get("decided_by"), row_count=out.get("row_count"),
-                         est_cost_usd=metrics.est_cost_usd, total_tokens=metrics.total_tokens)
+                         est_cost_usd=metrics.est_cost_usd, total_tokens=metrics.total_tokens,
+                         **version)
     out["trace_id"] = tid
+    _audit_answer(bool(out.get("allowed")), out.get("decided_by"), version, tid)
     return out
+
+
+def _audit_answer(allowed: bool, decided_by: Optional[str], version: dict,
+                  trace_id: Optional[str]) -> None:
+    """One `answer` audit line per /query (item 4). Best effort, like the tracer."""
+    logger = getattr(_STATE.get("runtime"), "audit_logger", None)
+    if logger is None or not hasattr(logger, "log_answer"):
+        return
+    try:
+        logger.log_answer(capability="analytics.query_aggregate", allowed=allowed,
+                          decided_by=decided_by, version=version, trace_id=trace_id)
+    except Exception:
+        pass
 
 
 def _query_graph(req: QueryRequest, ds: str) -> dict:
@@ -668,8 +740,12 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
         except Exception:
             pass
         _record_failed_call(e, req.question)   # the call that raised was billed too
+        version = versioning.answer_version(getattr(e, "metrics", None),
+                                            DATASETS[ds]["schema_doc"], agent.planner)
+        _audit_answer(False, "planner_error", version, tid)
         return {"allowed": False, "decided_by": "planner_error",
-                "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid}
+                "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid,
+                "version": version}
     calls = [st["metrics"] for st in state.get("trajectory") or []
              if st.get("step") in ("plan", "critic") and st.get("metrics")]
     for m in calls:
@@ -696,7 +772,10 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
             "provider": calls[0].get("provider") if calls else None,
         },
         "trace_id": tid,
+        "version": state.get("version") or versioning.answer_version(
+            calls[-1] if calls else None, DATASETS[ds]["schema_doc"], agent.planner),
     }
+    _audit_answer(allowed, state.get("decided_by"), out["version"], tid)
     if allowed:
         out.update(safe_sql=state.get("safe_sql"), row_count=state.get("row_count"),
                    columns=state.get("columns"), rows=state.get("rows"),

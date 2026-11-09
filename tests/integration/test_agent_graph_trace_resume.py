@@ -252,3 +252,28 @@ def test_a_run_survives_an_unwritable_trace_store(make_agent, tmp_path):
     state = agent.run("still answers")
     assert state["allowed"]
     assert agent.tracer.get_trace(state["trace_id"]) is None
+
+
+def test_a_fallback_answer_is_named_in_the_trace(make_agent, monkeypatch):
+    # backlog item 8: Gemini is down, Groq serves the call, and the plan span
+    # (and so the Traces view) says who answered and who failed
+    from nl_to_sql_planner import CallMetrics, NLToSQLPlanner
+
+    class Down(Exception):
+        status_code = 429
+
+    def fake(self, system, user, role="plan"):
+        if self.provider == "gemini":
+            raise Down("Error code: 429")
+        return "SELECT 1 AS n", CallMetrics(5, 10, 2, "openai/gpt-oss-120b", self.provider)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-not-a-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-not-a-key")
+    monkeypatch.delenv("PLANNER_FALLBACK", raising=False)
+    monkeypatch.setattr(NLToSQLPlanner, "_complete_direct", fake)
+    make, tracer = make_agent
+    state = make(NLToSQLPlanner(provider="gemini")).run("how many hospitals?")
+    assert state["allowed"]
+    plan = tracer.get_trace(state["trace_id"])["spans"][0]
+    assert plan["attrs"]["provider"] == "groq" and plan["attrs"]["fallback_from"] == "gemini"
+    assert state["trajectory"][0]["metrics"]["fallback_from"] == "gemini"
