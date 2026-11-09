@@ -5,7 +5,7 @@
 
 pyyaml==6.0.3
 jsonschema==4.26.0
-ollama==0.6.2
+ollama==0.6.3
 
 # Security and validation
 pathspec==1.1.1
@@ -18,4 +18,4 @@ requests==2.34.2
 
 # MCP front door (mcp_server.py). Also pinned in requirements-api.txt now that the
 # API serves it at /mcp; keep the two pins equal.
-mcp==1.30.0   # 1.28.0 had 6 advisories (pip-audit, 2026-11-09)
+mcp==2.3.0   # 1.28.0 had 6 advisories (pip-audit, 2026-11-09)
