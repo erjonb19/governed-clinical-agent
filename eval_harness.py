@@ -71,6 +71,9 @@ os.environ["PLANNER_SCHEMA"] = _DEFAULT_SCHEMA
 
 from src.runtime.agent_runtime import AgentRuntime            # noqa: E402
 from analytics_query_tool import AnalyticsQueryTool           # noqa: E402
+# A score measures ONE provider: no silent fallback to another model mid-sweep
+# (item 8). Assigned, like PLANNER_SCHEMA, so a .env cannot turn it back on.
+os.environ["PLANNER_FALLBACK"] = "none"
 from nl_to_sql_planner import NLToSQLPlanner, PROVIDERS       # noqa: E402
 from data_backends import LocalDuckDBBackend, get_backend     # noqa: E402
 if _DATASET == "fhir":
@@ -127,42 +130,10 @@ F_PROVIDER_ERROR = "provider_error"   # infra: 402/429/5xx, network, timeout -- 
 F_CRITIC_REJECTED = "critic_rejected" # graph only: the critic asked for a rewrite on every attempt
 F_SAFETY_MISS = "safety_miss"         # adversarial: a guard/stopping/tables dimension failed
 
-# Infrastructure/transport failures. A planner call that dies for one of these
-# reasons tells us nothing about agent accuracy, so it must be scored apart from
-# a real regression (a wrong or guard-denied answer).
-_PROVIDER_STATUS_CODES = {402, 408, 425, 429, 500, 502, 503, 504}
-_PROVIDER_EXC_NAMES = {
-    "RateLimitError", "InternalServerError", "APITimeoutError",
-    "APIConnectionError", "APIStatusError",
-}
-
-
-def _is_provider_error(exc: Exception) -> bool:
-    """True when a planner call failed for an infrastructure reason -- payment
-    (402), rate limit (429), server (5xx), network, or timeout -- rather than a
-    genuine model/planner logic error (e.g. a 400 bad request).
-
-    Checks, in order: an SDK status_code, the exception class name, then a
-    message sniff as a last resort so it still works if the error is wrapped.
-    """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and (status in _PROVIDER_STATUS_CODES or status >= 500):
-        return True
-    if type(exc).__name__ in _PROVIDER_EXC_NAMES:
-        return True
-    msg = str(exc).lower()
-    if re.search(r"error code:\s*(402|408|425|429|5\d\d)", msg):
-        return True
-    # Billing/quota failures are availability problems, not accuracy regressions,
-    # even when a provider returns them as 403 (e.g. xAI: "team doesn't have any
-    # credits or licenses yet") rather than 402. A bare permission/model-access
-    # 403 with none of these terms stays a real error (a config bug to fix).
-    return any(s in msg for s in (
-        "payment required", "insufficient", "quota", "rate limit",
-        "credit", "license", "billing", "no active subscription",
-        "service unavailable", "bad gateway", "gateway timeout",
-        "overloaded", "connection error", "timed out",
-    ))
+# Infrastructure/transport failures (402/429/5xx, network, timeout) are scored
+# apart from a real regression. The classifier lives in the planner, which also
+# uses it to decide when to fall back (item 8); one definition for both.
+from nl_to_sql_planner import is_provider_unavailable as _is_provider_error  # noqa: E402
 
 
 def _scalar(rows):
@@ -372,7 +343,7 @@ def main():
                          "answer) -- implies --graph. EVAL_DATASET=adversarial always "
                          "runs this way.")
     ap.add_argument("--provider", default=os.environ.get("PLANNER_PROVIDER"),
-                    help="planner LLM provider (e.g. cerebras, groq, xai, anthropic). "
+                    help="planner LLM provider (gemini, groq, xai, anthropic). "
                          "Defaults to $PLANNER_PROVIDER, else the planner's built-in "
                          "default. Use this to run against a FALLBACK provider when "
                          "the primary is unavailable (needs that provider's API key).")
