@@ -26,7 +26,7 @@ python-dotenv==1.2.2
 # analytics_query_tool.py imports it lazily and degrades to a clear
 # "not configured" message if the credentials are absent, so installing it is
 # safe even on deploys that never use it.
-databricks-sql-connector==4.4.0
+databricks-sql-connector==4.9.0   # 4.4.0 capped oauthlib<4 (2 advisories, pip-audit 2026-11-09)
 
 # MCP over Streamable HTTP, mounted in the API at /mcp (PLAN v2 item 5, D5).
 mcp==1.30.0   # 1.28.0 had 6 advisories (pip-audit, 2026-11-09)
