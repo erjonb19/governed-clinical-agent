@@ -28,6 +28,10 @@ on:
         type: boolean
         required: false
         default: true
+      cases:
+        description: "Only these case ids, comma-separated (empty = all 28). For a cheap targeted check."
+        required: false
+        default: ""
 
 concurrency:
   group: gemini-eval        # one Gemini sweep at a time: they share a quota
@@ -38,11 +42,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -60,9 +64,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-api.txt pyarrow   # pyarrow: build_fhir_gold._to_arrow
 
-      - name: Cache FHIR Gold
+      # RESTORE only, never save: this job runs a branch's own code, and a cache it
+      # saved would be scoped to the default branch, where a branch could poison
+      # the FHIR Gold every main job then reads (CodeQL: cache poisoning). The
+      # nightly job, which runs main's code, is the one that saves this cache.
+      - name: Restore FHIR Gold cache
         id: fhir-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             data/synthea
@@ -83,6 +91,7 @@ jobs:
           EVAL_DATASET: "fhir"
           PLANNER_SCHEMA: "fhir"
           RUNS: ${{ inputs.runs }}
+          EVAL_CASES: ${{ inputs.cases }}
         run: |
           set +e
           python -u eval_harness.py --runs "$RUNS"
@@ -112,7 +121,7 @@ jobs:
 
       - name: Upload FHIR eval report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report-fhir-${{ github.run_id }}
           path: eval_runs/
