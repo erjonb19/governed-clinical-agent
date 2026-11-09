@@ -30,7 +30,7 @@ these PRs touches the guard files.
 | #68 | 18 | The package-layout **plan only** (`docs/plans/package-layout.md`). It waits for the owner's OK. |
 | #69 | 6 | Answer cache: repeated questions skip the model. Only the model's text is cached, never rows, and the guard, query and output check still run on a hit. `/metrics` shows the hit rate. |
 | #72 | 19 (part 1) | `STATE_DB_URL=postgresql://...` puts approvals and both graphs' checkpoints in Postgres. CI runs the whole suite against a Postgres 16 service container. No hosted account was created. |
-| #73 | 20 (part 1) | Load test on recorded answers and the baseline in `docs/benchmarks.md` (*merged only if its CI finished green; see "Still open" if not*) |
+| #73 | 20 (part 1) | Load test on recorded answers and the baseline in `docs/benchmarks.md` |
 
 ## Still open, and why
 
