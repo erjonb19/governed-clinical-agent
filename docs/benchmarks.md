@@ -46,3 +46,18 @@ and the "after" numbers, which come with the lock change (item 20, part 2).
   `Retry-After` when the queue is full.
 - Re-run this table; a test runs denied and allowed queries in parallel and
   checks every decision and audit line.
+
+## On a GitHub runner (2026-11-09, main before item 20 part 2)
+
+First runner result: `load-test.yml` dispatched on the item 7 branch, which is
+`main`, with the global lock and the old tracer. It used `ubuntu-latest`, 200
+requests per level, and was run [42657985385](https://github.com/erjonb19/governed-clinical-agent/actions/runs/42657985385).
+The weekly SLO check (`slo.py`) passed on it.
+
+| concurrent users | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|
+| 1  | 18.9 ms  | 26.3 ms  | 58.8 ms  | 47.1 req/s |
+| 5  | 84.9 ms  | 106.2 ms | 135.8 ms | 57.7 req/s |
+| 20 | 346.2 ms | 430.3 ms | 455.1 ms | 55.2 req/s |
+
+The runner is faster than the session sandbox, and the shape is the same: flat throughput and latency growing with users.

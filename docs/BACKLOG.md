@@ -80,9 +80,14 @@ Langfuse), **26** (the data intake platform's Stage 22).
   - Today: only the Overview findings are cached (per data vintage). Questions are not.
   - **Done 2026-11-09 (overnight run), PR "Item 6".** `llm_cache.py` caches the model's TEXT (plan SQL, critic verdict), never rows or decisions, keyed on `replay.request_key` (role, system-prompt hash, user text) + provider + model + data vintage (`REFRESH.json`) + guard version (hash of `sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`); a hit still goes through the guard, the query and `check_output`. `LLM_CACHE`, `LLM_CACHE_DB`, `LLM_CACHE_TTL_SEC`; `/metrics` -> `llm_cache` (hits, misses, hit_rate, entries); cached calls are `cached: true`, $0, and marked on the plan span. Off in the eval harness, scheduled runs and the test suite (an autouse fixture). Pinned by `tests/unit/test_llm_cache.py`.
 
-- [ ] **7. SLOs and P99 latency**, built on the latency tracking that already exists. Write the SLO targets in the README and alert when they're missed.
+- [x] **7. SLOs and P99 latency**, built on the latency tracking that already exists. Write the SLO targets in the README and alert when they're missed.
   - Done when: `/metrics` reports p50, p95 and p99; the README states the SLO targets; a missed SLO opens a GitHub issue (through the item 3 channel).
   - Today: `cost_tracker.py` reports per-call latency and p50/p95. There is no p99 and no SLO.
+  - **Done 2026-11-09, in the PR "Item 7".**
+    - `/metrics` reports p50, p95 and p99.
+    - The README's "Service level objectives" table gives the stack-latency targets, which come from item 20's measurements: p95 <= 150 ms at 1 user; p95 <= 400 ms and p99 <= 600 ms at 5 users; no failed requests. It also covers availability (`live-check.yml`) and says that model latency is reported but has no target.
+    - `load-test.yml` runs weekly and then runs `slo.py --alert`. A miss opens one `slo-miss` issue, a repeat comments on it, and the first run that meets every target closes it. The issue logic is unit-tested.
+    - **Seen on a runner:** run 42657985385, 5 users at p95 106 ms and p99 136 ms. SLO met, so no issue was opened.
 
 - [x] **8. Feature flag for the planner backend** as a plain config setting (no paid service), so I can switch LLM providers without a code change.
   - Done when: one documented setting picks the provider; when the chosen provider is down (402/429/5xx), the call automatically falls back to **Groq** (`openai/gpt-oss-120b`), and the answer records which provider served it; switching needs no code change (shown by a test and a README step).
