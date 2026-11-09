@@ -64,9 +64,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-api.txt pyarrow   # pyarrow: build_fhir_gold._to_arrow
 
-      - name: Cache FHIR Gold
+      # RESTORE only, never save: this job runs a branch's own code, and a cache it
+      # saved would be scoped to the default branch, where a branch could poison
+      # the FHIR Gold every main job then reads (CodeQL: cache poisoning). The
+      # nightly job, which runs main's code, is the one that saves this cache.
+      - name: Restore FHIR Gold cache
         id: fhir-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/synthea
