@@ -12,6 +12,7 @@ pydantic==2.13.4
 duckdb==1.5.4
 sqlglot==30.11.0
 openai==3.46.0
+httpx==0.28.1        # openai 3 no longer installs it; live_check.py and FastAPI's TestClient need it
 anthropic==1.15.0
 pyyaml==6.0.3
 langgraph==1.2.10

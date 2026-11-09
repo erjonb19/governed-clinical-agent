@@ -3,7 +3,7 @@
 Runs the real app through Starlette's TestClient against the committed hospital
 Gold, with no LLM key (so /query reports the planner as unavailable and the
 approval agent is off). The trace and checkpoint stores are redirected to a tmp
-dir. httpx ships with the pinned `anthropic` SDK; skip cleanly if it is absent.
+dir. httpx is pinned in requirements-api.txt (openai 3 no longer brings it); skip cleanly if absent.
 """
 
 import importlib
