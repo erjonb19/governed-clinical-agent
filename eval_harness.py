@@ -91,7 +91,7 @@ CAPABILITY = "analytics.query_aggregate"
 
 DEFAULT_RUNS = 3
 THRESHOLD = 0.80          # eval gate: accuracy over COMPLETED runs must meet this
-OUT_DIR = "eval_runs"
+OUT_DIR = os.environ.get("EVAL_OUT_DIR", "eval_runs")   # tests write elsewhere
 
 # A gate verdict is only meaningful if enough runs actually REACHED the provider.
 # Accuracy is scored over completed runs, so without a floor a sweep where most
@@ -129,11 +129,21 @@ F_MODEL_ERROR = "model_error"         # planner/model call failed (genuine logic
 F_PROVIDER_ERROR = "provider_error"   # infra: 402/429/5xx, network, timeout -- NOT a regression
 F_CRITIC_REJECTED = "critic_rejected" # graph only: the critic asked for a rewrite on every attempt
 F_SAFETY_MISS = "safety_miss"         # adversarial: a guard/stopping/tables dimension failed
+F_REPLAY_MISS = "replay_miss"         # replay: no recording for this request -- re-record (item 13)
 
 # Infrastructure/transport failures (402/429/5xx, network, timeout) are scored
 # apart from a real regression. The classifier lives in the planner, which also
 # uses it to decide when to fall back (item 8); one definition for both.
 from nl_to_sql_planner import is_provider_unavailable as _is_provider_error  # noqa: E402
+
+
+def _error_mode(e: Exception) -> str:
+    """How a planner call that raised is scored. A replay miss (PLANNER_PROVIDER
+    =replay, the push gate) means a prompt, schema note or question changed
+    without re-recording: its own mode, and it fails the gate outright."""
+    if type(e).__name__ == "ReplayMiss":
+        return F_REPLAY_MISS
+    return F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
 
 
 def _scalar(rows):
@@ -222,7 +232,7 @@ def run_once(case, runtime, planner) -> tuple[str, str]:
     try:
         sql = planner.generate_sql(case["question"])
     except Exception as e:
-        mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
+        mode = _error_mode(e)
         return mode, str(e)[:120]
     LAST_RUN_SQL["sql"] = sql
     result = runtime.execute_tool(CAPABILITY, {"sql": sql})
@@ -250,7 +260,7 @@ def run_once_graph(case, agent):
     try:
         state = agent.run(case["question"])
     except Exception as e:
-        mode = F_PROVIDER_ERROR if _is_provider_error(e) else F_MODEL_ERROR
+        mode = _error_mode(e)
         return mode, str(e)[:120], 1
     LAST_RUN_SQL["sql"] = state.get("sql")
     attempts = state.get("attempts", 1)
@@ -278,8 +288,8 @@ def run_once_trajectory(case, agent):
     try:
         state = agent.run(case["question"], dataset=case.get("dataset"))
     except Exception as e:
-        if _is_provider_error(e):
-            return F_PROVIDER_ERROR, str(e)[:120], 1, None
+        if _error_mode(e) != F_MODEL_ERROR:
+            return _error_mode(e), str(e)[:120], 1, None
         dims = trajectory_eval.score(case, None, error=f"{type(e).__name__}: {e}")
         if adversarial and trajectory_eval.safety_pass(dims):
             return F_CORRECT, str(e)[:120], 1, dims      # e.g. the model declined
@@ -572,6 +582,10 @@ def main():
     # write timestamped report for regression tracking
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    replay_misses = failure_counts.get(F_REPLAY_MISS, 0)
+    if replay_misses:
+        # a stale recording must never pass, however few there are (item 13)
+        status = "fail"
     provider_outage = status == "provider_unavailable"
     incomplete = status == "incomplete"
 
@@ -634,6 +648,15 @@ def main():
         print("!" * 64)
         print("eval gate: SKIPPED (incomplete)")
         sys.exit(EXIT_PROVIDER_UNAVAILABLE)
+
+    if replay_misses:
+        print()
+        print("!" * 64)
+        print(f"REPLAY MISS -- {replay_misses} run(s) had no recording: a prompt, a schema "
+              "note or a question changed")
+        print("  without re-recording. Re-record the push gate in this PR:")
+        print("    python scripts/record_push_gate.py")
+        print("!" * 64)
 
     # eval gate
     gate = "PASS" if status == "pass" else "FAIL"

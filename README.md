@@ -554,7 +554,11 @@ that names it.
 Nine GitHub Actions workflows:
 
 - **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped.
-- **Quick eval gate on every push to any branch and every PR** (`eval-on-push.yml`) — two jobs, one after the other: a 6-case hospital subset, then a 13-case FHIR subset (every tier, both answer modes, every FHIR table; `tests/unit/test_fhir_subset.py` pins that). Accuracy below the gate fails the build; a provider outage only warns, so it cannot block a commit.
+- **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
+  - **Hospital 6-case and FHIR 13-case subsets, on replayed answers** (`PLANNER_PROVIDER=replay`, `tests/evals/recordings/push_gate.json`). No model is called, so they cost no tokens and none of Gemini's daily quota. They run the real harness, guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns them red. The recorded answers are each case's reference SQL (marked `"authored"`), so these gates **do not measure a model**.
+  - **A prompt, schema note or question changed without re-recording fails the push** (a `REPLAY MISS`, and `tests/unit/test_push_gate_recordings.py` in pytest). Fix: `python scripts/record_push_gate.py` in the same PR (`--live groq` records a real model instead).
+  - **A live 3-case check on Groq** (the fallback model, item 8), paced for Groq's free tier. It needs the `GROQ_API_KEY` repository secret (set) and skips with a warning without it; a provider outage warns, a real accuracy drop is red.
+  - **Model accuracy** is measured by the nightly (`eval-nightly.yml`) and the manual FHIR eval, both live on Gemini, the default provider. A Gemini-only regression shows up there, up to a day after the push.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
   - **Alerts** (`nightly_alerts.py`, backlog item 3). A red nightly opens a GitHub issue, one per kind and dataset, and the two kinds are never mixed. A repeat comments on the open issue, and the next healthy night closes it.
     - **`eval-regression`** (`nightly eval regression: <dataset>`) opens when accuracy over completed runs is **under 80%**, or when the harness broke before scoring.
@@ -666,7 +670,11 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `PLANNER_PROVIDER` (default `gemini`); a call the provider cannot serve
   (402/429/5xx) is retried once on Groq (`PLANNER_FALLBACK`), and the answer says
   which provider served it. Shown by unit tests; on the deploy it needs
-  `GROQ_API_KEY`, which is not set yet.
+  `GROQ_API_KEY` in Render (it is a CI secret; whether Render has it is unchecked).
+- [x] **Push gate that spends no model quota**: the hospital and FHIR subsets replay
+  committed answers (they test the guard, harness, Gold and scoring, not a model),
+  a prompt or schema change without re-recording fails the push, and 3 cases run
+  live on Groq; model accuracy stays with the live Gemini nightly (see [CI](#ci)).
 
 ## Scope and honest limitations
 
