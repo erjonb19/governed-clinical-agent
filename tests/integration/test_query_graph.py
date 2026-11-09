@@ -206,3 +206,88 @@ def test_a_billed_critic_error_is_counted_and_the_run_goes_on(make_client):
     assert body["planner_metrics"]["calls"] == 2
     lines = (tmp / "metrics.jsonl").read_text().splitlines()
     assert len(lines) == 2
+
+
+# --- backlog item 4: the version on every answer --------------------------------
+VERSION_KEYS = {"prompt_version", "model", "provider", "git_commit"}
+
+
+def _answer_audit_lines(tmp):
+    lines = []
+    for p in (tmp / "audit").glob("*.jsonl"):
+        for line in p.read_text().splitlines():
+            e = json.loads(line)
+            if e.get("event_type") == "answer":
+                lines.append(e)
+    return lines
+
+
+@pytest.mark.parametrize("mode", ["graph", "single"])
+def test_every_answer_carries_its_version_in_response_trace_and_audit(make_client, mode):
+    script = {"how many": [("sql", COUNT), ("verdict", "approve")]}
+    c, tmp = make_client(script, mode=mode)
+    body = c.post("/query", json={"question": "how many hospitals?"}, headers=H).json()
+    v = body["version"]
+    assert set(v) == VERSION_KEYS
+    assert v["model"] == "stub" and v["provider"] == "gemini"
+    assert v["prompt_version"].startswith("p-") and len(v["prompt_version"]) == 14
+    assert v["git_commit"] and v["git_commit"] != ""
+    trace = c.get(f"/traces/{body['trace_id']}", headers=H).json()
+    assert {k: trace["attrs"].get(k) for k in VERSION_KEYS} == v
+    audit = [e for e in _answer_audit_lines(tmp) if e["context"]["trace_id"] == body["trace_id"]]
+    assert len(audit) == 1
+    assert {k: audit[0]["context"][k] for k in VERSION_KEYS} == v
+    assert audit[0]["decision"] == "allow"
+
+
+@pytest.mark.parametrize("mode", ["graph", "single"])
+def test_a_planner_outage_still_says_which_prompt_model_and_commit(make_client, mode):
+    class Down(Exception):
+        status_code = 429
+    c, tmp = make_client({"how many": [("raise", Down("Error code: 429"))]}, mode=mode)
+    body = c.post("/query", json={"question": "how many hospitals?"}, headers=H).json()
+    assert body["decided_by"] == "planner_error"
+    v = body["version"]
+    # no call completed: the configured planner is who was asked
+    assert set(v) == VERSION_KEYS and v["provider"] == "gemini" and v["model"] == "stub"
+    trace = c.get(f"/traces/{body['trace_id']}", headers=H).json()
+    assert trace["status"] == "error" and trace["attrs"]["prompt_version"] == v["prompt_version"]
+    audit = [e for e in _answer_audit_lines(tmp) if e["context"]["trace_id"] == body["trace_id"]]
+    assert audit and audit[0]["decision"] == "deny"
+
+
+def test_the_graph_puts_the_version_on_its_own_state(make_client):
+    # the API's fallback computation must not be what makes the graph test pass
+    c, _ = make_client({"how many": [("sql", COUNT), ("verdict", "approve")]})
+    import app as app_module
+    state = app_module._STATE["graph_agent"].run("how many hospitals?", dataset="hospital")
+    assert set(state["version"]) == VERSION_KEYS and state["version"]["model"] == "stub"
+
+
+def test_an_unconfigured_planner_still_answers_with_a_version(make_client):
+    c, tmp = make_client({})
+    import app as app_module
+    app_module._STATE["planner"] = None
+    app_module._STATE["planner_error"] = "set GEMINI_API_KEY"
+    body = c.post("/query", json={"question": "q"}, headers=H).json()
+    assert body["decided_by"] == "planner_error" and set(body["version"]) == VERSION_KEYS
+    assert any(e["context"]["decided_by"] == "planner_error" for e in _answer_audit_lines(tmp))
+
+
+def test_the_prompt_version_follows_the_prompt_text():
+    import versioning
+    from nl_to_sql_planner import SCHEMA_DOC_FHIR, SCHEMA_DOC_HOSPITAL
+    a = versioning.prompt_version(SCHEMA_DOC_HOSPITAL)
+    assert a == versioning.prompt_version(SCHEMA_DOC_HOSPITAL)              # stable
+    assert a != versioning.prompt_version(SCHEMA_DOC_FHIR)                  # per dataset
+    assert a != versioning.prompt_version(SCHEMA_DOC_HOSPITAL + "\n- note")  # any edit
+
+
+def test_the_commit_comes_from_render_or_ci_first(monkeypatch):
+    import versioning
+    versioning.git_commit.cache_clear()
+    try:
+        monkeypatch.setenv("RENDER_GIT_COMMIT", "a" * 40)
+        assert versioning.git_commit() == "a" * 40
+    finally:
+        versioning.git_commit.cache_clear()

@@ -25,6 +25,7 @@ class AuditEventType(Enum):
     TAINT_VIOLATION = "taint_violation"
     SANDBOX_EXECUTION = "sandbox_execution"
     CRITIC_REVIEW = "critic_review"
+    ANSWER = "answer"
 
 
 class DecisionType(Enum):
@@ -466,6 +467,32 @@ class AuditLogger:
             decision=DecisionType.DENY if verdict == "revise" else DecisionType.ALLOW,
             reason=reason,
             context={"verdict": verdict, "sql_sha256": sql_sha256}
+        )
+        return self._log_event(event)
+
+    def log_answer(
+        self,
+        capability: str,
+        allowed: bool,
+        decided_by: Optional[str],
+        version: Dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> str:
+        """
+        Log which version of the agent produced an answer (backlog item 4):
+        prompt_version, model, provider and git_commit, with the outcome and
+        the trace id. No question text, SQL or rows -- the trace has the SQL.
+        """
+        event = AuditEvent(
+            timestamp=datetime.now().isoformat(),
+            event_type=AuditEventType.ANSWER,
+            agent_id=self.agent_id,
+            capability=capability,
+            decision=DecisionType.ALLOW if allowed else DecisionType.DENY,
+            reason=f"answer: {decided_by}",
+            context={**{k: version.get(k) for k in
+                        ("prompt_version", "model", "provider", "git_commit")},
+                     "trace_id": trace_id, "decided_by": decided_by},
         )
         return self._log_event(event)
 
