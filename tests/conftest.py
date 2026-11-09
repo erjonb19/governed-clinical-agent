@@ -47,3 +47,20 @@ def minimal_policy() -> dict:
             {"name": "shell.execute", "allowed": False},
         ],
     }
+
+
+@pytest.fixture(autouse=True)
+def _fresh_postgres_state():
+    """With STATE_DB_URL set (the CI job that runs the suite against a Postgres
+    service container, item 19), every test starts from empty state tables, as
+    it does with a fresh SQLite file under tmp_path."""
+    import os
+    u = os.environ.get("STATE_DB_URL", "")
+    if not u.startswith(("postgres://", "postgresql://")):
+        yield
+        return
+    import psycopg
+    with psycopg.connect(u, autocommit=True) as con:
+        con.execute("DROP TABLE IF EXISTS approval_events, approvals, checkpoints, "
+                    "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE")
+    yield

@@ -78,6 +78,43 @@ jobs:
           pip-audit --progress-spinner off -r requirements-api.txt -r requirements.txt \
             --ignore-vuln PYSEC-2026-4114 --ignore-vuln CVE-2026-49272
 
+  # The same suite against Postgres (backlog item 19): STATE_DB_URL points the
+  # approval store and both graphs' checkpointers at a Postgres 16 service
+  # container, so every approval, escalation, resume and "no rows in the
+  # checkpoint" test runs on both backends; tests/integration/test_state_postgres.py
+  # adds the redeploy check. No hosted database: the container lives and dies
+  # with the job.
+  pytest-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: state
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      STATE_DB_URL: postgresql://ci:ci@localhost:5432/state
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt -r requirements.txt pytest
+
+      - name: Run tests on Postgres state
+        run: pytest -q -m "not network"
+
   # The documented dev install (`pip install -e ".[dev]"`, CLAUDE.md) must give
   # the guard the SAME sqlglot and duckdb as requirements-api.txt. Before the
   # pins in setup.py it installed no sqlglot at all, and a hand-installed newer

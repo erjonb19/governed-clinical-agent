@@ -167,8 +167,9 @@ def test_an_execution_error_never_puts_a_value_into_state(make_client):
     assert body["allowed"] is False
     assert name not in json.dumps(body)
     # nor in the checkpoint DB, which the retry prompt is built from
-    raw = (tmp / "checkpoints.sqlite").read_bytes()
-    assert name.encode() not in raw
+    from tests.state_helpers import checkpoint_values
+    values = checkpoint_values(tmp / "checkpoints.sqlite")       # SQLite or Postgres
+    assert values and not any(name.encode() in v for v in values)
 
 
 def test_single_mode_names_a_database_failure_as_such(make_client):

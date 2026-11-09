@@ -71,6 +71,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import critic
+import state_db
 import tracing
 import versioning
 from src.runtime.agent_runtime import AgentRuntime
@@ -165,7 +166,8 @@ class GovernedAgentGraph:
         # thread id, which is also the trace id (tracing.py).
         self.checkpoint_db = checkpoint_db or CHECKPOINT_DB
         os.makedirs(os.path.dirname(self.checkpoint_db) or ".", exist_ok=True)
-        self._cm = SqliteSaver.from_conn_string(self.checkpoint_db)
+        # Postgres when STATE_DB_URL is set (item 19), else this SQLite file
+        self._cm = state_db.checkpointer(self.checkpoint_db)
         self.checkpointer = self._cm.__enter__()
         # Result rows never enter the graph state, because the checkpointer
         # writes every state to disk and nothing prunes it. They are held here

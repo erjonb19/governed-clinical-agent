@@ -544,6 +544,8 @@ def health() -> dict:
         "version": APP_VERSION,                 # backlog item 5
         "api_version": API_VERSION,
         "git_commit": versioning.git_commit(),
+        # where approvals and checkpoints live (item 19); never the credentials
+        "state_store": __import__("state_db").describe(),
         "gold_db": GOLD_DB,
         "gold_db_present": os.path.exists(GOLD_DB),
         "runtime_ready": _STATE.get("runtime") is not None,
