@@ -1,0 +1,29 @@
+# Dependabot (backlog item 16): weekly, grouped, so updates arrive as two PRs a
+# week at most -- one for Python packages, one for GitHub Actions. Each runs the
+# full CI like any PR; merging stays a person's decision.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"           # requirements-api.txt, requirements.txt, setup.py
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # The guard's own pins (setup.py GUARD_PINS = requirements-api.txt): a new
+    # sqlglot once made the PHI check refuse every FHIR query (30.29.0), so
+    # bumping them is a deliberate guard change the owner merges, never a
+    # grouped weekly update.
+    ignore:
+      - dependency-name: sqlglot
+      - dependency-name: duckdb
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
