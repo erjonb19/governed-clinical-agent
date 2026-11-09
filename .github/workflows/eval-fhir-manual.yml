@@ -28,6 +28,10 @@ on:
         type: boolean
         required: false
         default: true
+      cases:
+        description: "Only these case ids, comma-separated (empty = all 28). For a cheap targeted check."
+        required: false
+        default: ""
 
 concurrency:
   group: gemini-eval        # one Gemini sweep at a time: they share a quota
@@ -83,6 +87,7 @@ jobs:
           EVAL_DATASET: "fhir"
           PLANNER_SCHEMA: "fhir"
           RUNS: ${{ inputs.runs }}
+          EVAL_CASES: ${{ inputs.cases }}
         run: |
           set +e
           python -u eval_harness.py --runs "$RUNS"
