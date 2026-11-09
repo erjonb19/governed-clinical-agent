@@ -718,11 +718,14 @@ Backlog item 7. Each SLO says what it covers and how it is checked.
 | **Availability** of the deploy: `/health` and `/ui` load with no console error | every night | nightly by `live-check.yml`; 3 failed attempts open a `live-check` issue |
 | **Model latency** (the provider's) | none: it is Gemini's free tier, not this code | reported per call in `/metrics` (p50, p95, p99) |
 
-The latency targets come from item 20's measurements (`docs/benchmarks.md`).
-In the session sandbox, 5 users measured p95 145 ms and p99 154 ms before the
-tracer fix, and 108 ms and 126 ms after it. A GitHub runner is smaller and
-noisier, so the targets allow about 2.5x the worse of the two. They will be
-tightened once a few weekly runner results exist.
+The latency targets come from item 20's measurements (`docs/benchmarks.md`). At 5 users:
+
+| measured | p95 | p99 |
+|---|---|---|
+| session sandbox, before the tracer fix | 145 ms | 154 ms |
+| first GitHub-runner run | 106 ms | 136 ms |
+
+The targets leave about 3-4x headroom over the worse of these, so a miss means a real slowdown, not noise. They will be tightened once a few weekly runner results exist.
 
 ## Scope and honest limitations
 

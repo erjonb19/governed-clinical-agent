@@ -13,10 +13,11 @@ What is promised, and what is not:
 
 Where the numbers come from (docs/benchmarks.md, item 20): in the session
 sandbox (4 CPUs), 5 concurrent users measured p95 145 ms and p99 154 ms before
-item 20's tracer fix, and 108 ms and 126 ms after it. A GitHub runner has 2 to
-4 vCPUs and noisier neighbours, so the targets leave about 2.5x headroom over
-the worse of the two. A miss therefore means a real slowdown, not noise.
-Tighten the targets once a few weekly runner results exist.
+item 20's tracer fix; the first GitHub-runner run measured p95 106 ms and p99
+136 ms (it was faster than the sandbox). The targets leave roughly 3-4x headroom
+over the worse of those (400/145, 600/154; 150 ms vs 30 ms at 1 user), so a miss
+means a real slowdown, not runner noise. Tighten them once a few weekly runner
+results exist.
 
     python slo.py load.json                 # print the verdict; exit 1 on a miss
     python slo.py load.json --alert         # also open/comment/close the issue (needs GH_TOKEN)
