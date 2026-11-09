@@ -9,6 +9,13 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # The guard's own pins (setup.py GUARD_PINS = requirements-api.txt): a new
+    # sqlglot once made the PHI check refuse every FHIR query (30.29.0), so
+    # bumping them is a deliberate guard change the owner merges, never a
+    # grouped weekly update.
+    ignore:
+      - dependency-name: sqlglot
+      - dependency-name: duckdb
     groups:
       python:
         patterns: ["*"]
