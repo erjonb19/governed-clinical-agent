@@ -1,0 +1,38 @@
+# docker-compose.yml -- the API and a local Arize Phoenix, one command
+# (backlog item 17):
+#
+#   API_KEY=change-me GEMINI_API_KEY=... docker compose up --build
+#
+# Then the UI is at http://localhost:8000/ui and every run's trace at
+# http://localhost:6006. Local only: Phoenix needs ~530 MB idle, over Render
+# free's 512 MB (README), so the deploy keeps its SQLite traces.
+#
+# Note: to the exporter, http://phoenix:6006 is not localhost, so it treats
+# Phoenix here as a HOSTED backend and sends the reduced set (the question as a
+# hash, SQL literals masked; trace_export.is_hosted). The local SQLite traces in
+# the Traces view keep everything.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PLANNER_PROVIDER: ${PLANNER_PROVIDER:-gemini}
+      PLANNER_MIN_INTERVAL_SEC: "5"
+      TRACE_OTLP_ENDPOINT: http://phoenix:6006/v1/traces
+    # The FHIR Gold is derived (python build_fhir_gold.py). If you have it, add
+    #   volumes: ["./medallion/fhir_gold.duckdb:/app/medallion/fhir_gold.duckdb:ro"]
+    # (not by default: a bind mount of a missing file creates a directory).
+    depends_on:
+      - phoenix
+
+  phoenix:
+    image: arizephoenix/phoenix:version-21.0.0   # = arize-phoenix 21.0.0, as measured in the README
+    ports:
+      - "6006:6006"

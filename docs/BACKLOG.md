@@ -75,9 +75,10 @@ Langfuse), **26** (the data intake platform's Stage 22).
   - Today: per-API-key rate limiting (slowapi) and `/health` already exist. There is no `/v1` prefix, the app version is a hard-coded "1.0.0", and there are no release tags (the only tag is a data snapshot, `fhir-gold-20260901`).
   - **Status 2026-11-09 (overnight run): built, in the PR "Item 5".** Every path answers under `/v1` too (an ASGI middleware maps `/v1/<path>` onto the one route set, so the old paths keep working and the two cannot drift; decided in the PR); `API-Version: v1` on every response; `VERSION` (now `1.1.0`) is the single source of the app version (FastAPI and `/health`); `/health` reports `version`, `api_version` and `git_commit`; `release.yml` turns a pushed `vX.Y.Z` tag that matches `VERSION` into a GitHub release after pytest passes. **Waiting on the owner (ask, publishing):** push the first tag, `git tag v1.1.0 && git push origin v1.1.0`, after this PR merges; the item is ticked once that release exists. Noticed, not changed: `/metrics` answers without the API key (it was like that before).
 
-- [ ] **6. Result caching in SQLite**, so repeat questions skip the LLM call. Show the hit rate. Keep in mind the cache resets when Render restarts.
+- [x] **6. Result caching in SQLite**, so repeat questions skip the LLM call. Show the hit rate. Keep in mind the cache resets when Render restarts.
   - Done when: asking the same question twice makes one LLM call, not two; the cache is keyed so a data refresh or a guard change cannot serve a stale answer, and still re-runs the guard; the hit rate shows in `/metrics`; the README says it resets on Render restarts.
   - Today: only the Overview findings are cached (per data vintage). Questions are not.
+  - **Done 2026-11-09 (overnight run), PR "Item 6".** `llm_cache.py` caches the model's TEXT (plan SQL, critic verdict), never rows or decisions, keyed on `replay.request_key` (role, system-prompt hash, user text) + provider + model + data vintage (`REFRESH.json`) + guard version (hash of `sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`); a hit still goes through the guard, the query and `check_output`. `LLM_CACHE`, `LLM_CACHE_DB`, `LLM_CACHE_TTL_SEC`; `/metrics` -> `llm_cache` (hits, misses, hit_rate, entries); cached calls are `cached: true`, $0, and marked on the plan span. Off in the eval harness, scheduled runs and the test suite (an autouse fixture). Pinned by `tests/unit/test_llm_cache.py`.
 
 - [ ] **7. SLOs and P99 latency**, built on the latency tracking that already exists. Write the SLO targets in the README and alert when they're missed.
   - Done when: `/metrics` reports p50, p95 and p99; the README states the SLO targets; a missed SLO opens a GitHub issue (through the item 3 channel).
@@ -165,6 +166,8 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: the first Dependabot PR appears; a known-vulnerable pin fails `pip-audit`;
     `gh api repos/erjonb19/governed-clinical-agent/branches/main --jq .protected` is `true`.
   - Today: none of these; `main` is unprotected.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 16", except two owner steps.** `.github/dependabot.yml` (pip + actions, grouped, weekly), `codeql.yml` (python + actions; push/PR to main, weekly), a `pip-audit` job in `tests.yml` (pinned 2.10.1, both requirements files). **It found real advisories:** `mcp==1.28.0` had 6 (fixed: bumped to 1.30.0 in this PR; the MCP unit tests and the MCP E2E pass on it) and `oauthlib` 3.3.1 (transitive, from `databricks-sql-connector`) has 2, fixed in 4.0.1, which needs `databricks-sql-connector` 4.4.0 -> 4.9.0. That bump is in its own PR for the owner: it changes the Databricks path, which cannot be re-verified against a workspace until item 10's secrets exist. Until then `pip-audit` ignores those two IDs **by name** (a new advisory still fails). Shown failing: with `mcp==1.28.0` pip-audit exits non-zero (9 found).
+  - **Owner steps:** (1) decide on the connector PR; (2) turn on branch protection: Settings -> Branches -> Add branch ruleset (or "Add rule") for `main` -> require a pull request, and require status checks `pytest`, `ui-e2e` and `mcp-e2e` (not the eval gates) -> Save. Then `gh api repos/erjonb19/governed-clinical-agent/branches/main --jq .protected` prints `true`. Unticked until both, and the first Dependabot PR, exist.
 
 - [ ] **17. A container image.** A `Dockerfile` for the API (slim base, non-root user,
   pinned requirements, a `HEALTHCHECK` on `/health`) and a `docker-compose.yml` that starts
@@ -176,6 +179,7 @@ What real AI, data and software engineering teams would add, checked against the
     on every push; the image's memory at idle is measured (Render budget).
   - Today: no Dockerfile for the API (`docker/Dockerfile.sandbox` is the Milestone-1 tool
     sandbox); Render builds from `requirements-api.txt`.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 17".** `Dockerfile` (python:3.11-slim, `requirements-api.txt`, non-root `app` user owning only `logs/`, `HEALTHCHECK` on `/health`, `GIT_COMMIT` build arg reported by `/health`), `.dockerignore`, `docker-compose.yml` (API + `arizephoenix/phoenix:version-21.0.0`), `container.yml` (build, start, wait healthy, non-root check, smoke test of `/v1/health`, auth and the guard, memory, and a Trivy CRITICAL-fixable gate run from `aquasec/trivy` pinned by digest, 0.58.2, not the movable `trivy-action` tag). **Measured locally:** healthy, 109 MiB idle, 118 MiB after 30 guarded queries, 743 MB image -- inside the Render budget. **Not yet verified:** `docker compose up` end to end with Phoenix (this sandbox's Docker daemon had no route to Docker Hub for the Phoenix pull) and the first Trivy result (CI). **Owner (ask):** pushing the image to GHCR, and whether Render switches to it. Unticked until compose and the scan are seen working.
 
 - [ ] **18. A package layout** (plan first, then the owner's OK). About 60 modules sit at the
   repo root beside `src/` (the Milestone-1 runtime). Move them into one package with
@@ -184,6 +188,7 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: the owner has approved a written plan, and then, in small PRs, each layer
     moves with no behavior change (all tests, both evals on replay, the E2Es green); the
     guard modules move last and alone; old import paths keep working until the last PR.
+  - **Status 2026-11-09 (overnight run): plan written, waiting for the owner's OK** -- `docs/plans/package-layout.md` (target layers, one typed settings object, an app factory, order of PRs with shims, what must survive, four decisions). Nothing moved.
   - Today: flat layout; `CLAUDE.md` rule 6 (schema and planner agree) and the guard's pinned
     install must survive the move.
 

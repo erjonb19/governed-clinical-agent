@@ -112,3 +112,10 @@ def test_the_prefix_is_stripped_from_the_raw_bytes_too():
         mw({"type": "http", "path": "/v1/traces/a/b", "raw_path": b"/v1/traces/a%2Fb"}, None, None)
     )
     assert seen == {"path": "/traces/a/b", "raw": b"/traces/a%2Fb"}
+
+
+def test_metrics_shows_the_answer_cache_hit_rate(client):
+    # backlog item 6
+    c, _ = client
+    stats = c.get("/v1/metrics").json()["llm_cache"]
+    assert {"enabled", "hits", "misses", "hit_rate", "entries", "ttl_sec"} <= set(stats)
