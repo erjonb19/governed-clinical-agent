@@ -83,3 +83,24 @@ def _fresh_postgres_state(monkeypatch):
             "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE"
         )
     yield
+
+
+def _no_answer_cache_by_default(tmp_path, monkeypatch):
+    """The answer cache (llm_cache.py, item 6) is off in tests unless a test
+    turns it on, and it never writes into the repo's logs/: one test's model
+    answer must not answer the next test's request."""
+    monkeypatch.setenv("LLM_CACHE", "0")
+    monkeypatch.setenv("LLM_CACHE_DB", str(tmp_path / "llm_cache.sqlite"))
+    try:
+        import llm_cache
+
+        llm_cache.set_cache(None)
+    except ImportError:
+        pass
+    yield
+    try:
+        import llm_cache
+
+        llm_cache.set_cache(None)
+    except ImportError:
+        pass

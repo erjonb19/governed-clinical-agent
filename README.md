@@ -67,7 +67,7 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### Service and observability
 
-- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes. **Versioned API** (backlog item 5): every path also answers under `/v1` (`/v1/query`, `/v1/health`, ... served by the same routes, so they cannot drift; the old paths keep working for the UI, MCP clients and E2Es), every response carries `API-Version: v1`, and `/health` reports the app `version` (from `VERSION`, semantic) and `git_commit`. Per-API-key rate limiting (slowapi) on every data route.
+- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes. **Answer cache** (`llm_cache.py`, backlog item 6): a repeated question is answered without calling the model. What is cached is the model's text only (the SQL a plan wrote, the verdict a critic gave), never rows. A hit still runs the guard, the query on today's data and the PHI output check, so a data refresh or a guard change cannot serve a stale answer. The key also includes the data vintage and a hash of the guard's files, so either change starts a cold cache. SQLite lives at `LLM_CACHE_DB` (default `logs/llm_cache.sqlite`); `LLM_CACHE=0` turns it off and `LLM_CACHE_TTL_SEC` (default 1 day) bounds an entry's age. A cached call reports `cached: true` and costs $0. `/metrics` shows `llm_cache.hits`, `misses` and `hit_rate`. **On Render's free plan the store resets with every restart or redeploy**, which only costs a model call. The eval harness and scheduled runs turn it off, so every run asks the model. **Versioned API** (backlog item 5): every path also answers under `/v1` (`/v1/query`, `/v1/health`, ... served by the same routes, so they cannot drift; the old paths keep working for the UI, MCP clients and E2Es), every response carries `API-Version: v1`, and `/health` reports the app `version` (from `VERSION`, semantic) and `git_commit`. Per-API-key rate limiting (slowapi) on every data route.
 - **Tracing** (`tracing.py`) — one trace per run, one span per step (`plan`, `guard`, `execute`, `retry`, `approval.propose`, `approval.decision`, `answer`), with OpenTelemetry-shaped fields in local SQLite (`TRACE_DB`, default `logs/traces.sqlite`, newest `TRACE_MAX_RUNS` kept). Every `/query`, `/raw-sql` and `/propose` response carries a `trace_id`; `GET /traces` lists runs and `GET /traces/{id}` returns the span tree, and the **Traces** view in the UI draws it as a waterfall. For an approval the trace id is the checkpoint thread id, so a decision submitted hours later appends to the same trace. Spans store the question, the SQL, its hash and row **counts**, never result rows (a test pins that). Best effort: a tracer never fails a request. The store sits on the instance disk, so on Render it resets with each deploy.
 - **Cost tracking** (`cost_tracker.py`) — per-call token counts and estimated cost in every response; aggregate totals, averages, and latency p50/p95 at `/metrics`. Percentiles rather than averages, because the average hides the slow tail.
 - **Audit log** — the runtime's `AuditLogger` is attached on the service path (`AUDIT_LOG_DIR`, default `logs`; empty disables), so every policy decision and tool execution the deployed service makes lands in `logs/audit_api_*.jsonl`, which is what the AIOps panel reads.
@@ -551,7 +551,7 @@ that names it.
 
 ## CI
 
-Eleven GitHub Actions workflows:
+Twelve GitHub Actions workflows:
 
 - **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
 - **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
@@ -562,6 +562,7 @@ Eleven GitHub Actions workflows:
 - **Releases** (`release.yml`, backlog item 5): pushing a tag `vX.Y.Z` that matches `VERSION` runs pytest on the tagged commit and creates a GitHub release with generated notes. Pushing the tag is the owner's step; nothing in CI creates tags.
 - **Tests on Postgres state** (`pytest-postgres`, a job in `tests.yml`, backlog item 19): the whole suite runs again with `TEST_STATE_DB_URL` pointing at a Postgres 16 service container (`state_test`). That covers every approval, escalation, resume and "no rows in the checkpoint" test, plus a redeploy check (`tests/integration/test_state_postgres.py`).
 - **Supply chain** (backlog item 16): **`pip-audit`** (a job in `tests.yml`) checks both requirements files against the PyPA advisory database on every push, and a pin with a known advisory turns the push red. Two `oauthlib` advisories are ignored by name, waiting on a decision: their fix needs a Databricks connector upgrade that can't be checked against a real workspace yet. **CodeQL** (`codeql.yml`) scans the Python and the workflows on pushes and PRs to main, and weekly. **Dependabot** (`.github/dependabot.yml`) opens at most one grouped PR a week for Python packages and one for GitHub Actions.
+- **Container** (`container.yml`, backlog item 17), on every push. It builds the image, starts it, waits for the `HEALTHCHECK`, and checks the non-root user. A smoke test hits `/v1/health` (with the commit), checks that `/v1/traces` needs the key, and checks that the guard allows a count and refuses a `DROP`. Then it records memory and runs a **Trivy** scan that fails on fixable CRITICAL findings. Nothing is pushed to a registry.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
   - **Alerts** (`nightly_alerts.py`, backlog item 3). A red nightly opens a GitHub issue, one per kind and dataset, and the two kinds are never mixed. A repeat comments on the open issue, and the next healthy night closes it.
     - **`eval-regression`** (`nightly eval regression: <dataset>`) opens when accuracy over completed runs is **under 80%**, or when the harness broke before scoring.
@@ -588,6 +589,21 @@ $env:API_KEY="..."              # require a key on the data endpoints
 
 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
+
+Or in a container (backlog item 17; `Dockerfile`, slim base, pinned requirements, a non-root user, a `HEALTHCHECK` on `/health`):
+
+```bash
+docker build -t governed-clinical-agent .
+docker run -p 8000:8000 -e API_KEY=change-me -e GEMINI_API_KEY=... governed-clinical-agent
+```
+
+or with a local Arize Phoenix for traces, in one command (`docker-compose.yml`; Phoenix at http://localhost:6006):
+
+```bash
+API_KEY=change-me GEMINI_API_KEY=... docker compose up --build
+```
+
+The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docker stats`, 2026-11-09; 110.8 MiB idle again after trimming the build context). That is within the Render budget, but Render still builds from `requirements-api.txt`; switching it to the image is the owner's call. The image is 743 MB on disk.
 
 Then open **http://localhost:8000/ui** — a self-contained web UI to ask questions
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
@@ -669,6 +685,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
+- [x] **Repeat questions skip the model** (`llm_cache.py`): the model's answer
+  (SQL or critic verdict) is cached in SQLite, keyed on the exact request plus the
+  data vintage and the guard's version; a hit still goes through the guard and
+  runs on today's data. Hit rate in `/metrics`. It resets on a Render restart.
 - [x] **A version on every answer**: each `/query` response, its trace and its audit
   line carry `prompt_version`, `model`, `provider` and `git_commit`.
 - [x] **One setting picks the planner's provider, with an automatic fallback**:

@@ -98,6 +98,15 @@ def _metrics_dict(m: Any) -> dict:
     return {k: getattr(m, k, None) for k in _METRIC_FIELDS}
 
 
+def _forget_failed_plan(state: Any) -> None:
+    """The latest plan's SQL was refused or failed: drop its cached answer
+    (llm_cache, item 6) so the next ask goes back to the model."""
+    k = state.get("plan_cache_key") if hasattr(state, "get") else None
+    if k:
+        import llm_cache
+        llm_cache.get_cache().evict(k)
+
+
 class AgentState(TypedDict, total=False):
     """State carried through the graph. Every node reads and updates this."""
     question: str
@@ -109,6 +118,7 @@ class AgentState(TypedDict, total=False):
     sql: Optional[str]              # the SQL from the latest plan step
     attempts: int                   # how many plan->execute cycles so far
     last_error: Optional[str]       # why the previous attempt failed (fed back into plan)
+    plan_cache_key: Optional[str]   # llm_cache entry of the latest plan, if any (item 6)
     allowed: bool
     decided_by: Optional[str]       # "executed" | "guard" | "policy" | "critic" | "exhausted"
     reason: Optional[str]
@@ -210,7 +220,8 @@ class GovernedAgentGraph:
                    provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                    completion_tokens=metrics.completion_tokens,
                    est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms,
-                   fallback_from=getattr(metrics, "fallback_from", None))
+                   fallback_from=getattr(metrics, "fallback_from", None),
+                   cached=bool(getattr(metrics, "cached", False)))
         step = {
             "step": "plan",
             "attempt": attempt,
@@ -223,6 +234,7 @@ class GovernedAgentGraph:
         }
         return {
             "sql": sql,
+            "plan_cache_key": getattr(metrics, "cache_key", None),
             "critic_verdict": None,
             "attempts": attempt,
             "trajectory": state.get("trajectory", []) + [step],
@@ -281,6 +293,7 @@ class GovernedAgentGraph:
                 g.set(allowed=False, decided_by=decided_by, reason=reason[:500])
                 step = {"step": "execute", "attempt": state.get("attempts"),
                         "outcome": "denied", "decided_by": decided_by, "reason": reason[:200]}
+                _forget_failed_plan(state)
                 return {
                     "allowed": False, "decided_by": decided_by, "reason": reason,
                     "last_error": reason,
@@ -294,6 +307,7 @@ class GovernedAgentGraph:
                 g.set(allowed=False, decided_by=decided_by, reason=(err or "")[:500])
                 step = {"step": "execute", "attempt": state.get("attempts"),
                         "outcome": "failed", "decided_by": decided_by, "reason": err[:200]}
+                _forget_failed_plan(state)
                 return {
                     "allowed": False, "decided_by": decided_by, "reason": err,
                     "last_error": err,

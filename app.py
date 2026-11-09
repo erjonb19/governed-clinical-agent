@@ -678,7 +678,8 @@ def query(request: Request, req: QueryRequest) -> dict:
                 sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
                        provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                        completion_tokens=metrics.completion_tokens,
-                       est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
+                       est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms,
+                       cached=bool(getattr(metrics, "cached", False)))
         except Exception as e:
             _record_failed_call(e, req.question)
             tracer.event("answer", outcome="planner_error")
@@ -689,6 +690,9 @@ def query(request: Request, req: QueryRequest) -> dict:
             return {"allowed": False, "decided_by": "planner_error",
                     "reason": f"planner error: {e}", "trace_id": tid, "version": version}
         out = run_governed_sql(sql, req.backend, ds)
+        if not out.get("allowed") and getattr(metrics, "cache_key", None):
+            import llm_cache          # refused or failed: do not replay it (item 6)
+            llm_cache.get_cache().evict(metrics.cache_key)
         note = _unanswerable(out)
         if note:
             out["unanswerable"] = note
@@ -844,8 +848,12 @@ def get_findings(request: Request) -> dict:
 
 @app.get("/metrics")
 def metrics() -> dict:
-    """Aggregate cost and latency across all planner calls (optimization view)."""
-    return cost_tracker.summarize()
+    """Aggregate cost and latency across all planner calls (optimization view),
+    and the answer cache's hit rate (item 6)."""
+    import llm_cache
+    out = cost_tracker.summarize()
+    out["llm_cache"] = llm_cache.get_cache().stats()
+    return out
 
 
 # ---------------------------------------------------------------------------
