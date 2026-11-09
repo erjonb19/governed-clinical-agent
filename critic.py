@@ -54,7 +54,7 @@ def routing() -> bool:
     return os.environ.get("CRITIC_ROUTING", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def parse_verdict(text: Optional[str]) -> dict:
+def parse_verdict(text: Optional[str]) -> dict[str, Any]:
     """The verdict in `text`, or `unavailable` if there is no usable one.
 
     Tolerates code fences and prose around the JSON; insists on a JSON object
@@ -82,7 +82,7 @@ def parse_verdict(text: Optional[str]) -> dict:
             "issues": [str(i)[:200] for i in issues[:10]]}
 
 
-def review(planner: Any, question: str, sql: str, schema_doc: Optional[str] = None) -> dict:
+def review(planner: Any, question: str, sql: str, schema_doc: Optional[str] = None) -> dict[str, Any]:
     """Run the critic. Never raises: any failure is the `unavailable` verdict.
 
     Returns {verdict, reason, issues, metrics} where metrics is the call's
@@ -104,7 +104,7 @@ def review(planner: Any, question: str, sql: str, schema_doc: Optional[str] = No
                 "issues": [], "metrics": m.as_dict() if m is not None else None}
 
 
-def audit(runtime: Any, capability: str, verdict: dict, sql_sha256: Optional[str]) -> None:
+def audit(runtime: Any, capability: str, verdict: dict[str, Any], sql_sha256: Optional[str]) -> None:
     """Write the verdict to the runtime's audit log, beside the guard's decisions."""
     logger = getattr(runtime, "audit_logger", None)
     if logger is None or not hasattr(logger, "log_critic_review"):

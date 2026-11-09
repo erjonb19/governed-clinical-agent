@@ -156,6 +156,7 @@ What real AI, data and software engineering teams would add, checked against the
     fails the `pytest` workflow; the README's CI section lists them.
   - Today: no linter, type checker or coverage in CI (`tests.yml` runs pytest and the
     guard's editable install only). 766 tests.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 15", except one part.** In `tests.yml`: `ruff check` (floor: E9/F63/F7/F82, zero hits today; F401/F811/F841 have 45 hits, many in `src/`, next), `ruff format --check` with a ratchet list of the 139 files that predate it (a file leaves the list in its own PR), `mypy` strict on `critic.py` and `nightly_alerts.py`, coverage `--cov-fail-under=67` (68.8% measured, tests/demos/scripts not counted); `.pre-commit-config.yaml` with the same tools. **Not done: strict mypy on `sql_guard.py` (8 errors) and `phi_guard.py` (62)** -- fixing them edits the guard files, which the owner merges; they are the next PRs under this item. Unticked until then.
 
 - [ ] **16. Supply chain and merge rules.** Dependabot for pip and GitHub Actions (grouped,
   weekly); CodeQL for Python and the workflows; `pip-audit` on both requirements files in
@@ -164,6 +165,8 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: the first Dependabot PR appears; a known-vulnerable pin fails `pip-audit`;
     `gh api repos/erjonb19/governed-clinical-agent/branches/main --jq .protected` is `true`.
   - Today: none of these; `main` is unprotected.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 16", except two owner steps.** `.github/dependabot.yml` (pip + actions, grouped, weekly), `codeql.yml` (python + actions; push/PR to main, weekly), a `pip-audit` job in `tests.yml` (pinned 2.10.1, both requirements files). **It found real advisories:** `mcp==1.28.0` had 6 (fixed: bumped to 1.30.0 in this PR; the MCP unit tests and the MCP E2E pass on it) and `oauthlib` 3.3.1 (transitive, from `databricks-sql-connector`) has 2, fixed in 4.0.1, which needs `databricks-sql-connector` 4.4.0 -> 4.9.0. That bump is in its own PR for the owner: it changes the Databricks path, which cannot be re-verified against a workspace until item 10's secrets exist. Until then `pip-audit` ignores those two IDs **by name** (a new advisory still fails). Shown failing: with `mcp==1.28.0` pip-audit exits non-zero (9 found).
+  - **Owner steps:** (1) decide on the connector PR; (2) turn on branch protection: Settings -> Branches -> Add branch ruleset (or "Add rule") for `main` -> require a pull request, and require status checks `pytest`, `ui-e2e` and `mcp-e2e` (not the eval gates) -> Save. Then `gh api repos/erjonb19/governed-clinical-agent/branches/main --jq .protected` prints `true`. Unticked until both, and the first Dependabot PR, exist.
 
 - [ ] **17. A container image.** A `Dockerfile` for the API (slim base, non-root user,
   pinned requirements, a `HEALTHCHECK` on `/health`) and a `docker-compose.yml` that starts
