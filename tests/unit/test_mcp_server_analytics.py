@@ -78,9 +78,9 @@ async def test_query_analytics_has_a_strict_input_schema(anyio_backend):
     the description and the constraints, because that is all the client sees
     before it writes a query."""
     tool = next(t for t in await M.mcp.list_tools() if t.name == "query_analytics")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
 
-    assert tool.inputSchema["required"] == ["sql"]
+    assert tool.input_schema["required"] == ["sql"]
     assert props["sql"]["description"]
     assert props["sql"]["minLength"] == 1
     assert props["sql"]["maxLength"] > 0
