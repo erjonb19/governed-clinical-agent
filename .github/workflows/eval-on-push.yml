@@ -147,7 +147,10 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PLANNER_PROVIDER: "groq"
           PLANNER_MIN_INTERVAL_SEC: "20"
-          EVAL_CASES: "t1_count_all,t2_avg_mspb_pa,t4_best_value_top10"
+          # t2_avg_mspb_pa is not here (owner, 2026-11-09): Groq's gpt-oss-120b
+          # appends ORDER BY ... LIMIT 1 to that one-row average, which DuckDB
+          # refuses. It stays in the bank and in every Gemini eval. README.
+          EVAL_CASES: "t1_count_all,t2_count_ny_5star,t4_best_value_top10"
           EVAL_RUNS: "1"
         run: scripts/eval_gate.sh warn
 
