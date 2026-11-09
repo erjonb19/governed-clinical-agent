@@ -2,15 +2,19 @@
 # A GitHub release for a semantic version tag (backlog item 5).
 #
 # The app's version lives in VERSION; a release is the tag vX.Y.Z that matches
-# it. Pushing the tag is the OWNER's step (a release is published, so it is an
-# "ask" item): nothing in CI creates tags.
+# it. Pushing the tag publishes a release, so it is an "ask" item: the owner
+# pushes it, or tells an agent to (v1.1.0: owner, 2026-11-09). Nothing in CI
+# creates tags.
 #
 #   1. bump VERSION in a PR and merge it
 #   2. git tag v$(cat VERSION) && git push origin v$(cat VERSION)
 #
 # This workflow then checks the tag matches VERSION and that pytest passes on
-# the tagged commit, and creates the release with generated notes. Building and
-# pushing a container image (item 17) is not done here.
+# the tagged commit, and creates the release with generated notes. A second
+# job then builds the API image (item 17), pushes it to GHCR as
+# ghcr.io/erjonb19/governed-clinical-agent:X.Y.Z and :latest, pulls it back,
+# and writes its idle memory to the job summary (the Render budget check:
+# under 400 MB idle may run on Render, the owner decides).
 
 name: release
 
@@ -63,3 +67,52 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+
+  image:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write   # push to ghcr.io/<owner>/<repo>, with the job's own token
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docker build \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --label org.opencontainers.image.version="$version" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t "$IMAGE:$version" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$version"
+          docker push "$IMAGE:latest"
+          echo "digest: $(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$version")" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull it back and measure idle memory
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docker rmi "$IMAGE:$version" "$IMAGE:latest" >/dev/null
+          docker pull -q "$IMAGE:$version"
+          docker run -d --name api -p 8000:8000 -e API_KEY=release-check "$IMAGE:$version"
+          for i in $(seq 1 30); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' api)" = healthy ] && break
+            sleep 3
+          done
+          docker inspect --format '{{.State.Health.Status}}' api | grep -qx healthy
+          curl -fsS http://127.0.0.1:8000/v1/health | grep -q "$version"
+          sleep 30
+          {
+            echo "image size: $(docker image inspect --format '{{.Size}}' "$IMAGE:$version" | awk '{printf "%.0f MB", $1/1e6}')"
+            echo "idle memory (30 s after healthy): $(docker stats --no-stream --format '{{.MemUsage}}' api)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          docker rm -f api >/dev/null
