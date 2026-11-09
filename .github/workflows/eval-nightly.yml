@@ -10,6 +10,10 @@ on:
     - cron: "0 7 * * *"         # 07:00 UTC daily (~2-3am ET)
   workflow_dispatch:            # allows manual full runs any time
 
+permissions:
+  contents: read
+  issues: write       # nightly_alerts.py opens, comments on and closes alert issues (item 3)
+
 jobs:
   full-eval:
     runs-on: ubuntu-latest
@@ -41,7 +45,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-api.txt
 
+      - name: Note the start time
+        id: start
+        run: echo "t=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Run full eval (all cases, 3 runs each)
+        id: gate
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PLANNER_PROVIDER: "gemini"      # gemini free tier has headroom for the full suite
@@ -51,7 +60,12 @@ jobs:
         # Exit 1 (below the gate) is red. Exit 2 (provider unavailable or cases
         # unanswered) is retried once after 5 minutes, then red: owner's
         # decision 2026-11-06, backlog item 1 (scripts/eval_gate.sh).
-        run: scripts/eval_gate.sh retry-then-fail --runs 3
+        run: |
+          set +e
+          scripts/eval_gate.sh retry-then-fail --runs 3
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
 
       - name: Upload eval report
         if: always()
@@ -59,6 +73,14 @@ jobs:
         with:
           name: eval-report-nightly
           path: eval_runs/
+
+      # Item 3: eval-regression or provider-outage issue, never mixed; the next
+      # healthy night closes it. Only when the gate actually ran.
+      - name: Alert (open, update or close the issue)
+        if: always() && steps.gate.outputs.rc != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python nightly_alerts.py --dataset hospital --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"
 
   # Second dataset: the 28-case FHIR clinical suite. Runs AFTER the hospital job
   # (needs: full-eval) -- both share one provider key, and running them in
@@ -114,7 +136,12 @@ jobs:
 
       # 3 runs: Gemini's free tier has the headroom Groq lacked. Verified locally
       # at 100% (28/28 cases) with 5s pacing.
+      - name: Note the start time
+        id: start
+        run: echo "t=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Run FHIR eval (28 cases, 3 runs each)
+        id: gate
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PLANNER_PROVIDER: "gemini"         # gemini free tier has headroom for the full suite
@@ -124,7 +151,12 @@ jobs:
           EVAL_RUNS: "3"
           EVAL_ATTEMPT_TIMEOUT_MIN: "25"
         # Exit 2 = provider unavailable -> one retry, then red (see hospital job).
-        run: scripts/eval_gate.sh retry-then-fail --runs 3
+        run: |
+          set +e
+          scripts/eval_gate.sh retry-then-fail --runs 3
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
 
       - name: Upload FHIR eval report
         if: always()
@@ -132,3 +164,9 @@ jobs:
         with:
           name: eval-report-fhir-nightly
           path: eval_runs/
+
+      - name: Alert (open, update or close the issue)
+        if: always() && steps.gate.outputs.rc != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python nightly_alerts.py --dataset fhir --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"
