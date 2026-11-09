@@ -6,6 +6,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "a2ed5aff1bd53ae4",
     "role": "plan",
     "text": "SELECT count(*) AS n FROM gold_patient",
     "user": "How many patients are in the dataset in total?"
@@ -17,6 +18,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "4e56d849ab2563f4",
     "role": "plan",
     "text": "SELECT round(avg(value_num), 2) AS v FROM gold_observation WHERE measure_name = 'Glucose'",
     "user": "What is the average Glucose value across all glucose observations? Round to 2 decimals."
@@ -28,6 +30,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "9d6ccc9ac4b576c0",
     "role": "plan",
     "text": "SELECT condition_name FROM gold_condition GROUP BY condition_name ORDER BY count(*) DESC, condition_name ASC LIMIT 5",
     "user": "List the 5 most frequently recorded condition names, most frequent first. Return the condition_name."
@@ -39,6 +42,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "4283b9416ec236d6",
     "role": "plan",
     "text": "SELECT max(ed_psych_median_min) AS v FROM gold_hospital_profile",
     "user": "What is the highest psychiatric ED median wait time in the data?"
@@ -50,6 +54,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "35de7348522bf850",
     "role": "plan",
     "text": "SELECT count(*) AS n FROM gold_hospital_profile",
     "user": "How many hospitals are in the dataset in total?"
@@ -61,6 +66,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "357d033b7f0fdd39",
     "role": "plan",
     "text": "SELECT round(100.0 * count(*) FILTER (WHERE class_code = 'EMER') / count(*), 2) AS v FROM gold_encounter",
     "user": "What percent of all encounters are emergency encounters (class_code 'EMER')? Round to 2 decimals."
@@ -72,6 +78,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "e66f8022f5352de6",
     "role": "plan",
     "text": "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_observation o ON c.patient_id = o.patient_id WHERE c.condition_name = 'Hypertension' AND c.is_active AND o.measure_name = 'Body Mass Index' AND o.value_num > 30",
     "user": "How many distinct patients have BOTH an active hypertension diagnosis AND a recorded Body Mass Index above 30?"
@@ -83,6 +90,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "aceaf30c9d2e12cd",
     "role": "plan",
     "text": "SELECT medication_name FROM gold_medication GROUP BY medication_name HAVING count(DISTINCT patient_id) >= 11 ORDER BY count(*) DESC, medication_name ASC LIMIT 5",
     "user": "Among medications ordered for at least 11 distinct patients, list the 5 most frequently ordered medication names, most frequent first."
@@ -94,6 +102,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "8d499dee8ff4fdc1",
     "role": "plan",
     "text": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 90",
     "user": "How many patients are aged 90 or older?"
@@ -105,6 +114,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "8a0bd01552626ed8",
     "role": "plan",
     "text": "SELECT facility_id FROM gold_hospital_profile WHERE mspb_score IS NOT NULL ORDER BY mspb_score DESC, facility_id ASC LIMIT 5",
     "user": "List the facility_id of the 5 most expensive hospitals by MSPB score, highest first."
@@ -116,6 +126,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "19ad7526635d376e",
     "role": "plan",
     "text": "SELECT count(DISTINCT patient_id) AS n FROM gold_observation WHERE measure_name = 'Body Mass Index' AND value_num > (SELECT avg(value_num) FROM gold_observation WHERE measure_name = 'Body Mass Index')",
     "user": "How many distinct patients have at least one Body Mass Index reading above the overall average Body Mass Index across all readings?"
@@ -127,6 +138,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "78961c4ce8665d2b",
     "role": "plan",
     "text": "SELECT facility_id FROM gold_hospital_profile WHERE star_rating IS NOT NULL AND mspb_score IS NOT NULL AND mspb_score > 0 ORDER BY (star_rating / mspb_score) DESC, facility_id ASC LIMIT 5",
     "user": "Define value as star_rating divided by mspb_score. Among hospitals that have both a star rating and an MSPB score, list the facility_id of the 5 with the highest value ratio, highest first."
@@ -138,6 +150,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "a89a97834f13ffa2",
     "role": "plan",
     "text": "SELECT round(avg(age_years), 1) AS v FROM gold_patient",
     "user": "What is the average age of patients in years? Round to 1 decimal."
@@ -149,6 +162,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "17f16d6d2ccfbe30",
     "role": "plan",
     "text": "SELECT count(DISTINCT p.patient_id) AS n FROM gold_procedure p JOIN gold_medication m ON p.patient_id = m.patient_id WHERE p.procedure_name = 'Combined chemotherapy and radiation therapy (procedure)' AND m.medication_name LIKE '%Cisplatin%'",
     "user": "How many distinct patients have BOTH a combined chemotherapy and radiation therapy procedure ('Combined chemotherapy and radiation therapy (procedure)') AND a Cisplatin medication order (medication_name contains 'Cisplatin')?"
@@ -160,6 +174,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "7a44ba8ff0abdd46",
     "role": "plan",
     "text": "SELECT max(value_num) AS v FROM gold_observation WHERE measure_name = 'Body Mass Index'",
     "user": "What is the highest recorded Body Mass Index value?"
@@ -171,6 +186,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "d504596279f19c71",
     "role": "plan",
     "text": "SELECT round(avg(mspb_score), 4) AS v FROM gold_hospital_profile WHERE state = 'PA' AND mspb_score IS NOT NULL",
     "user": "What is the average MSPB score for hospitals in Pennsylvania (PA)? Round to 4 decimals."
@@ -182,6 +198,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "d14451bdd0563124",
     "role": "plan",
     "text": "SELECT count(DISTINCT patient_id) AS n FROM gold_condition WHERE condition_name = 'Hypertension' AND is_active",
     "user": "How many distinct patients have an active hypertension diagnosis?"
@@ -193,6 +210,7 @@
     "dataset": "fhir",
     "model": "authored",
     "prompt_tokens": 1464,
+    "reference_sha256": "5361f9d99a09def8",
     "role": "plan",
     "text": "SELECT count(*) AS n FROM gold_encounter WHERE class_code = 'EMER'",
     "user": "How many emergency encounters are there? Emergency encounters have class_code 'EMER'."
@@ -204,6 +222,7 @@
     "dataset": "hospital",
     "model": "authored",
     "prompt_tokens": 719,
+    "reference_sha256": "05f25ee85ece43f0",
     "role": "plan",
     "text": "SELECT facility_id FROM gold_hospital_profile WHERE star_rating >= 4 AND mspb_score < 1.0 ORDER BY mspb_score ASC, facility_id ASC LIMIT 10",
     "user": "List the facility_id of the 10 best-value hospitals, defined as 4 or 5 stars AND an MSPB score below 1.0, ordered by MSPB ascending (cheapest first)."

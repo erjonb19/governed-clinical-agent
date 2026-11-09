@@ -26,6 +26,7 @@ right or wrong.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -74,9 +75,15 @@ def _record_one(dataset: str, live: str | None) -> int:
                 if store.entries[k]["user"] in by_question else None
             if not live:
                 store.entries[k]["authored"] = True
-    with open(store.path, "w", encoding="utf-8") as f:
+                # an authored answer IS the reference: a later edit to the
+                # case's reference_sql must re-record it (the pytest check)
+                store.entries[k]["reference_sha256"] = hashlib.sha256(
+                    by_question[store.entries[k]["user"]]["reference_sql"].encode()).hexdigest()[:16]
+    tmp = store.path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(store.entries, f, indent=2, sort_keys=True)
         f.write("\n")
+    os.replace(tmp, store.path)
     print(f"{dataset}: {len(cases)} cases, {len(new)} new recordings")
     return 0
 

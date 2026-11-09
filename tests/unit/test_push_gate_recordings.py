@@ -56,6 +56,17 @@ def test_no_stale_recordings_are_left_behind():
     assert not stale, f"recordings no current request asks for: {stale}; {FIX}"
 
 
+def test_an_authored_answer_still_matches_its_case_reference_sql():
+    # the key holds the question, not the reference: an edited reference_sql
+    # would otherwise replay the old SQL and fail as a wrong answer, unexplained
+    import hashlib
+    refs = {c["id"]: c["reference_sql"] for b, _ in BANKS.values() for c in b.CASES}
+    stale = [e["case_id"] for e in _entries().values() if e.get("authored")
+             and hashlib.sha256(refs[e["case_id"]].encode()).hexdigest()[:16]
+             != e.get("reference_sha256")]
+    assert not stale, f"reference_sql changed since recording: {stale}; {FIX}"
+
+
 def test_a_changed_prompt_is_a_miss_not_a_silent_pass():
     # the property the gate rests on: one character of schema note is a new key
     bank, schema = BANKS["hospital"]
@@ -70,7 +81,7 @@ def test_recordings_hold_sql_and_counts_only():
     # same rule as the UI E2E recordings: no keys, no result rows
     for e in _entries().values():
         assert set(e) <= {"role", "user", "text", "prompt_tokens", "completion_tokens",
-                          "model", "authored", "dataset", "case_id"}, e
+                          "model", "authored", "dataset", "case_id", "reference_sha256"}, e
         assert e["role"] == "plan"
 
 
