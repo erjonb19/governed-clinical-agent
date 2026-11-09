@@ -4,12 +4,13 @@
 
 ## Where things are today
 
-- 49 modules at the repo root, beside `src/` (the Milestone-1 runtime:
+- 48 Python modules at the repo root (plus `setup.py`), beside `src/` (the Milestone-1 runtime:
   `src/runtime`, `src/security`, `src/policies`, `src/tools`, `src/utils`).
   `setup.py` packages `src` (`find_packages()`), but nothing at the root, so the
   root modules are only importable from a checkout with the repo on `sys.path`;
   most of them do `sys.path.insert(0, ...)`.
-- 41 distinct settings read with `os.environ.get(...)` across 19 root modules,
+- About 45 settings read with `os.environ.get("...")` across 19 root modules (48
+  distinct literal names, a few CI-only such as `GITHUB_*`),
   several read in more than one place (`HOSPITAL_GOLD_DB` 7 times,
   `PLANNER_SCHEMA` 5) and some at **import time** (`nl_to_sql_planner` binds
   `SCHEMA_DOC`/`SYSTEM_PROMPT` from `PLANNER_SCHEMA` when imported, which is why
@@ -55,8 +56,8 @@ from it, so docs and code cannot drift.
 
 `create_app(settings=None) -> FastAPI` replaces the module-level app: the
 lifespan builds the runtime, planner, graphs and tracer from the settings, and
-`app.py` keeps `app = create_app()` so `uvicorn app:app`, Render's start
-command and the Dockerfile do not change.
+`app.py` keeps `app = create_app()` so `uvicorn app:app` and Render's start
+command do not change (nor the API `Dockerfile`, once item 17 lands).
 
 ## Order (each step one small PR, no behaviour change)
 
@@ -64,9 +65,11 @@ command and the Dockerfile do not change.
    no file moves yet. The full suite, the replayed push gate and the E2Es green.
 2. `observability/` (no dependants inside the guard).
 3. `data/`, then `agent/`, then `evals/`, then `api/`. Each move leaves a
-   **shim** at the old path (`from governed_agent.agent.critic import *` plus
-   the module's private names the tests use), so every existing import, script,
-   workflow and doc keeps working.
+   **shim** at the old path. A plain `import *` is not enough: a test that
+   patches `critic._something` or reads module-level state must reach the real
+   module, so the shim is the module itself (`sys.modules[__name__] =
+   governed_agent.agent.critic`). Every existing import, patch, script, workflow
+   and doc keeps working.
 4. `guard/` **last and alone**: `sql_guard.py`, `phi_guard.py`,
    `phi_columns.yaml`, `schema_check.py`. A PR the owner merges (it changes
    where the guard lives). Its checks: the guard's editable-install job, the
@@ -82,7 +85,7 @@ command and the Dockerfile do not change.
 - **The guard's pinned install**: `setup.py` `GUARD_PINS` and the
   `guard-editable-install` job; the package's `install_requires` keep the same
   pins; `tests/unit/test_dependency_pins.py` keeps passing.
-- Render's start command (`uvicorn app:app`), the Dockerfile and every workflow,
+- Render's start command (`uvicorn app:app`), the API Dockerfile (item 17) and every workflow,
   unchanged until step 5.
 - The replay recordings (item 13): a move must not change any prompt text, so
   `tests/unit/test_push_gate_recordings.py` passes without re-recording.
