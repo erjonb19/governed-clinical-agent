@@ -1292,14 +1292,17 @@ def _group_complement(sel: exp.Select, keys: list) -> exp.Expression:
     return exp.and_(*conds)
 
 
-# --- pairs of filtered aggregates (owner's decision 2026-11-09) -----------------
+# --- combinations of filtered aggregates (owner's decision 2026-11-09) ----------
 # Each filtered aggregate is checked against its own whole above. Two of them in
 # one query can still be subtracted from each other: "women" minus "women with
 # an ER visit" is the 3 women without one, though each count alone is 11+ and
-# leaves 11+ people out of the whole table. So every PAIR of filtered units --
-# a scope with a WHERE, or one FILTER (WHERE ...) aggregate -- is compared: the
-# people one unit holds that the other does not must number 0 or 11+, both ways.
-# A pair the check cannot write is refused (fail closed).
+# leaves 11+ people out of the whole table. The owner's rule compares each
+# pair (the people one holds and the other lacks: 0 or 11+). Pairs are not
+# enough -- total minus "women with a visit" minus "men" (disjoint, so every
+# pair passes) is the same 3 (adversarial review, 2026-11-09) -- so the check
+# is on every REGION of the units' Venn diagram, which implies every pair.
+# Filters the units cannot see (a JOIN, a filtered derived table or CTE) and
+# shapes the check cannot write are refused (fail closed).
 
 _STRIP = ("group", "having", "order", "limit", "offset", "qualify", "distinct", "windows")
 
@@ -1426,57 +1429,149 @@ def _over(sel: exp.Select, select_sql: str, preds: list) -> str:
     return exp.Subquery(this=c).sql(dialect=DIALECT)
 
 
-def _pair_conditions(u: _Unit, v: _Unit) -> list:
-    """SQL conditions (strings) that hold when the people U has and V lacks are
-    0 or 11+ (0 only when U itself has 11). Raises _CannotCorrelate."""
-    conds = []
-    if u.sel is v.sel:
-        # two FILTERs of one SELECT: inline, so it holds per group too
-        pu = u.preds()[-1]
-        pv = v.preds()[-1]
-        for k in u.keys:
-            whole = f"count(DISTINCT {k}) FILTER (WHERE {pu})"
-            # B: |U people \ V people| = |U or V| - |V|
-            conds.append(_complement_ok(
-                f"(count(DISTINCT {k}) FILTER (WHERE ({pu}) OR ({pv})) - "
-                f"count(DISTINCT {k}) FILTER (WHERE {pv}))", whole))
-            if u.rows or v.rows:
-                # A: people with a row U counts and V does not
-                conds.append(_complement_ok(
-                    f"count(DISTINCT {k}) FILTER (WHERE ({pu}) AND ({pv}) IS NOT TRUE)", whole))
-        return conds
-    if u.grouped or v.grouped:
-        raise _CannotCorrelate("a grouped unit in a pair")
-    aligned = _aligned(u, v) if (u.rows or v.rows) else None
-    if (u.rows or v.rows) and aligned is None:
-        raise _CannotCorrelate("row counts over different sources")
-    for ku in u.keys:
-        whole = _over(u.sel, f"count(DISTINCT {ku})", u.preds())
-        for kv in v.keys:
-            people_v = _over(v.sel, kv, v.preds() + [f"{kv} IS NOT NULL"])
-            conds.append(_complement_ok(
-                _over(u.sel, f"count(DISTINCT {ku})", u.preds() + [f"{ku} NOT IN {people_v}"]),
-                whole))
-        if aligned is not None:
-            vp = " AND ".join(f"({p})" for p in aligned)
-            conds.append(_complement_ok(
-                _over(u.sel, f"count(DISTINCT {ku})", u.preds() + [f"({vp}) IS NOT TRUE"]), whole))
-    return conds
+_MAX_UNITS = 3        # 2^3 = 8 regions to check; more than that is refused
 
 
-def _pairwise(rewrites: list, filters: list) -> dict:
-    """{id(select or filter node): [conditions]} for every filtered unit that
-    has a partner. Raises _CannotCorrelate when a pair cannot be checked."""
+def _cte_body(name: str, root: exp.Expression) -> Optional[exp.Expression]:
+    for cte in root.find_all(exp.CTE):
+        if (cte.alias_or_name or "").lower() == name.lower():
+            return cte.this
+    return None
+
+
+def _narrows(q: exp.Expression, root: exp.Expression, depth: int = 0) -> bool:
+    """Can this derived source drop people (rows) before the outer aggregate
+    sees them? Fail closed: anything but a plain pass-through counts."""
+    if depth > 20 or not isinstance(q, exp.Select):
+        return True                        # UNION / EXCEPT / INTERSECT, VALUES, ...
+    if any(q.args.get(a) for a in ("where", "having", "qualify", "limit", "offset", "distinct",
+                                   "joins")):
+        return True
+    return any(_source_narrows(src, root, depth + 1) for src in _sources(q))
+
+
+def _source_narrows(src: exp.Expression, root: exp.Expression, depth: int) -> bool:
+    if isinstance(src, exp.Subquery):
+        return _narrows(src.this, root, depth)
+    if isinstance(src, exp.Table):
+        body = _cte_body(src.name, root) if src.name else None
+        return body is not None and _narrows(body, root, depth)
+    return True                            # a table function, a lateral, ...
+
+
+def _hidden_filter(sel: exp.Select, root: exp.Expression) -> bool:
+    """Is this scope's set of rows narrowed by something other than its own
+    WHERE / FILTER -- a JOIN (even on the key, an inner join drops the people
+    with no match), or a filtered derived table or CTE?"""
+    if sel.args.get("joins"):
+        return True
+    return any(_source_narrows(src, root, 0) for src in _sources(sel))
+
+
+def _bare_aggregate(sel: exp.Select) -> bool:
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, (exp.Window, exp.Filter)):
+            return True
+    return False
+
+
+def _regions(f, whole: str, n: int) -> list:
+    """For n units, the number of people in each region of their Venn diagram
+    (in exactly the units of T, in none of the others), as SQL, from union
+    counts only: f(Y) = people in any unit of Y, whole = everyone.
+    people(all of T, none of R) = sum over S subset of T of (-1)^|S| g(R | S),
+    with g(Y) = whole - f(Y), people in none of Y."""
+    from itertools import combinations
+    units = list(range(n))
+
+    def g(ys):
+        return whole if not ys else f"({whole} - {f(tuple(sorted(ys)))})"
+
+    out = []
+    for size in range(0, n + 1):
+        for t in combinations(units, size):
+            r = [u for u in units if u not in t]
+            terms = []
+            for ssize in range(0, len(t) + 1):
+                for sub in combinations(t, ssize):
+                    sign = "-" if ssize % 2 else "+"
+                    terms.append(f"{sign} {g(set(r) | set(sub))}")
+            out.append("(0 " + " ".join(terms) + ")")
+    return out
+
+
+def _row_patterns(preds: list) -> list:
+    """Every in/out pattern of the units' predicates, as a row condition."""
+    from itertools import product
+    out = []
+    for signs in product((True, False), repeat=len(preds)):
+        out.append(" AND ".join(f"({p})" if on else f"({p}) IS NOT TRUE"
+                                for p, on in zip(preds, signs)))
+    return out
+
+
+def _region_ok(x: str) -> str:
+    return f"(({x}) = 0 OR ({x}) >= {MIN_CELL})"
+
+
+def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
+    """{id(select or FILTER node): [SQL conditions]} so that no combination of
+    the filtered aggregates in one query isolates fewer than 11 people: every
+    region of their Venn diagram (relative to the unfiltered rows) holds 0 or
+    11+ people, and, for row counts, so do the people with a row in each
+    in/out pattern. Raises _CannotCorrelate when that cannot be written."""
+    if len(rewrites) >= 2 and any(_hidden_filter(sel, root) for sel, _ in rewrites):
+        raise _CannotCorrelate("a row filter outside WHERE / FILTER beside another scope")
     units = _filtered_units(rewrites, filters)
+    by_sel: dict = {}
+    for u in units:
+        by_sel.setdefault(id(u.sel), []).append(u)
+    single = len(by_sel) == 1
+    if single:
+        # one SELECT: its WHERE is the base the FILTERs are measured in
+        units = [u for u in units if u.flt is not None]
+    else:
+        # a WHERE unit whose scope only has FILTER aggregates shows nothing of
+        # its own rows; its FILTERs (WHERE AND filter) are the units
+        units = [u for u in units if u.flt is not None or _bare_aggregate(u.sel)]
+    if len(units) < 2:
+        return {}
+    if len(units) > _MAX_UNITS:
+        raise _CannotCorrelate("too many filtered aggregates")
+    rows = any(u.rows for u in units)
+    conds: list = []
+    if single:
+        preds = [u.preds()[-1] for u in units]
+        for k in units[0].keys:
+            def f(ys, k=k):
+                return (f"count(DISTINCT {k}) FILTER (WHERE "
+                        + " OR ".join(f"({preds[i]})" for i in ys) + ")")
+            conds += [_region_ok(x) for x in _regions(f, f"count(DISTINCT {k})", len(units))]
+            if rows:
+                conds += [_region_ok(f"count(DISTINCT {k}) FILTER (WHERE {pat})")
+                          for pat in _row_patterns(preds)]
+    else:
+        if any(u.grouped for u in units):
+            raise _CannotCorrelate("a grouped unit beside another scope's")
+        base = units[0]
+        preds = []
+        for u in units:
+            mapped = base.preds() if u is base else _aligned(base, u)
+            if mapped is None:
+                raise _CannotCorrelate("filtered aggregates over different sources")
+            preds.append(" AND ".join(f"({p})" for p in mapped) or "TRUE")
+        for k in base.keys:
+            def f(ys, k=k):
+                return _over(base.sel, f"count(DISTINCT {k})",
+                             [" OR ".join(f"({preds[i]})" for i in ys)])
+            whole = _over(base.sel, f"count(DISTINCT {k})", [])
+            conds += [_region_ok(x) for x in _regions(f, whole, len(units))]
+            if rows:
+                conds += [_region_ok(_over(base.sel, f"count(DISTINCT {k})", [pat]))
+                          for pat in _row_patterns(preds)]
     out: dict = {}
-    for i, u in enumerate(units):
-        for j, v in enumerate(units):
-            if i == j:
-                continue
-            if u.sel is v.sel and (u.flt is None or v.flt is None):
-                continue   # a FILTER inside a WHERE scope: checked against that scope already
-            target = id(u.flt) if u.flt is not None else id(u.sel)
-            out.setdefault(target, []).extend(_pair_conditions(u, v))
+    for u in units:
+        out.setdefault(id(u.flt) if u.flt is not None else id(u.sel), []).extend(conds)
     return out
 
 
@@ -1531,12 +1626,13 @@ def check(tree: exp.Expression) -> PhiDecision:
     pair_conds: dict = {}
     if not a.findings:
         try:
-            pair_conds = _pairwise(a.rewrites, a.filters)
+            pair_conds = _combination_checks(a.rewrites, a.filters, q)
         except _CannotCorrelate:
             a.findings.append(
-                "two filtered aggregates over patient rows in one query, in a form whose overlap "
-                "cannot be checked (a grouped one beside another query's, or row counts over "
-                "different tables): subtracting one from the other could recover a group of "
+                "several filtered aggregates over patient rows in one query, in a form whose "
+                "overlap cannot be checked (a JOIN or a filtered derived table beside another "
+                f"aggregate, a grouped one beside another query's, more than {_MAX_UNITS}, or "
+                "different tables): subtracting one from another could recover a group of "
                 f"fewer than {MIN_CELL} people; ask for each count in its own query")
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))

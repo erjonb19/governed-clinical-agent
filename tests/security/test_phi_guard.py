@@ -1432,6 +1432,36 @@ NESTED_PAIRS = {
         "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') AS a, "
         "(SELECT count(DISTINCT patient_id) FILTER (WHERE gender = 'female' AND "
         "class_code = 'EMER') FROM gold_encounter) AS b"),
+    # adversarial review of the pair check (2026-11-09): every pair passes,
+    # the three together give 30 - 12 - 15 = 3
+    "three units, every pair passes": (
+        "SELECT count(DISTINCT patient_id) AS total, count(DISTINCT patient_id) FILTER (WHERE "
+        "gender = 'female' AND class_code = 'EMER') AS w_er, count(DISTINCT patient_id) FILTER "
+        "(WHERE gender = 'male') AS men FROM gold_encounter"),
+    "three scalar subqueries, every pair passes": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS total, "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
+        "AND class_code = 'EMER') AS w_er, (SELECT count(DISTINCT patient_id) FROM gold_encounter "
+        "WHERE gender = 'male') AS men"),
+    "three UNION branches": (
+        "SELECT count(DISTINCT patient_id) AS n FROM gold_encounter UNION ALL "
+        "SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
+        "AND class_code = 'EMER' UNION ALL "
+        "SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'male'"),
+    "the filters inside derived tables": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM (SELECT * FROM gold_encounter "
+        "WHERE gender = 'female') w) AS a, (SELECT count(DISTINCT patient_id) FROM (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') w) AS b"),
+    "the filters inside CTEs": (
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), we AS (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        "SELECT (SELECT count(DISTINCT patient_id) FROM w) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM we) AS b"),
+    "the filters in JOIN ONs": (
+        "SELECT (SELECT count(DISTINCT e.patient_id) FROM gold_encounter e JOIN "
+        "(SELECT 'female' AS g) x ON e.gender = x.g) AS a, "
+        "(SELECT count(DISTINCT e.patient_id) FROM gold_encounter e JOIN "
+        "(SELECT 'female' AS g, 'EMER' AS c) x ON e.gender = x.g AND e.class_code = x.c) AS b"),
     "UNION branches": (
         "SELECT count(DISTINCT patient_id) AS n FROM gold_encounter WHERE gender = 'female' "
         "UNION ALL SELECT count(DISTINCT patient_id) FROM gold_encounter "
@@ -1454,7 +1484,7 @@ def test_no_pair_of_filtered_counts_recovers_the_3_women(encounter_tool, name):
     # the women and the women with a visit may not BOTH be shown (people 15 and
     # 12, or rows 30 and 12): the difference is the 3 women without one
     assert not (15 in nums and 12 in nums), (name, r.output["rows"])
-    assert not (30 in nums and 12 in nums), (name, r.output["rows"])
+    assert not (30 in nums and 12 in nums and 15 in nums), (name, r.output["rows"])
 
 
 def test_a_disjoint_pair_is_still_answered(encounter_tool):
