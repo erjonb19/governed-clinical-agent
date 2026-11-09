@@ -51,15 +51,17 @@ def prompt_version(schema_doc: Optional[str] = None) -> str:
     return "p-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
-def answer_version(metrics: Any, schema_doc: Optional[str] = None) -> dict:
+def answer_version(metrics: Any, schema_doc: Optional[str] = None,
+                   planner: Any = None) -> dict:
     """The four fields for one answer. `metrics` is a CallMetrics, its as_dict(),
-    or None (no call was made, e.g. the planner failed before answering)."""
+    or None (no call completed, e.g. the provider was down); then the configured
+    planner's provider and model are given, since that is who was asked."""
     if metrics is not None and not isinstance(metrics, dict):
         metrics = metrics.as_dict() if hasattr(metrics, "as_dict") else vars(metrics)
     m = metrics or {}
     return {
         "prompt_version": prompt_version(schema_doc),
-        "model": m.get("model"),
-        "provider": m.get("provider"),
+        "model": m.get("model") or getattr(planner, "_model", None),
+        "provider": m.get("provider") or getattr(planner, "provider", None),
         "git_commit": git_commit(),
     }
