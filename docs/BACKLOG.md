@@ -184,6 +184,7 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: the owner has approved a written plan, and then, in small PRs, each layer
     moves with no behavior change (all tests, both evals on replay, the E2Es green); the
     guard modules move last and alone; old import paths keep working until the last PR.
+  - **Status 2026-11-09 (overnight run): plan written, waiting for the owner's OK** -- `docs/plans/package-layout.md` (target layers, one typed settings object, an app factory, order of PRs with shims, what must survive, four decisions). Nothing moved.
   - Today: flat layout; `CLAUDE.md` rule 6 (schema and planner agree) and the guard's pinned
     install must survive the move.
 
