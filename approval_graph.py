@@ -120,8 +120,10 @@ class GovernedApprovalAgent:
         self.store = ApprovalStore()
         self.tracer = tracer or tracing.get_tracer()
         os.makedirs(os.path.dirname(CHECKPOINT_DB) or ".", exist_ok=True)
-        # the checkpointer is what makes state outlive the request
-        self._cm = SqliteSaver.from_conn_string(CHECKPOINT_DB)
+        # the checkpointer is what makes state outlive the request; Postgres
+        # when STATE_DB_URL is set (item 19), so it outlives a redeploy too
+        import state_db
+        self._cm = state_db.checkpointer(CHECKPOINT_DB)
         self.checkpointer = self._cm.__enter__()
         self.graph = self._build()
 
