@@ -59,11 +59,16 @@ these PRs touches the guard files.
 | 12 | built earlier | **Owner:** the Langfuse variables in the Render dashboard |
 | 10 | — | **Owner:** Databricks secrets |
 
-**Problem found: the live Groq check is flaky.** It runs each of its 3 cases once, so one
-model slip turns it red. On #69, Groq wrote an `ORDER BY` on an aggregate and failed one
-case; the next push passed. Proposal for the owner: either 3 runs per case with the 80%
-gate, or report the check as a warning instead of failing the push. The replayed gates are
-unaffected.
+**Problem found: the live Groq check fails on the same case.** It runs 3 cases once each.
+On #69 and again on #73 it failed `t2_avg_mspb_pa` in the same way: Groq
+(`openai/gpt-oss-120b`) appended `ORDER BY avg_mspb_score, facility_id LIMIT 1` to a
+one-row average. DuckDB rejects that (`Binder Error`), and the harness scores it
+`guard_denied`. Neither PR touched the planner. This looks like a repeatable weakness of
+that model on that question, not random noise, and not a code regression: the replayed
+gates and Gemini are unaffected. The owner chooses one of three options: swap
+`t2_avg_mspb_pa` out of the live check for another case, run each case 3 times with the
+80% gate, or report the check as a warning. I did not change it: picking the cases a check
+runs is the owner's call, and editing a case to make it pass is ruled out.
 
 ## How to check each item
 
