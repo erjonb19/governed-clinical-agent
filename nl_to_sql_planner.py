@@ -276,6 +276,8 @@ class CallMetrics:
         self.fallback_from: str | None = None
         # True when the answer came from llm_cache (item 6): no model was called
         self.cached = False
+        # the cache entry behind this answer, so a refused SQL can be forgotten
+        self.cache_key: str | None = None
         rate = rate_for(provider, model)
         self.est_cost_usd = round(
             (self.prompt_tokens / 1_000_000) * rate["input"]
@@ -624,17 +626,23 @@ class NLToSQLPlanner:
         # on whatever comes back, so no answer can be stale.
         import llm_cache
         ckey = None
-        if llm_cache.enabled():
+        # never in replay record mode: a recording must hold what a model wrote
+        if llm_cache.enabled() and os.environ.get("E2E_RECORD") != "1":
             ckey = llm_cache.key(role, system, user, self.provider, self._model)
             hit = llm_cache.get_cache().get(ckey)
             if hit is not None:
                 m = CallMetrics(latency_ms=0, prompt_tokens=0, completion_tokens=0,
                                 model=hit["model"], provider=hit["provider"])
                 m.cached = True
+                m.cache_key = ckey
                 return hit["text"], m
         text, metrics = self._complete_uncached(system, user, role)
-        if ckey is not None and text and text.strip():
+        # a fallback answer is not cached under the primary's key: once the
+        # primary is back, the question goes to it again (item 8)
+        if (ckey is not None and not metrics.fallback_from
+                and llm_cache.cacheable(role, user, text)):
             llm_cache.get_cache().put(ckey, role, text, metrics.provider, metrics.model)
+            metrics.cache_key = ckey
         return text, metrics
 
     def _complete_uncached(self, system: str, user: str, role: str = "plan"):

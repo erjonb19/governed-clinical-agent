@@ -64,6 +64,23 @@ def data_vintage() -> str:
         return "unknown"
 
 
+# A retry prompt carries the previous attempt's failure (agent_graph._plan,
+# approval_graph._plan). Never cached: a repeated failure would hand back the
+# same failed SQL instead of letting the model correct itself.
+RETRY_MARKERS = ("Your previous SQL attempt was REJECTED", "Your previous SQL was REJECTED")
+
+
+def cacheable(role: str, user: str, text: str) -> bool:
+    """Only first attempts, only usable answers."""
+    if not text or not text.strip() or any(m in user for m in RETRY_MARKERS):
+        return False
+    if role == "critic":
+        import critic
+
+        return critic.parse_verdict(text)["verdict"] != "unavailable"
+    return True
+
+
 def key(role: str, system: str, user: str, provider: str, model: str) -> str:
     import replay
 
@@ -82,6 +99,7 @@ class LLMCache:
         )
         self.hits = 0
         self.misses = 0
+        self.evictions = 0
         self._lock = threading.Lock()
         self._db: Optional[sqlite3.Connection] = None
 
@@ -113,7 +131,8 @@ class LLMCache:
                 self.hits += 1
                 return {"text": row[0], "provider": row[1], "model": row[2]}
         except Exception:
-            self.misses += 1
+            with self._lock:
+                self.misses += 1
             return None
 
     def put(self, k: str, role: str, text: str, provider: str, model: str) -> None:
@@ -127,6 +146,19 @@ class LLMCache:
         except Exception:
             pass  # best effort: a cache must never fail a request
 
+    def evict(self, k: Optional[str]) -> None:
+        """Forget one answer: its SQL was refused or failed, so the next ask
+        should go back to the model rather than replay the failure."""
+        if not k:
+            return
+        try:
+            with self._lock:
+                self._conn().execute("DELETE FROM answers WHERE key = ?", (k,))
+                self._conn().commit()
+                self.evictions += 1
+        except Exception:
+            pass
+
     def stats(self) -> dict[str, Any]:
         total = self.hits + self.misses
         try:
@@ -138,6 +170,7 @@ class LLMCache:
             "enabled": enabled(),
             "hits": self.hits,
             "misses": self.misses,
+            "evictions": self.evictions,
             "hit_rate": round(self.hits / total, 4) if total else None,
             "entries": entries,
             "ttl_sec": self.ttl,

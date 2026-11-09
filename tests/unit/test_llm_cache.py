@@ -30,7 +30,11 @@ def on(tmp_path, monkeypatch):
 
     def fake(self, system, user, role="plan"):
         calls.append((role, user))
-        return f"SELECT {len(calls)}", CallMetrics(9, 100, 10, "m", self.provider)
+        if role == "critic":
+            text = json.dumps({"verdict": "approve", "reason": "ok", "issues": []})
+        else:
+            text = f"SELECT {len(calls)}"
+        return text, CallMetrics(9, 100, 10, "m", self.provider)
 
     monkeypatch.setattr(NLToSQLPlanner, "_complete_direct", fake)
     return cache, calls
@@ -122,3 +126,65 @@ def test_the_store_holds_no_rows(on, tmp_path):
 
     cols = [r[1] for r in sqlite3.connect(cache.path).execute("PRAGMA table_info(answers)")]
     assert cols == ["key", "role", "text", "provider", "model", "created"]
+
+
+def test_a_retry_prompt_is_never_cached(on):
+    _, calls = on
+    p = NLToSQLPlanner(provider="gemini")
+    retry = "q?\n\nYour previous SQL attempt was REJECTED. Reason:\nx"
+    p.generate_sql_with_metrics(retry)
+    p.generate_sql_with_metrics(retry)
+    assert len(calls) == 2
+
+
+def test_an_unusable_critic_answer_is_not_cached(on, monkeypatch):
+    _, calls = on
+
+    def garbled(self, system, user, role="plan"):
+        calls.append((role, user))
+        return "not a verdict", CallMetrics(9, 100, 10, "m", self.provider)
+
+    monkeypatch.setattr(NLToSQLPlanner, "_complete_direct", garbled)
+    p = NLToSQLPlanner(provider="gemini")
+    p.critique("q", "SELECT 1")
+    p.critique("q", "SELECT 1")
+    assert len(calls) == 2
+
+
+def test_a_fallback_answer_is_not_cached(on, monkeypatch):
+    _, calls = on
+    monkeypatch.setenv("GROQ_API_KEY", "test-not-a-key")
+    monkeypatch.setenv("PLANNER_FALLBACK", "groq")
+
+    class Down(Exception):
+        status_code = 429
+
+    def fake(self, system, user, role="plan"):
+        calls.append(self.provider)
+        if self.provider == "gemini":
+            raise Down("Error code: 429")
+        return "SELECT 1", CallMetrics(9, 100, 10, "m", self.provider)
+
+    monkeypatch.setattr(NLToSQLPlanner, "_complete_direct", fake)
+    p = NLToSQLPlanner(provider="gemini")
+    p.generate_sql_with_metrics("q?")
+    p.generate_sql_with_metrics("q?")
+    assert calls == ["gemini", "groq", "gemini", "groq"]
+
+
+def test_a_refused_answer_is_evicted(on):
+    cache, calls = on
+    p = NLToSQLPlanner(provider="gemini")
+    _, m = p.generate_sql_with_metrics("q?")
+    cache.evict(m.cache_key)  # what the graph does on a refusal
+    p.generate_sql_with_metrics("q?")
+    assert len(calls) == 2 and cache.stats()["evictions"] == 1
+
+
+def test_record_mode_never_reads_or_writes_the_cache(on, monkeypatch):
+    _, calls = on
+    monkeypatch.setenv("E2E_RECORD", "1")
+    p = NLToSQLPlanner(provider="gemini")
+    p.generate_sql_with_metrics("q?")
+    p.generate_sql_with_metrics("q?")
+    assert len(calls) == 2
