@@ -117,5 +117,38 @@ throughput at 1, 5 and 20 users. Compare them with `docs/benchmarks.md`.
 
 ## #40: full FHIR eval on a GitHub runner
 
-*Result pending: dispatched after the 08:00 UTC Gemini reset. Updated below when it
-finishes.*
+Run [42585447542](https://github.com/erjonb19/governed-clinical-agent/actions/runs/42585447542),
+dispatched at 08:22 UTC after the Gemini reset, on `feat/age-cap` at 0278fc9 (main merged in).
+This was the night's only live sweep.
+
+**Result: the job is red (the manual eval requires every case to pass).**
+- **#40:** 27/28 cases (majority-correct), 78/84 runs = 92.9%. The 80% gate passes.
+- **Compare:** main's newest conclusive runs were 27/28 cases, 82/84 = 97.6% (#50's run
+  42462655391), and 27/28, 96.3% (the 2026-11-05 nightly).
+- **What #40 is for works:** `f1_avg_age` 3/3 = 48.1 (as expected), and
+  `f3_patients_90_plus` 3/3 = 53.
+- **All 6 failed runs are `guard_denied`, the guard refusing bad SQL.** None is a wrong answer
+  served:
+  - `f1_count_active_conditions` 0/3, the case that fails the job. Gemini invented column
+    names instead of `is_active`: `is_voiced`, and once
+    `is_experiment_or_something_false_no_wait_is_active`. The guard refused each one with
+    "no such column", as it should.
+  - `f5_elderly_active_conditions` 2/3. One run used `c.is_pressed`, the same pattern on the
+    same column.
+  - `f4_chemoradiation_and_cisplatin` 2/3. One run wrote its reasoning into the SQL, which
+    could not be parsed.
+  - `f5_above_avg_bmi_patients` 2/3. One run hit a DuckDB internal error.
+- **Different from main:** on #50's run the one failing case was `f4_avg_glucose_prediabetic`,
+  and `f1_count_active_conditions` passed 3/3.
+
+**What I can and cannot say.** The garbled `is_active` names appeared only on this branch.
+#40 changes the prompt by 3 lines (the "Ages over 90 are counted as 90" note in
+`nl_to_sql_planner.py`). So the prompt change may have unsettled the model on that column.
+One sweep cannot tell that apart from day-to-day noise in Gemini Flash Lite, and the owner
+allowed only one live sweep, so I did not re-run it.
+
+**Owner's decision.** #40 is not merged. A cheap way to separate the two, about 6 model calls
+on the free tier: run
+`EVAL_DATASET=fhir EVAL_CASES=f1_count_active_conditions,f5_elderly_active_conditions python eval_harness.py`
+once on `main` and once on `feat/age-cap`. If main passes and the branch keeps inventing
+`is_*` columns, the prompt note needs rewording, and that rewording goes in #40.
