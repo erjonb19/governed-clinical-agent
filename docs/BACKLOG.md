@@ -214,6 +214,7 @@ What real AI, data and software engineering teams would add, checked against the
     checks every decision and audit line).
   - Today: single instance, serialized under a lock (README, "Scope and honest
     limitations"); no load test.
+  - **Status 2026-11-09 (overnight run): the measuring half, in the PR "Item 20 (part 1)".** `scripts/load_test.py` (the real API on replayed answers, 1/5/20 users, p50/p95/p99/throughput, $0) and `load-test.yml` (dispatch only). **Baseline, before:** throughput flat at ~40 req/s at every concurrency and latency growing with users (p95 30 ms at 1 user, 145 ms at 5, 534 ms at 20) -- the global `_LOCK` queue, in `docs/benchmarks.md`. **Not done (part 2): replacing the lock** with per-request read-only DuckDB cursors, a model-call semaphore with 429 + `Retry-After`, and the parallel decisions-and-audit test. Left for a reviewed daytime PR: it reworks how the query tool shares its connections and the per-statement timeout, the path every guarded query takes. Unticked.
 
 - [ ] **21. Two replicas.** With state in Postgres (19) and no global lock (20), run two API
   replicas behind a small load balancer in `docker-compose.yml`, with the UI and MCP E2Es
