@@ -1292,6 +1292,194 @@ def _group_complement(sel: exp.Select, keys: list) -> exp.Expression:
     return exp.and_(*conds)
 
 
+# --- pairs of filtered aggregates (owner's decision 2026-11-09) -----------------
+# Each filtered aggregate is checked against its own whole above. Two of them in
+# one query can still be subtracted from each other: "women" minus "women with
+# an ER visit" is the 3 women without one, though each count alone is 11+ and
+# leaves 11+ people out of the whole table. So every PAIR of filtered units --
+# a scope with a WHERE, or one FILTER (WHERE ...) aggregate -- is compared: the
+# people one unit holds that the other does not must number 0 or 11+, both ways.
+# A pair the check cannot write is refused (fail closed).
+
+_STRIP = ("group", "having", "order", "limit", "offset", "qualify", "distinct", "windows")
+
+
+class _Unit:
+    """One filtered aggregate: its SELECT, person keys, predicates (SQL text,
+    ANDed), the FILTER node if it is one, and whether it counts rows (anything
+    but count(DISTINCT <person key>))."""
+
+    def __init__(self, sel, keys, flt, rows):
+        self.sel, self.keys, self.flt, self.rows = sel, list(keys), flt, rows
+
+    def preds(self, sel: Optional[exp.Select] = None) -> list:
+        sel = self.sel if sel is None else sel
+        out = []
+        where = sel.args.get("where")
+        if where is not None:
+            out.append(where.this.sql(dialect=DIALECT))
+        if self.flt is not None:
+            mine = list(_own_nodes(self.sel, exp.Filter))
+            theirs = list(_own_nodes(sel, exp.Filter))
+            f = theirs[next(i for i, x in enumerate(mine) if x is self.flt)]
+            out.append(f.args["expression"].this.sql(dialect=DIALECT))
+        return out
+
+    @property
+    def grouped(self) -> bool:
+        return self.sel.args.get("group") is not None
+
+
+def _people_count(agg: exp.Expression, keys: list) -> bool:
+    if not isinstance(agg, exp.Count) or not isinstance(agg.this, exp.Distinct):
+        return False
+    args = agg.this.expressions
+    return len(args) == 1 and args[0].sql(dialect=DIALECT).lower() in {k.lower() for k in keys}
+
+
+def _scope_counts_rows(sel: exp.Select, keys: list) -> bool:
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window) \
+                and not isinstance(node.parent, exp.Filter) and not _people_count(node, keys):
+            return True
+        if isinstance(node, exp.Filter) and not _people_count(node.this, keys):
+            return True
+    return False
+
+
+def _enclosing_select(node: exp.Expression) -> Optional[exp.Select]:
+    while node is not None and not isinstance(node, exp.Select):
+        node = node.parent
+    return node
+
+
+def _filtered_units(rewrites: list, filters: list) -> list:
+    units = [_Unit(sel, keys, None, _scope_counts_rows(sel, keys))
+             for sel, keys in rewrites if sel.args.get("where") is not None]
+    for flt, keys in filters:
+        sel = _enclosing_select(flt)
+        if sel is not None:
+            units.append(_Unit(sel, keys, flt, not _people_count(flt.this, keys)))
+    return units
+
+
+def _sources(sel: exp.Select) -> list:
+    nodes = [sel.args.get("from") or sel.args.get("from_"), *(sel.args.get("joins") or [])]
+    return [n.this if isinstance(n, (exp.From, exp.Join)) else n for n in nodes if n is not None]
+
+
+def _sources_sql(sel: exp.Select) -> str:
+    parts = [sel.args.get("from") or sel.args.get("from_"), *(sel.args.get("joins") or [])]
+    return " ".join(p.sql(dialect=DIALECT) for p in parts if p is not None)
+
+
+def _aligned(u: _Unit, v: _Unit) -> Optional[list]:
+    """V's predicates written over U's source aliases, when the two read the
+    same sources (same tables in the same order, same joins once renamed);
+    else None."""
+    us, vs = _sources(u.sel), _sources(v.sel)
+    if not us or len(us) != len(vs):
+        return None
+    rename = {}
+    for a, b in zip(us, vs):
+        if isinstance(a, exp.Table) and isinstance(b, exp.Table):
+            if a.sql(dialect=DIALECT).split(" AS ")[0].lower() != \
+                    b.sql(dialect=DIALECT).split(" AS ")[0].lower():
+                return None
+        elif isinstance(a, exp.Subquery) and isinstance(b, exp.Subquery):
+            if a.this.sql(dialect=DIALECT) != b.this.sql(dialect=DIALECT):
+                return None
+        else:
+            return None
+        rename[(b.alias_or_name or "").lower()] = a.alias_or_name
+    copy = v.sel.copy()
+    for src in _sources(copy):
+        new = rename.get((src.alias_or_name or "").lower())
+        if new:
+            src.set("alias", exp.TableAlias(this=exp.to_identifier(new)))
+    for col in list(copy.find_all(exp.Column)):
+        t = (col.table or "").lower()
+        if t not in rename:
+            continue
+        node, shadowed = col.parent, False
+        while node is not None and node is not copy:
+            if isinstance(node, exp.Select) and t in _own_sources(node):
+                shadowed = True
+                break
+            node = node.parent
+        if not shadowed:
+            col.set("table", exp.to_identifier(rename[t]))
+    if _sources_sql(copy) != _sources_sql(u.sel):
+        return None
+    # the copy's FILTER nodes are found by position, as in u.preds
+    probe = _Unit(v.sel, v.keys, v.flt, v.rows)
+    return probe.preds(copy)
+
+
+def _over(sel: exp.Select, select_sql: str, preds: list) -> str:
+    c = sel.copy()
+    for arg in _STRIP:
+        c.set(arg, None)
+    c.set("expressions", [sqlglot.parse_one(select_sql, read=DIALECT)])
+    c.set("where", exp.Where(this=sqlglot.parse_one(" AND ".join(f"({p})" for p in preds),
+                                                    read=DIALECT)) if preds else None)
+    return exp.Subquery(this=c).sql(dialect=DIALECT)
+
+
+def _pair_conditions(u: _Unit, v: _Unit) -> list:
+    """SQL conditions (strings) that hold when the people U has and V lacks are
+    0 or 11+ (0 only when U itself has 11). Raises _CannotCorrelate."""
+    conds = []
+    if u.sel is v.sel:
+        # two FILTERs of one SELECT: inline, so it holds per group too
+        pu = u.preds()[-1]
+        pv = v.preds()[-1]
+        for k in u.keys:
+            whole = f"count(DISTINCT {k}) FILTER (WHERE {pu})"
+            # B: |U people \ V people| = |U or V| - |V|
+            conds.append(_complement_ok(
+                f"(count(DISTINCT {k}) FILTER (WHERE ({pu}) OR ({pv})) - "
+                f"count(DISTINCT {k}) FILTER (WHERE {pv}))", whole))
+            if u.rows or v.rows:
+                # A: people with a row U counts and V does not
+                conds.append(_complement_ok(
+                    f"count(DISTINCT {k}) FILTER (WHERE ({pu}) AND ({pv}) IS NOT TRUE)", whole))
+        return conds
+    if u.grouped or v.grouped:
+        raise _CannotCorrelate("a grouped unit in a pair")
+    aligned = _aligned(u, v) if (u.rows or v.rows) else None
+    if (u.rows or v.rows) and aligned is None:
+        raise _CannotCorrelate("row counts over different sources")
+    for ku in u.keys:
+        whole = _over(u.sel, f"count(DISTINCT {ku})", u.preds())
+        for kv in v.keys:
+            people_v = _over(v.sel, kv, v.preds() + [f"{kv} IS NOT NULL"])
+            conds.append(_complement_ok(
+                _over(u.sel, f"count(DISTINCT {ku})", u.preds() + [f"{ku} NOT IN {people_v}"]),
+                whole))
+        if aligned is not None:
+            vp = " AND ".join(f"({p})" for p in aligned)
+            conds.append(_complement_ok(
+                _over(u.sel, f"count(DISTINCT {ku})", u.preds() + [f"({vp}) IS NOT TRUE"]), whole))
+    return conds
+
+
+def _pairwise(rewrites: list, filters: list) -> dict:
+    """{id(select or filter node): [conditions]} for every filtered unit that
+    has a partner. Raises _CannotCorrelate when a pair cannot be checked."""
+    units = _filtered_units(rewrites, filters)
+    out: dict = {}
+    for i, u in enumerate(units):
+        for j, v in enumerate(units):
+            if i == j:
+                continue
+            if u.sel is v.sel and (u.flt is None or v.flt is None):
+                continue   # a FILTER inside a WHERE scope: checked against that scope already
+            target = id(u.flt) if u.flt is not None else id(u.sel)
+            out.setdefault(target, []).extend(_pair_conditions(u, v))
+    return out
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1340,6 +1528,16 @@ def check(tree: exp.Expression) -> PhiDecision:
                 f"checked: subtracting could recover a group of fewer than {MIN_CELL} people; "
                 "name the GROUP BY columns explicitly, or ask for each count in its own query")
             break
+    pair_conds: dict = {}
+    if not a.findings:
+        try:
+            pair_conds = _pairwise(a.rewrites, a.filters)
+        except _CannotCorrelate:
+            a.findings.append(
+                "two filtered aggregates over patient rows in one query, in a form whose overlap "
+                "cannot be checked (a grouped one beside another query's, or row counts over "
+                "different tables): subtracting one from the other could recover a group of "
+                f"fewer than {MIN_CELL} people; ask for each count in its own query")
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
         return PhiDecision(False, f"PHI rule: {'; '.join(uniq)}. {_rule_hint(uniq)}",
@@ -1404,6 +1602,8 @@ def check(tree: exp.Expression) -> PhiDecision:
             + _complement_ok(f"(count(DISTINCT {k}) - count(DISTINCT {k}) FILTER ({where_sql}))",
                              f"count(DISTINCT {k})")
             for k in keys)
+        for extra in pair_conds.get(id(flt), []):
+            guard = f"{guard} AND {extra}"
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
@@ -1414,6 +1614,8 @@ def check(tree: exp.Expression) -> PhiDecision:
         cond = _enough(keys)
         if id(sel) in complements:
             cond = exp.and_(cond, complements[id(sel)])
+        for extra in pair_conds.get(id(sel), []):
+            cond = exp.and_(cond, sqlglot.parse_one(extra, read=DIALECT))
         having = target.args.get("having")
         target.set("having", exp.Having(this=exp.and_(having.this, cond) if having else cond))
     root_sel = q if isinstance(q, exp.Select) else None
