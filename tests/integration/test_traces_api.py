@@ -32,7 +32,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("PLANNER_METRICS_LOG", str(tmp_path / "metrics.jsonl"))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setenv("PLANNER_PROVIDER", "gemini")
 
     import src.tools.base as tool_base
