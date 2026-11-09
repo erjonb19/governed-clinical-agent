@@ -560,6 +560,7 @@ Nine GitHub Actions workflows:
   - **A live 3-case check on Groq** (the fallback model, item 8), paced for Groq's free tier. It needs the `GROQ_API_KEY` repository secret (set) and skips with a warning without it; a provider outage warns, a real accuracy drop is red.
   - **Model accuracy** is measured by the nightly (`eval-nightly.yml`) and the manual FHIR eval, both live on Gemini, the default provider. A Gemini-only regression shows up there, up to a day after the push.
 - **Releases** (`release.yml`, backlog item 5): pushing a tag `vX.Y.Z` that matches `VERSION` runs pytest on the tagged commit and creates a GitHub release with generated notes. Pushing the tag is the owner's step; nothing in CI creates tags.
+- **Container** (`container.yml`, backlog item 17), on every push. It builds the image, starts it, waits for the `HEALTHCHECK`, and checks the non-root user. A smoke test hits `/v1/health` (with the commit), checks that `/v1/traces` needs the key, and checks that the guard allows a count and refuses a `DROP`. Then it records memory and runs a **Trivy** scan that fails on fixable CRITICAL findings. Nothing is pushed to a registry.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
   - **Alerts** (`nightly_alerts.py`, backlog item 3). A red nightly opens a GitHub issue, one per kind and dataset, and the two kinds are never mixed. A repeat comments on the open issue, and the next healthy night closes it.
     - **`eval-regression`** (`nightly eval regression: <dataset>`) opens when accuracy over completed runs is **under 80%**, or when the harness broke before scoring.
@@ -586,6 +587,21 @@ $env:API_KEY="..."              # require a key on the data endpoints
 
 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
+
+Or in a container (backlog item 17; `Dockerfile`, slim base, pinned requirements, a non-root user, a `HEALTHCHECK` on `/health`):
+
+```bash
+docker build -t governed-clinical-agent .
+docker run -p 8000:8000 -e API_KEY=change-me -e GEMINI_API_KEY=... governed-clinical-agent
+```
+
+or with a local Arize Phoenix for traces, in one command (`docker-compose.yml`; Phoenix at http://localhost:6006):
+
+```bash
+API_KEY=change-me GEMINI_API_KEY=... docker compose up --build
+```
+
+The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docker stats`, 2026-11-09). That is within the Render budget, but Render still builds from `requirements-api.txt`; switching it to the image is the owner's call. The image is 814 MB on disk.
 
 Then open **http://localhost:8000/ui** — a self-contained web UI to ask questions
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
