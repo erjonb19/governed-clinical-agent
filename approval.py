@@ -59,7 +59,9 @@ Queue latency is a real operations metric, not decoration.
 from __future__ import annotations
 
 import os
-import sqlite3
+import sqlite3  # noqa: F401  (kept: older callers import approval.sqlite3)
+
+import state_db
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional, TypedDict
@@ -98,9 +100,9 @@ class ApprovalStore:
         self._init()
 
     def _conn(self):
-        con = sqlite3.connect(self.path)
-        con.row_factory = sqlite3.Row
-        return con
+        # Postgres when STATE_DB_URL is set (item 19: the queue survives a
+        # Render redeploy), else this SQLite file. One transaction per use.
+        return state_db.connect(self.path)
 
     def _init(self) -> None:
         with self._conn() as con:
@@ -129,9 +131,9 @@ class ApprovalStore:
             # verdict. Escalation rate is computed from here for the same
             # reason: a later approval would otherwise overwrite the evidence
             # that the item was ever escalated.
-            con.execute("""
+            con.execute(f"""
                 CREATE TABLE IF NOT EXISTS approval_events (
-                    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id      {state_db.autoincrement_pk(con)},
                     approval_id   TEXT NOT NULL,
                     decision      TEXT NOT NULL,
                     decided_by    TEXT NOT NULL,
@@ -155,7 +157,7 @@ class ApprovalStore:
         the column in place keeps that audit history rather than requiring the
         database to be thrown away.
         """
-        cols = {r["name"] for r in con.execute("PRAGMA table_info(approvals)")}
+        cols = state_db.columns(con, "approvals")
         if "assigned_to" not in cols:
             # Current owner of a PENDING item. NULL means "unassigned" -- the
             # general queue, which is where every proposal starts.

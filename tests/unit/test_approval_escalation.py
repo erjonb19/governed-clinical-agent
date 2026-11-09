@@ -171,6 +171,14 @@ CREATE TABLE approvals (
 """
 
 
+@pytest.fixture(autouse=True)
+def _legacy_files_are_sqlite(request, monkeypatch):
+    # the migration upgrades an old approvals.sqlite FILE; with STATE_DB_URL
+    # set (the Postgres CI job, item 19) the store would ignore the file
+    if "legacy" in request.node.name or "migration" in request.node.name:
+        monkeypatch.delenv("STATE_DB_URL", raising=False)
+
+
 def _legacy_db(path):
     con = sqlite3.connect(path)
     con.execute(OLD_SCHEMA)

@@ -165,6 +165,10 @@ def test_planted_text_in_a_row_never_reaches_a_model_prompt(env):
     assert MARKER not in json.dumps(s.get("trajectory"), default=str)
     assert MARKER not in str(s.get("last_error") or "") + str(s.get("reason") or "")
     assert MARKER not in _files_text(tmp, "traces.sqlite", "cp.sqlite")
+    # and wherever the checkpoints really are (Postgres with STATE_DB_URL)
+    from tests.state_helpers import checkpoint_values
+    values = checkpoint_values(tmp / "cp.sqlite")
+    assert values and not any(MARKER.encode() in v for v in values)
 
 
 def test_a_value_error_on_the_planted_text_is_withheld_from_the_retry(env):
