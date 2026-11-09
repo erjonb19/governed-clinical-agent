@@ -6,8 +6,8 @@ or anything that changes `sql_guard.py`, `phi_guard.py`, `phi_columns.yaml` or w
 guard allows or refuses. No accounts were created, nothing was spent, no tag was pushed,
 no image was published, branch protection was not changed and no other repo was touched.
 **No live eval sweep was run in this session's own environment.** The one live sweep
-allowed (#40's full FHIR eval) is dispatched on a GitHub runner after Gemini's 08:00 UTC
-reset. Its result is under "#40" below.
+allowed (#40's full FHIR eval) ran on a GitHub runner after Gemini's 08:00 UTC reset:
+27/28 cases, so the job is red. The details are under "#40" below.
 
 Each code PR below was read by a separate review agent before it merged. Its blocking
 findings were fixed in the same PR first: for example, on #72 a test could have wiped a real
@@ -35,8 +35,8 @@ these PRs touches the guard files.
 ## Still open, and why
 
 - **#40 (age cap)** touches the guard, so it is the owner's to merge. It is up to date with
-  `main` and its push-gate recordings were re-recorded. Its full FHIR eval is dispatched on
-  a GitHub runner after the 08:00 UTC reset; the result is added below once it finishes.
+  `main` and its push-gate recordings were re-recorded. Its full FHIR eval passed 27/28
+  cases (78/84 runs). The one failing case is analysed below, and the merge is the owner's call.
 - **#46 (de-identified FHIR layer, PR A)** was left as it was, per the Order of work.
 - **#66 (`databricks-sql-connector` 4.4.0 -> 4.9.0)** fixes the two `oauthlib` advisories.
   It changes the Databricks path, which can't be re-verified until item 10's secrets exist.
