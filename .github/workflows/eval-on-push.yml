@@ -1,14 +1,24 @@
 # .github/workflows/eval-on-push.yml
-# Quick evaluation gate on every push and pull request.
-# Runs a small subset of the eval bank so feedback is fast and cheap, then
-# fails the build if accuracy falls below the gate. This is the "deployment
-# eval gate" pattern: a regression that drops agent accuracy blocks the merge.
+# Quick evaluation gate on every push (backlog items 1 and 13).
+#
+# The hospital and FHIR subsets REPLAY committed model answers
+# (PLANNER_PROVIDER=replay, tests/evals/recordings/push_gate.json): zero tokens,
+# seconds, and none of Gemini's free daily quota, which the nightly needs
+# (owner's decision 2026-11-08, item 13). They still run the real harness,
+# guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns
+# them red. A prompt, schema note or question changed without re-recording is a
+# REPLAY MISS and fails the gate (python scripts/record_push_gate.py fixes it).
+# They do not measure a model: the nightly and the manual FHIR eval stay live on
+# Gemini for that.
+#
+# A small live check (3 hospital cases) runs on Groq, the fallback model
+# (item 8), so a live provider is still exercised on every push. It needs the
+# GROQ_API_KEY repository secret and skips with a warning when it is missing.
 
 name: eval (quick gate)
 
 # Every push to any branch (backlog item 1). No pull_request trigger: a push to
-# a PR branch already runs this, and running it twice per push would spend the
-# Gemini free-tier quota twice (the binding limit -- 429s end runs early).
+# a PR branch already runs this.
 on:
   push:
   workflow_dispatch:        # allows manual runs from the Actions tab
@@ -24,35 +34,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Fail fast with a clear message if the planner key is absent. Without it,
-      # NLToSQLPlanner.__init__ raises SystemExit and the job dies in ~20s with a
-      # cryptic exit 1 that looks like an eval failure but is really a setup gap.
-      - name: Verify required secret is present
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error title=Missing secret::GEMINI_API_KEY is not set for this workflow. The eval planner uses the Gemini provider and cannot run without it. Add it under Settings -> Secrets and variables -> Actions -> New repository secret."
-            exit 1
-          fi
-          echo "GEMINI_API_KEY is present."
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-api.txt
 
-      - name: Run quick eval (subset)
+      # Replayed: any failure is red, including a replay miss (exit 1). There is
+      # no provider to be unavailable, so no warn mode.
+      - name: Run quick eval (subset, replayed)
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PLANNER_PROVIDER: "gemini"      # gemini free tier has headroom for the full suite
-          PLANNER_MIN_INTERVAL_SEC: "5"  # ~12 RPM: under the Gemini free-tier per-minute cap
+          PLANNER_PROVIDER: "replay"
+          ALLOW_REPLAY: "1"
+          REPLAY_STORE: "tests/evals/recordings/push_gate.json"
           EVAL_SUBSET: "1"        # harness runs the tagged subset only
-          EVAL_RUNS: "1"          # one run per case keeps the gate fast
-        # Exit 2 = provider unavailable (402/429/5xx): an infrastructure outage,
-        # not an accuracy regression -- warn instead of blocking the push. Exit 1
-        # (real regression) still fails the gate (scripts/eval_gate.sh).
-        run: scripts/eval_gate.sh warn
+          EVAL_RUNS: "1"          # one run per case: a replay answers the same every time
+        run: python -u eval_harness.py
 
       - name: Upload eval report
         if: always()              # keep the report even if the gate fails
@@ -63,10 +59,8 @@ jobs:
 
   # FHIR subset (backlog item 1, owner's decision 2026-11-06): 13 cases covering
   # every tier, both modes and every FHIR table (tests/unit/test_fhir_subset.py);
-  # the full 28 run nightly. After the hospital job: one key, so running both at
-  # once doubles the request rate and trips 429s.
+  # the full 28 run nightly, live.
   fhir-quick-eval:
-    needs: quick-eval
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -75,16 +69,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Verify required secret is present
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error title=Missing secret::GEMINI_API_KEY is not set for this workflow. The eval planner uses the Gemini provider and cannot run without it."
-            exit 1
-          fi
-          echo "GEMINI_API_KEY is present."
 
       - name: Install dependencies
         run: |
@@ -107,20 +91,69 @@ jobs:
           python fetch_synthea.py
           python build_fhir_gold.py
 
-      - name: Run FHIR quick eval (subset)
+      - name: Run FHIR quick eval (subset, replayed)
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PLANNER_PROVIDER: "gemini"
-          PLANNER_MIN_INTERVAL_SEC: "5"
+          PLANNER_PROVIDER: "replay"
+          ALLOW_REPLAY: "1"
+          REPLAY_STORE: "tests/evals/recordings/push_gate.json"
           EVAL_DATASET: "fhir"
           PLANNER_SCHEMA: "fhir"
           EVAL_SUBSET: "1"
           EVAL_RUNS: "1"
-        run: scripts/eval_gate.sh warn
+        run: python -u eval_harness.py
 
       - name: Upload FHIR eval report
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: eval-report-fhir-quick
+          path: eval_runs/
+
+  # Live, on Groq: three hospital cases across tiers, so the fallback model and
+  # a real provider call are exercised on every push. Paced for Groq's free tier
+  # (8K tokens/min, item 13). A provider outage or a missing key warns; a real
+  # accuracy drop (exit 1) is red.
+  groq-live-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Check for the Groq key
+        id: key
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning title=Live Groq check skipped::GROQ_API_KEY is not a repository secret yet (Settings -> Secrets and variables -> Actions). The replayed gates above still ran."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt
+
+      - name: Run 3 live cases on Groq
+        if: steps.key.outputs.present == 'true'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PLANNER_PROVIDER: "groq"
+          PLANNER_MIN_INTERVAL_SEC: "20"
+          EVAL_CASES: "t1_count_all,t2_avg_mspb_pa,t4_best_value_top10"
+          EVAL_RUNS: "1"
+        run: scripts/eval_gate.sh warn
+
+      - name: Upload eval report
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: eval-report-groq-live
           path: eval_runs/
