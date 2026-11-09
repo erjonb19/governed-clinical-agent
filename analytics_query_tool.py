@@ -86,9 +86,10 @@ class QueryTimeout(Exception):
 def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
     """Execute and fetch on a DuckDB connection, interrupting it after
     `seconds`. DuckDB has no statement_timeout setting, so a timer calls
-    con.interrupt(). Callers serialise use of `con` (the API's _LOCK), so the
-    query running when it fires is this one; the timer is disarmed under a lock
-    before returning, and an interrupt that lands on an idle connection does not
+    con.interrupt(). `con` is a cursor of its own for this one execution
+    (AnalyticsQueryTool.execute, backlog item 20), so the interrupt stops this
+    query and nobody else's; the timer is disarmed under a lock before
+    returning, and an interrupt that lands on an idle connection does not
     affect the next query (tests/unit/test_query_timeout.py)."""
     lock, done, fired = threading.Lock(), [False], [False]
 
@@ -148,6 +149,7 @@ class AnalyticsQueryTool(BaseTool):
         self._row_cap = row_cap
         self._ledger = ledger          # optional QueryLedger for groundedness
         self._primary_error = None
+        self._cursor_lock = threading.Lock()   # held only to open a cursor
         try:
             # read-only unless it is to be seeded with demo tables: the agent's
             # path never writes, and a function slipping the guard (checkpoint())
@@ -275,7 +277,17 @@ class AnalyticsQueryTool(BaseTool):
             else:
                 ds = params.get("dataset")
                 con = self._cons.get(ds, self._con) if ds else self._con
-                cols, rows = run_with_timeout(con, decision.safe_sql, query_timeout())
+                # A cursor of its own per execution (backlog item 20): DuckDB
+                # connections are not safe to share across threads, cursors of
+                # one connection are, and a cursor of a read-only database is
+                # read-only. Concurrent requests no longer queue on one lock,
+                # and the timeout's interrupt reaches only this query.
+                with self._cursor_lock:
+                    cur = con.cursor()
+                try:
+                    cols, rows = run_with_timeout(cur, decision.safe_sql, query_timeout())
+                finally:
+                    cur.close()
 
             # The PHI output check (phi_guard.py): trace every result column to
             # its sources and refuse PHI however it was renamed, and refuse

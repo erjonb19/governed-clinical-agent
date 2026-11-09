@@ -27,6 +27,7 @@ import os
 import sys
 import hmac
 import json
+import contextlib
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
@@ -177,12 +178,47 @@ def require_api_key(provided: Optional[str] = Security(_api_key_header)) -> None
             detail="invalid or missing API key (send header X-API-Key)",
         )
 
-# Built once at startup, shared across requests. DuckDB connections are not
-# thread-safe, and FastAPI runs sync endpoints in a threadpool, so we serialize
-# tool execution with a lock. Correct and sufficient for a single-instance
-# free-tier deploy; horizontal scaling is a later concern.
+# Built once at startup, shared across requests. FastAPI runs sync endpoints in
+# a threadpool. Queries no longer share one lock (backlog item 20): the query
+# tool opens a DuckDB cursor of its own per execution, so /query, /raw-sql and
+# /mcp run side by side. Two limits remain:
+#   _APPROVAL_LOCK  serialises the approval queue's own runs (/propose and a
+#                   decision): its graph and store are not built for overlap,
+#                   and they no longer block anyone else's queries.
+#   _RUN_SLOTS      at most MAX_CONCURRENT_RUNS runs that call the model at
+#                   once (free-tier rate limits); a request that waits longer
+#                   than RUN_QUEUE_WAIT_SEC for a slot gets 429 + Retry-After.
 _STATE: dict[str, Any] = {"runtime": None, "planner": None, "planner_error": None}
-_LOCK = threading.Lock()
+_APPROVAL_LOCK = threading.Lock()
+
+
+def _env_number(name: str, default: float, minimum: float) -> float:
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return v if v >= minimum else default
+
+
+MAX_CONCURRENT_RUNS = int(_env_number("MAX_CONCURRENT_RUNS", 4, 1))
+RUN_QUEUE_WAIT_SEC = _env_number("RUN_QUEUE_WAIT_SEC", 15, 0)
+RUN_RETRY_AFTER_SEC = 5
+_RUN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
+
+
+@contextlib.contextmanager
+def _run_slot():
+    """One of MAX_CONCURRENT_RUNS slots for a run that calls the model, or 429."""
+    if not _RUN_SLOTS.acquire(timeout=RUN_QUEUE_WAIT_SEC):
+        raise HTTPException(
+            status_code=429,
+            detail=f"busy: {MAX_CONCURRENT_RUNS} questions are already being answered; "
+                   f"retry in {RUN_RETRY_AFTER_SEC} s",
+            headers={"Retry-After": str(RUN_RETRY_AFTER_SEC)})
+    try:
+        yield
+    finally:
+        _RUN_SLOTS.release()
 
 
 class _ServiceAuditLogger(AuditLogger):
@@ -239,7 +275,7 @@ async def lifespan(app: FastAPI):
         try:
             from agent_graph import GovernedAgentGraph
             _STATE["graph_agent"] = GovernedAgentGraph(
-                runtime=runtime, planner=_STATE["planner"], lock=_LOCK,
+                runtime=runtime, planner=_STATE["planner"],
                 checkpoint_db=os.environ.get("CHECKPOINT_DB"),   # read now, not at import
                 schema_docs={k: v["schema_doc"] for k, v in DATASETS.items()})
         except BaseException as e:
@@ -263,8 +299,9 @@ async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
         try:
             import mcp_server
-            # same audit trail and DuckDB lock as /query and /raw-sql
-            mcp_server.attach_host(audit_logger=audit, lock=_LOCK)
+            # same audit trail as /query and /raw-sql; no shared lock (each
+            # execution opens its own DuckDB cursor, backlog item 20)
+            mcp_server.attach_host(audit_logger=audit)
             manager, handler = mcp_server.build_http_handler(mcp_server.mcp_key())
             await stack.enter_async_context(manager.run())
             _STATE["mcp_http"] = handler
@@ -523,8 +560,7 @@ def run_governed_sql(sql: str, backend: Optional[str] = None,
     tracer = tracing.get_tracer()
     with tracer.span("guard", sql_sha256=tracing.sql_sha256(sql), backend=backend,
                      dataset=dataset) as g:
-        with _LOCK:
-            result = runtime.execute_tool(CAPABILITY, params)
+        result = runtime.execute_tool(CAPABILITY, params)
         out = interpret_result(result, sql)
         g.set(allowed=out.get("allowed"), decided_by=out.get("decided_by"),
               reason=(out.get("reason") or "")[:500] or None)
@@ -655,6 +691,11 @@ def raw_sql(request: Request, req: SqlRequest) -> dict:
 @app.post("/query", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_QUERY)
 def query(request: Request, req: QueryRequest) -> dict:
+    with _run_slot():
+        return _query(req)
+
+
+def _query(req: QueryRequest) -> dict:
     planner = _STATE.get("planner")
     if planner is None:
         version = versioning.answer_version(None, DATASETS[_dataset(req.dataset)]["schema_doc"])
@@ -904,7 +945,7 @@ def propose(request: Request, req: ProposeRequest) -> dict:
     if agent is None:
         raise HTTPException(status_code=503,
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
-    with _LOCK:
+    with _run_slot(), _APPROVAL_LOCK:
         return agent.start(req.question)
 
 
@@ -957,7 +998,7 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
         raise HTTPException(status_code=503,
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
     try:
-        with _LOCK:
+        with _APPROVAL_LOCK:
             return agent.resume(
                 thread_id=item["thread_id"], decision=req.decision,
                 decided_by=req.decided_by, reason=req.reason,

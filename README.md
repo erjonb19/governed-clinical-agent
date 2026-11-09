@@ -665,6 +665,14 @@ be switched off), on DuckDB by interrupting the connection and on Databricks as
 costs: a self-join or cross join of a patient table passes it, and at the real
 Gold's size some ran past 60 s (`docs/measurements/compute_bomb_2026-11-03.txt`).
 
+Queries run side by side: each execution opens its own DuckDB cursor, so there
+is no global lock (backlog item 20). Runs that call the model (`/query`,
+`/propose`) are capped at `MAX_CONCURRENT_RUNS` at once (default 4, for the
+free tiers' rate limits); a request that waits longer than `RUN_QUEUE_WAIT_SEC`
+(default 15) for a slot gets **429** with `Retry-After: 5`. Approval runs
+(`/propose`, a decision) also serialise among themselves. Measured before and
+after in [`docs/benchmarks.md`](docs/benchmarks.md).
+
 Note: `xai` is xAI/Grok (`api.x.ai`, `XAI_API_KEY` starting `xai-`), a different
 vendor from `groq` (`api.groq.com`, `GROQ_API_KEY` starting `gsk_`).
 

@@ -174,15 +174,16 @@ class Tracer:
         self._lock = threading.Lock()
         self._ready = False
         self._runs_since_prune = 0
+        self._wcon: Optional[sqlite3.Connection] = None   # the one writer, under _lock
 
     # ---------------- storage (best effort) ----------------
 
-    def _connect(self) -> Optional[sqlite3.Connection]:
+    def _connect(self, shared: bool = False) -> Optional[sqlite3.Connection]:
         try:
             d = os.path.dirname(self.db_path)
             if d:
                 os.makedirs(d, exist_ok=True)
-            con = sqlite3.connect(self.db_path, timeout=2)
+            con = sqlite3.connect(self.db_path, timeout=2, check_same_thread=not shared)
             if not self._ready:
                 con.executescript(_SCHEMA)
                 self._ready = True
@@ -190,18 +191,41 @@ class Tracer:
         except Exception:
             return None
 
+    def _writer(self) -> Optional[sqlite3.Connection]:
+        """One long-lived writer connection (call under _lock). It used to be a
+        new connection, a full-sync commit and a close per span, all under this
+        lock: about 18 ms of every /query run, and the queue concurrent runs
+        waited in (backlog item 20, measured). WAL lets readers (the Traces
+        view) run beside it; synchronous=NORMAL can lose the last spans on a
+        power cut, never corrupt the file -- the tracer is best effort anyway."""
+        if self._wcon is None:
+            con = self._connect(shared=True)
+            if con is None:
+                return None
+            try:
+                con.execute("PRAGMA journal_mode=WAL")
+                con.execute("PRAGMA synchronous=NORMAL")
+            except Exception:
+                pass
+            self._wcon = con
+        return self._wcon
+
     def _write(self, sql: str, params: tuple) -> None:
         with self._lock:
-            con = self._connect()
+            con = self._writer()
             if con is None:
                 return
             try:
                 con.execute(sql, params)
                 con.commit()
             except Exception:
-                pass
-            finally:
-                con.close()
+                # e.g. the file was removed: drop the writer, reconnect next time
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                self._wcon = None
+                self._ready = False
 
     def _read(self, sql: str, params: tuple = ()) -> list[tuple]:
         con = self._connect()
