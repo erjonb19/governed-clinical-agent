@@ -291,3 +291,15 @@ def test_the_commit_comes_from_render_or_ci_first(monkeypatch):
         assert versioning.git_commit() == "a" * 40
     finally:
         versioning.git_commit.cache_clear()
+
+
+def test_a_guard_refusal_evicts_the_cached_plan(make_client, monkeypatch):
+    # item 6: a cached first attempt that the guard refuses must not be served
+    # again; the graph drops it so the next ask goes back to the model
+    import llm_cache
+    evicted = []
+    monkeypatch.setattr(llm_cache.LLMCache, "evict", lambda self, k: evicted.append(k))
+    import agent_graph
+    agent_graph._forget_failed_plan({"plan_cache_key": "k1"})
+    agent_graph._forget_failed_plan({"plan_cache_key": None})
+    assert evicted == ["k1"]

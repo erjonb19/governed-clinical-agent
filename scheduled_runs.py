@@ -447,6 +447,7 @@ def main() -> int:
     # scored against a reference like an eval, so one provider, no fallback
     # (item 8); eval_harness assigns the same at import, this says it here too
     os.environ["PLANNER_FALLBACK"] = "none"
+    os.environ["LLM_CACHE"] = "0"        # a standing question must ask the model
     import eval_harness as eh
     from agent_graph import GovernedAgentGraph
     from data_backends import LocalDuckDBBackend

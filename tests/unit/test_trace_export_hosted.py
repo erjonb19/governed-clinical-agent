@@ -188,7 +188,8 @@ def test_every_free_text_attribute_is_a_reviewed_one():
                        "total_tokens", "model", "verdict", "allowed", "approval_id", "capability",
                        "by", "decision", "terminal", "committed", "est_cost_usd",
                        "provider", "prompt_tokens", "completion_tokens", "latency_ms",
-                       "fallback_from"}   # a provider name (item 8), not free text
+                       "fallback_from",   # a provider name (item 8), not free text
+                       "cached"}          # a boolean (item 6)
     unreviewed = keys - numeric_or_enum - FREE_TEXT_EXPORTED
     # keyword arguments that are not span attributes (python syntax in the calls)
     # (`read=` is sqlglot's dialect argument inside a node .set(...) call in phi_guard)
