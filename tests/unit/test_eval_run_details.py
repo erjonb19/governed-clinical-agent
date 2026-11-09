@@ -24,14 +24,21 @@ class _Runtime:
         return self.result
 
 
-CASE = {"id": "c", "question": "q", "reference_sql": "SELECT 1", "mode": "scalar",
-        "_ref_rows": [{"n": 4168}]}
+CASE = {
+    "id": "c",
+    "question": "q",
+    "reference_sql": "SELECT 1",
+    "mode": "scalar",
+    "_ref_rows": [{"n": 4168}],
+}
 
 
 def test_a_refused_run_keeps_its_sql_and_reason():
-    refused = SimpleNamespace(allowed=False, result=None,
-                              explanation="Operation denied: x\nReason: no such column: "
-                                          "gold_condition.is_experiment")
+    refused = SimpleNamespace(
+        allowed=False,
+        result=None,
+        explanation="Operation denied: x\nReason: no such column: gold_condition.is_experiment",
+    )
     sql = "SELECT count(*) FROM gold_condition WHERE is_experiment = FALSE"
     mode, _ = H.run_once(CASE, _Runtime(refused), _Planner(sql))
     assert mode == H.F_GUARD_DENIED
@@ -39,13 +46,15 @@ def test_a_refused_run_keeps_its_sql_and_reason():
 
 
 def test_a_run_that_executed_keeps_its_sql_and_no_rows():
-    ok = SimpleNamespace(allowed=True, explanation="",
-                         result=SimpleNamespace(success=True, error=None,
-                                                output={"rows": [{"n": 4168}]}))
+    ok = SimpleNamespace(
+        allowed=True,
+        explanation="",
+        result=SimpleNamespace(success=True, error=None, output={"rows": [{"n": 4168}]}),
+    )
     sql = "SELECT count(*) AS n FROM gold_condition WHERE is_active"
     H.run_once(CASE, _Runtime(ok), _Planner(sql))
     assert H._LAST_RUN == {"sql": sql, "reason": None}
-    assert "4168" not in repr(H._LAST_RUN)          # the answer is not recorded
+    assert "4168" not in repr(H._LAST_RUN)  # the answer is not recorded
 
 
 def test_a_long_reason_is_cut():
