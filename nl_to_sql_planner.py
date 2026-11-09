@@ -207,6 +207,20 @@ def is_provider_unavailable(exc: BaseException) -> bool:
     ))
 
 
+def _should_fall_back(exc: BaseException) -> bool:
+    """The fallback's rule: provider-unavailable by STATUS CODE or SDK error
+    class only. The message sniff in is_provider_unavailable is right for
+    scoring (an outage is never a regression) but too loose for serving: a 403
+    "insufficient permissions" is a config error to surface, not to hide behind
+    another model. A bare APIStatusError counts only with a retryable status."""
+    if isinstance(exc, PlannerError):
+        return False
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in _PROVIDER_STATUS_CODES or status >= 500
+    return type(exc).__name__ in (_PROVIDER_EXC_NAMES - {"APIStatusError"})
+
+
 class PlannerError(RuntimeError):
     """The model answered but gave us no usable SQL (refusal, truncation).
 
@@ -505,7 +519,7 @@ class NLToSQLPlanner:
             self._replay = replay.ReplayStore.from_env()
             # record mode only: the real provider that answers misses
             src = os.environ.get("REPLAY_SOURCE_PROVIDER")
-            self._source = (NLToSQLPlanner(provider=src)
+            self._source = (NLToSQLPlanner(provider=src, fallback="none")   # record what src wrote
                             if self._replay.record and src and src != "replay" else None)
             return
         key = os.environ.get(cfg["api_key_env"])
@@ -603,9 +617,11 @@ class NLToSQLPlanner:
         if self._sdk == "replay":
             return self._complete_replay(system, user, role)
         try:
+            # pacing (_pace_call) is process-wide and shared with the fallback
+            # call below: harmless, a retry waits the same interval
             return self._complete_direct(system, user, role)
         except Exception as primary:
-            if not is_provider_unavailable(primary):
+            if not _should_fall_back(primary):
                 raise
             backup = self._fallback_planner()
             if backup is None:

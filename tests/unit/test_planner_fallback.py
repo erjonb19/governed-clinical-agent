@@ -49,7 +49,9 @@ def test_unset_provider_means_gemini():
     # a fresh interpreter: reloading the module here would swap the class the
     # other tests patch
     import subprocess
-    env = {k: v for k, v in os.environ.items() if k != "PLANNER_PROVIDER"}
+    # empty, not absent: the module's load_dotenv() never overrides a set
+    # variable, so a developer .env pinning a provider cannot change the answer
+    env = dict(os.environ, PLANNER_PROVIDER="")
     root = os.path.join(os.path.dirname(__file__), "..", "..")
     out = subprocess.run([sys.executable, "-c",
                           "import nl_to_sql_planner as p; print(p.ACTIVE_PROVIDER)"],
@@ -97,6 +99,38 @@ def test_a_400_is_a_real_error_and_is_not_retried(keys, monkeypatch):
     with pytest.raises(Status):
         NLToSQLPlanner(provider="gemini").generate_sql_with_metrics("q")
     assert calls == ["gemini"]
+
+
+def test_a_403_config_error_is_not_hidden_behind_groq(keys, monkeypatch):
+    # "insufficient" scores as an outage in the eval harness, but serving must
+    # surface a permissions error, not answer it from another model
+    calls = script(monkeypatch, {"gemini": Status(403, "insufficient permissions for this model")})
+    with pytest.raises(Status):
+        NLToSQLPlanner(provider="gemini").generate_sql_with_metrics("q")
+    assert calls == ["gemini"]
+
+
+def test_a_422_status_error_is_not_retried(keys, monkeypatch):
+    calls = script(monkeypatch, {"gemini": Status(422, "unprocessable")})
+    with pytest.raises(Status):
+        NLToSQLPlanner(provider="gemini").generate_sql_with_metrics("q")
+    assert calls == ["gemini"]
+
+
+def test_a_connection_error_without_a_status_falls_back(keys, monkeypatch):
+    class APIConnectionError(Exception):
+        pass
+    calls = script(monkeypatch, {"gemini": APIConnectionError("Connection error.")})
+    _, m = NLToSQLPlanner(provider="gemini").generate_sql_with_metrics("q")
+    assert calls == ["gemini", "groq"] and m.provider == "groq"
+
+
+def test_record_mode_records_the_source_not_its_fallback(keys, monkeypatch):
+    monkeypatch.setenv("ALLOW_REPLAY", "1")
+    monkeypatch.setenv("E2E_RECORD", "1")
+    monkeypatch.setenv("REPLAY_SOURCE_PROVIDER", "gemini")
+    p = NLToSQLPlanner(provider="replay")
+    assert p._source.provider == "gemini" and p._source.fallback_provider is None
 
 
 def test_a_bad_key_is_not_retried(keys, monkeypatch):
