@@ -1,0 +1,178 @@
+
+# ---- Code quality gates (backlog item 15), enforced in tests.yml -------------
+# Gradual by design: each gate starts at today's level and only ratchets up.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+include = ["*.py", "*.pyi"]   # not the code blocks in Markdown
+
+[tool.ruff.lint]
+# Today's floor: syntax errors, undefined names, invalid comparisons -- zero of
+# them in the repo (2026-11-09). Next to add: F401/F811/F841 (45 hits, many in
+# src/ and the guard's neighbours, so a separate PR).
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff.format]
+# A ratchet: every Python file is checked EXCEPT these, which predate the gate
+# (2026-11-09). Format a file in its own small PR and delete it from this list;
+# new files are checked from day one. Guard files (sql_guard.py, phi_guard.py)
+# are reformatted only in a PR the owner merges.
+exclude = [
+    "agent_graph.py",
+    "aiops_demo_run.py",
+    "aiops_metrics.py",
+    "aiops_panel.py",
+    "analytics_query_tool.py",
+    "app.py",
+    "approval.py",
+    "approval_graph.py",
+    "brief_commit_tool.py",
+    "build_fhir_gold.py",
+    "build_hospital_gold.py",
+    "build_medallion.py",
+    "cost_tracker.py",
+    "critic.py",
+    "data_backends.py",
+    "data_quality.py",
+    "demo_analytics_wiring.py",
+    "demo_cms_sources.py",
+    "demo_groundedness_wiring.py",
+    "demo_taint_wiring.py",
+    "eval_bank.py",
+    "eval_bank_adversarial.py",
+    "eval_bank_fhir.py",
+    "eval_harness.py",
+    "fetch_cms.py",
+    "fetch_synthea.py",
+    "findings.py",
+    "gold_history.py",
+    "groundedness.py",
+    "live_check.py",
+    "mcp_server.py",
+    "nl_to_sql_planner.py",
+    "peek_grain.py",
+    "peek_measures.py",
+    "phi_guard.py",
+    "region_context_tool.py",
+    "replay.py",
+    "run_hospital_query.py",
+    "scheduled_runs.py",
+    "schema_check.py",
+    "scripts/eval_phase5.py",
+    "scripts/fetch_fhir_gold.py",
+    "scripts/measure_compute_bomb.py",
+    "scripts/publish_gold_to_databricks.py",
+    "scripts/record_push_gate.py",
+    "setup.py",
+    "sql_guard.py",
+    "src/policies/parser.py",
+    "src/policies/validator.py",
+    "src/runtime/agent_loop.py",
+    "src/runtime/agent_runtime.py",
+    "src/runtime/audit_logger.py",
+    "src/runtime/bootstrap.py",
+    "src/runtime/capability.py",
+    "src/runtime/docker_tool_runner.py",
+    "src/runtime/sandbox.py",
+    "src/security/parameter_validator.py",
+    "src/security/taint_tracking.py",
+    "src/tools/base.py",
+    "src/tools/filesystem.py",
+    "src/tools/git_ops.py",
+    "src/tools/git_tool.py",
+    "src/tools/http_fetch.py",
+    "src/tools/package_manager.py",
+    "src/utils/explainer.py",
+    "tests/conftest.py",
+    "tests/e2e/author_recordings.py",
+    "tests/e2e/test_mcp_e2e.py",
+    "tests/e2e/test_ui_e2e.py",
+    "tests/integration/test_agent_graph_trace_resume.py",
+    "tests/integration/test_approval_trace.py",
+    "tests/integration/test_audit_oracles.py",
+    "tests/integration/test_critic_graph.py",
+    "tests/integration/test_escalation_resumes.py",
+    "tests/integration/test_execute_tool.py",
+    "tests/integration/test_findings.py",
+    "tests/integration/test_http_fetch_network.py",
+    "tests/integration/test_indirect_injection.py",
+    "tests/integration/test_mcp_mounted.py",
+    "tests/integration/test_phi_paths.py",
+    "tests/integration/test_policy_max_response_size.py",
+    "tests/integration/test_query_graph.py",
+    "tests/integration/test_traces_api.py",
+    "tests/integration/test_trajectory_real_graph.py",
+    "tests/security/_metrics.py",
+    "tests/security/fhir_fixture.py",
+    "tests/security/test_adversarial.py",
+    "tests/security/test_guard_escapes.py",
+    "tests/security/test_jailbreak_corpus.py",
+    "tests/security/test_output_injection_flow.py",
+    "tests/security/test_param_mutations.py",
+    "tests/security/test_phi_guard.py",
+    "tests/security/test_taint_flow.py",
+    "tests/security/test_taint_tracking.py",
+    "tests/unit/test_agent_loop.py",
+    "tests/unit/test_agent_loop_output_safety.py",
+    "tests/unit/test_agent_runtime.py",
+    "tests/unit/test_analytics_tool_degradation.py",
+    "tests/unit/test_approval_escalation.py",
+    "tests/unit/test_critic.py",
+    "tests/unit/test_data_quality.py",
+    "tests/unit/test_dependency_pins.py",
+    "tests/unit/test_docs_facts.py",
+    "tests/unit/test_eval_failure_log.py",
+    "tests/unit/test_eval_gate.py",
+    "tests/unit/test_eval_gate_status.py",
+    "tests/unit/test_eval_phase5_smoke.py",
+    "tests/unit/test_eval_provider_classify.py",
+    "tests/unit/test_execution_error_redaction.py",
+    "tests/unit/test_explainer.py",
+    "tests/unit/test_fhir_subset.py",
+    "tests/unit/test_gold_history.py",
+    "tests/unit/test_groundedness.py",
+    "tests/unit/test_hospital_build_suppression.py",
+    "tests/unit/test_http_fetch_tool.py",
+    "tests/unit/test_injection_detector.py",
+    "tests/unit/test_live_check.py",
+    "tests/unit/test_mcp_http_auth.py",
+    "tests/unit/test_mcp_server_analytics.py",
+    "tests/unit/test_overview_ui.py",
+    "tests/unit/test_package_manager_tool.py",
+    "tests/unit/test_parser.py",
+    "tests/unit/test_planner_anthropic.py",
+    "tests/unit/test_planner_fallback.py",
+    "tests/unit/test_push_gate_recordings.py",
+    "tests/unit/test_query_timeout.py",
+    "tests/unit/test_replay.py",
+    "tests/unit/test_sandbox_decoding.py",
+    "tests/unit/test_scheduled_runs.py",
+    "tests/unit/test_trace_export.py",
+    "tests/unit/test_trace_export_hosted.py",
+    "tests/unit/test_tracing.py",
+    "tests/unit/test_trajectory_eval.py",
+    "tests/unit/test_validator.py",
+    "tests/unit/test_web_ui_asset.py",
+    "trace_export.py",
+    "tracing.py",
+    "trajectory_eval.py",
+    "validate_results.py",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "silent"
+# Strict per module, widened one module at a time. sql_guard.py (8 errors) and
+# phi_guard.py (62) need annotations in the guard itself, so they get their
+# own PRs, which the owner merges.
+[[tool.mypy.overrides]]
+module = ["critic", "nightly_alerts"]
+strict = true
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "demo_*.py", "scripts/*", "*/site-packages/*", "setup.py"]
+
+[tool.coverage.report]
+skip_empty = true

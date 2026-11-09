@@ -15,13 +15,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import eval_harness
 import nightly_alerts as na
 
-REPORT = {"timestamp": "20261109T150000Z", "status": "fail", "completed_accuracy": 0.71,
-          "completed_runs": 84, "provider_error_runs": 0, "provider": "gemini",
-          "model": "gemini-flash-lite-latest",
-          "cases": [{"id": "f4_x", "passed": False, "correct_runs": 0, "runs": 3},
-                    {"id": "f1_y", "passed": True, "correct_runs": 3, "runs": 3}]}
-OUT = {**REPORT, "status": "provider_unavailable", "completed_runs": 0,
-       "provider_error_runs": 84, "cases": []}
+REPORT = {
+    "timestamp": "20261109T150000Z",
+    "status": "fail",
+    "completed_accuracy": 0.71,
+    "completed_runs": 84,
+    "provider_error_runs": 0,
+    "provider": "gemini",
+    "model": "gemini-flash-lite-latest",
+    "cases": [
+        {"id": "f4_x", "passed": False, "correct_runs": 0, "runs": 3},
+        {"id": "f1_y", "passed": True, "correct_runs": 3, "runs": 3},
+    ],
+}
+OUT = {
+    **REPORT,
+    "status": "provider_unavailable",
+    "completed_runs": 0,
+    "provider_error_runs": 84,
+    "cases": [],
+}
 OK = {**REPORT, "status": "pass", "completed_accuracy": 0.97, "cases": []}
 REG_T, OUT_T = "nightly eval regression: fhir", "nightly provider outage: fhir"
 
@@ -30,13 +43,14 @@ def test_the_verdict_follows_the_gate_exit_code():
     assert na.classify(0, OK) == na.HEALTHY
     assert na.classify(1, REPORT) == na.REGRESSION
     assert na.classify(2, OUT) == na.OUTAGE
-    assert na.classify(1, None) == na.REGRESSION      # the harness broke: red, investigate
+    assert na.classify(1, None) == na.REGRESSION  # the harness broke: red, investigate
 
 
 def test_a_regression_opens_one_regression_issue():
     acts = na.actions("fhir", na.REGRESSION, REPORT, {})
-    assert [(a["action"], a["title"], a["label"]) for a in acts] == \
-        [("open", REG_T, "eval-regression")]
+    assert [(a["action"], a["title"], a["label"]) for a in acts] == [
+        ("open", REG_T, "eval-regression")
+    ]
     body = acts[0]["body"]
     assert "71.0%" in body and "`f4_x` 0/3" in body and "f1_y" not in body
 
@@ -80,8 +94,11 @@ def test_datasets_have_their_own_issues():
 
 
 def test_issues_are_found_by_title_oldest_first():
-    listed = [{"number": 20, "title": REG_T}, {"number": 9, "title": REG_T},
-              {"number": 3, "title": "something else"}]
+    listed = [
+        {"number": 20, "title": REG_T},
+        {"number": 9, "title": REG_T},
+        {"number": 3, "title": "something else"},
+    ]
     assert na.open_issues_by_title(listed) == {REG_T: 9}
 
 
@@ -99,7 +116,21 @@ def test_dry_run_reads_the_newest_report_after_since(tmp_path):
     os.utime(old, (1000, 1000))
     (runs / "eval_single_fhir_20261109T150000Z.json").write_text(json.dumps(REPORT))
     script = os.path.join(os.path.dirname(__file__), "..", "..", "nightly_alerts.py")
-    out = subprocess.run([sys.executable, os.path.abspath(script), "--dataset", "fhir",
-                          "--gate-exit", "1", "--since", "2000", "--dry-run"],
-                         cwd=tmp_path, capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        [
+            sys.executable,
+            os.path.abspath(script),
+            "--dataset",
+            "fhir",
+            "--gate-exit",
+            "1",
+            "--since",
+            "2000",
+            "--dry-run",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert "-> regression; 1 action(s)" in out.stdout and f"open: {REG_T}" in out.stdout

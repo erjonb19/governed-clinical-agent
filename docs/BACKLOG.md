@@ -73,6 +73,7 @@ Langfuse), **26** (the data intake platform's Stage 22).
 - [ ] **5. API basics:** `/v1` API versioning, semantic version tags on releases, rate limiting per API key, and a `/health` endpoint.
   - Done when: every endpoint answers under `/v1` (old paths kept working or redirected, as decided in the PR), a `vX.Y.Z` tag and GitHub release exist, and `/health` reports the version and git commit.
   - Today: per-API-key rate limiting (slowapi) and `/health` already exist. There is no `/v1` prefix, the app version is a hard-coded "1.0.0", and there are no release tags (the only tag is a data snapshot, `fhir-gold-20260901`).
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 5".** Every path answers under `/v1` too (an ASGI middleware maps `/v1/<path>` onto the one route set, so the old paths keep working and the two cannot drift; decided in the PR); `API-Version: v1` on every response; `VERSION` (now `1.1.0`) is the single source of the app version (FastAPI and `/health`); `/health` reports `version`, `api_version` and `git_commit`; `release.yml` turns a pushed `vX.Y.Z` tag that matches `VERSION` into a GitHub release after pytest passes. **Waiting on the owner (ask, publishing):** push the first tag, `git tag v1.1.0 && git push origin v1.1.0`, after this PR merges; the item is ticked once that release exists. Noticed, not changed: `/metrics` answers without the API key (it was like that before).
 
 - [ ] **6. Result caching in SQLite**, so repeat questions skip the LLM call. Show the hit rate. Keep in mind the cache resets when Render restarts.
   - Done when: asking the same question twice makes one LLM call, not two; the cache is keyed so a data refresh or a guard change cannot serve a stale answer, and still re-runs the guard; the hit rate shows in `/metrics`; the README says it resets on Render restarts.
@@ -155,6 +156,7 @@ What real AI, data and software engineering teams would add, checked against the
     fails the `pytest` workflow; the README's CI section lists them.
   - Today: no linter, type checker or coverage in CI (`tests.yml` runs pytest and the
     guard's editable install only). 766 tests.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 15", except one part.** In `tests.yml`: `ruff check` (floor: E9/F63/F7/F82, zero hits today; F401/F811/F841 have 45 hits, many in `src/`, next), `ruff format --check` with a ratchet list of the 139 files that predate it (a file leaves the list in its own PR), `mypy` strict on `critic.py` and `nightly_alerts.py`, coverage `--cov-fail-under=67` (68.8% measured, tests/demos/scripts not counted); `.pre-commit-config.yaml` with the same tools. **Not done: strict mypy on `sql_guard.py` (8 errors) and `phi_guard.py` (62)** -- fixing them edits the guard files, which the owner merges; they are the next PRs under this item. Unticked until then.
 
 - [ ] **16. Supply chain and merge rules.** Dependabot for pip and GitHub Actions (grouped,
   weekly); CodeQL for Python and the workflows; `pip-audit` on both requirements files in
