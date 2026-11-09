@@ -208,7 +208,8 @@ class GovernedAgentGraph:
                    provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                    completion_tokens=metrics.completion_tokens,
                    est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms,
-                   fallback_from=getattr(metrics, "fallback_from", None))
+                   fallback_from=getattr(metrics, "fallback_from", None),
+                   cached=bool(getattr(metrics, "cached", False)))
         step = {
             "step": "plan",
             "attempt": attempt,

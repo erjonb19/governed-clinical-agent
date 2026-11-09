@@ -274,6 +274,8 @@ class CallMetrics:
         # set when the chosen provider was unavailable and this call was served
         # by the fallback: the provider that failed (item 8)
         self.fallback_from: str | None = None
+        # True when the answer came from llm_cache (item 6): no model was called
+        self.cached = False
         rate = rate_for(provider, model)
         self.est_cost_usd = round(
             (self.prompt_tokens / 1_000_000) * rate["input"]
@@ -291,6 +293,7 @@ class CallMetrics:
             "model": self.model,
             "provider": self.provider,
             **({"fallback_from": self.fallback_from} if self.fallback_from else {}),
+            **({"cached": True} if self.cached else {}),
         }
 
 
@@ -616,6 +619,26 @@ class NLToSQLPlanner:
         fall back: a refusal, a 400 or a bad key is raised as it is."""
         if self._sdk == "replay":
             return self._complete_replay(system, user, role)
+        # A repeated request is answered from the cache (item 6): the model's
+        # text only -- the guard, the query and the PHI output check still run
+        # on whatever comes back, so no answer can be stale.
+        import llm_cache
+        ckey = None
+        if llm_cache.enabled():
+            ckey = llm_cache.key(role, system, user, self.provider, self._model)
+            hit = llm_cache.get_cache().get(ckey)
+            if hit is not None:
+                m = CallMetrics(latency_ms=0, prompt_tokens=0, completion_tokens=0,
+                                model=hit["model"], provider=hit["provider"])
+                m.cached = True
+                return hit["text"], m
+        text, metrics = self._complete_uncached(system, user, role)
+        if ckey is not None and text and text.strip():
+            llm_cache.get_cache().put(ckey, role, text, metrics.provider, metrics.model)
+        return text, metrics
+
+    def _complete_uncached(self, system: str, user: str, role: str = "plan"):
+        """The model call with its fallback (item 8), no cache."""
         try:
             # pacing (_pace_call) is process-wide and shared with the fallback
             # call below: harmless, a retry waits the same interval

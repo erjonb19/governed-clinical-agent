@@ -842,8 +842,12 @@ def get_findings(request: Request) -> dict:
 
 @app.get("/metrics")
 def metrics() -> dict:
-    """Aggregate cost and latency across all planner calls (optimization view)."""
-    return cost_tracker.summarize()
+    """Aggregate cost and latency across all planner calls (optimization view),
+    and the answer cache's hit rate (item 6)."""
+    import llm_cache
+    out = cost_tracker.summarize()
+    out["llm_cache"] = llm_cache.get_cache().stats()
+    return out
 
 
 # ---------------------------------------------------------------------------

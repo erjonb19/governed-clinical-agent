@@ -74,6 +74,9 @@ from analytics_query_tool import AnalyticsQueryTool           # noqa: E402
 # A score measures ONE provider: no silent fallback to another model mid-sweep
 # (item 8). Assigned, like PLANNER_SCHEMA, so a .env cannot turn it back on.
 os.environ["PLANNER_FALLBACK"] = "none"
+# ...and every run asks the model: the answer cache (item 6) would turn runs
+# 2 and 3 of a case into copies of run 1.
+os.environ["LLM_CACHE"] = "0"
 from nl_to_sql_planner import NLToSQLPlanner, PROVIDERS       # noqa: E402
 from data_backends import LocalDuckDBBackend, get_backend     # noqa: E402
 if _DATASET == "fhir":
