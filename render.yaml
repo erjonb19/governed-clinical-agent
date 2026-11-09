@@ -1,6 +1,6 @@
 # render.yaml -- Render Blueprint for the governed clinical agent API.
 # On connect, Render reads this and provisions the service automatically.
-# Secrets (GEMINI_API_KEY, API_KEY, DATABRICKS_TOKEN) are set in the dashboard,
+# Secrets (GEMINI_API_KEY, GROQ_API_KEY, API_KEY, DATABRICKS_TOKEN) are set in the dashboard,
 # never in git -- every one of them below is `sync: false` for that reason.
 
 services:
@@ -26,6 +26,14 @@ services:
       - key: PLANNER_PROVIDER
         value: gemini
       - key: GEMINI_API_KEY
+        sync: false
+      # Automatic fallback (backlog item 8): a call Gemini cannot serve
+      # (402/429/5xx) is retried once on Groq's gpt-oss-120b, and the answer
+      # records `fallback_from`. Without GROQ_API_KEY the fallback is off and
+      # the service runs on Gemini alone, as before.
+      - key: PLANNER_FALLBACK
+        value: groq
+      - key: GROQ_API_KEY
         sync: false
       # Paces planner calls so a burst queues instead of tripping the Gemini
       # free-tier per-minute cap. This DELAYS rather than fails: with normal

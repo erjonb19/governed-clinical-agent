@@ -46,7 +46,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PLANNER_PROVIDER: "gemini"      # gemini free tier has headroom for the full suite
-          PLANNER_MIN_INTERVAL_SEC: "5"  # Groq free tier ~8K TPM (~1.4K tok/call) is the binding limit -> ~5 calls/min
+          PLANNER_MIN_INTERVAL_SEC: "5"  # ~12 RPM: under the Gemini free-tier per-minute cap
           EVAL_SUBSET: "1"        # harness runs the tagged subset only
           EVAL_RUNS: "1"          # one run per case keeps the gate fast
         # Exit 2 = provider unavailable (402/429/5xx): an infrastructure outage,

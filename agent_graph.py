@@ -206,7 +206,8 @@ class GovernedAgentGraph:
             sp.set(sql=sql, sql_sha256=tracing.sql_sha256(sql), model=metrics.model,
                    provider=metrics.provider, prompt_tokens=metrics.prompt_tokens,
                    completion_tokens=metrics.completion_tokens,
-                   est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms)
+                   est_cost_usd=metrics.est_cost_usd, latency_ms=metrics.latency_ms,
+                   fallback_from=getattr(metrics, "fallback_from", None))
         step = {
             "step": "plan",
             "attempt": attempt,
@@ -240,7 +241,8 @@ class GovernedAgentGraph:
             sp.set(verdict=v["verdict"], reason=v["reason"][:500], issues=v["issues"],
                    model=m.get("model"), provider=m.get("provider"),
                    prompt_tokens=m.get("prompt_tokens"), completion_tokens=m.get("completion_tokens"),
-                   est_cost_usd=m.get("est_cost_usd"), latency_ms=m.get("latency_ms"))
+                   est_cost_usd=m.get("est_cost_usd"), latency_ms=m.get("latency_ms"),
+                   fallback_from=m.get("fallback_from"))
         critic.audit(self.runtime, CAPABILITY, v, tracing.sql_sha256(sql))
         step = {"step": "critic", "attempt": attempt, "verdict": v["verdict"],
                 "reason": v["reason"][:200], "tokens": m.get("total_tokens", 0),

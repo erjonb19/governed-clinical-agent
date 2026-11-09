@@ -444,6 +444,9 @@ def main() -> int:
     # eval_harness binds the bank and PLANNER_SCHEMA to EVAL_DATASET at import,
     # so set it first; this is also why one process runs one dataset.
     os.environ["EVAL_DATASET"] = args.dataset
+    # scored against a reference like an eval, so one provider, no fallback
+    # (item 8); eval_harness assigns the same at import, this says it here too
+    os.environ["PLANNER_FALLBACK"] = "none"
     import eval_harness as eh
     from agent_graph import GovernedAgentGraph
     from data_backends import LocalDuckDBBackend

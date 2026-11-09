@@ -22,7 +22,7 @@ A natural-language request to `/query`:
 { "question": "For heart failure care coordination, which in-network hospitals should we steer members to, balancing readmission performance against cost?" }
 ```
 
-returns the SQL the model wrote, the SQL the guard actually ran, the decision, the rows, and what the call cost:
+returns the SQL the model wrote, the SQL the guard actually ran, the decision, the rows, and what the call cost (an older sample response, recorded when the planner ran on Cerebras, a provider removed on 2026-11-08; today it says `gemini`, or `groq` with `"fallback_from": "gemini"` when Gemini was down):
 
 ```json
 {
@@ -60,7 +60,7 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### The agent
 
-- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic**: Gemini, Cerebras, Groq and xAI through an OpenAI-compatible client, Anthropic through its native SDK (default `claude-haiku-5-5`, override with `ANTHROPIC_MODEL`), all switchable with one environment variable. Per-model cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
+- **NL-to-SQL planner** (`nl_to_sql_planner.py`) — turns plain English into one DuckDB SELECT. **Provider-agnostic**: Gemini (the default), Groq and xAI through an OpenAI-compatible client, Anthropic through its native SDK (default `claude-haiku-5-5`, override with `ANTHROPIC_MODEL`), all switchable with one environment variable. When the chosen provider is unavailable (402/429/5xx, network), the call is retried once on `PLANNER_FALLBACK` (default `groq`, needs `GROQ_API_KEY`; `none` turns it off), and the answer's `planner_metrics` names the provider that served it plus `fallback_from`. The eval harness turns the fallback off, so a score always measures one provider. Per-model cost rates, because a frontier model runs ~7x an open model and a single global rate would misreport spend the moment you switch.
 - **Stateful graph** (`agent_graph.py`) — LangGraph, and the path every `/query` takes (`QUERY_MODE=graph`, the default; `single` keeps one plan and one guard decision). The agent plans, a **critic** reviews the SQL (`critic.py`), it executes through the guard, and on failure feeds the denial reason back into the next attempt and revises. The critic can only ask for a rewrite (`revise`, which costs an attempt); it never informs or skips the guard, and if it errors the run goes on to the guard (`unavailable`). `CRITIC_ENABLED=0` removes it, `CRITIC_ROUTING=0` keeps it as a recorder only. On a paced free tier a graph `/query` is at least two model calls, so expect several seconds per answer. **Bounded retries** (an unbounded agent loop is a real production failure mode). **Full trajectory capture** — every step, what it cost, how long it took. **Checkpointed**: every node's output is saved under the run's trace id (SQLite, `CHECKPOINT_DB`), so `GovernedAgentGraph.run(trace_id=...)` resumes a run that died part-way from its last checkpoint instead of starting over, and `state(trace_id)` reports where it stopped.
 - **Analytics tool** (`analytics_query_tool.py`) — runs the planner's SQL through the guard, then executes the validated query.
 - **Backend-agnostic data layer** (`data_backends.py`) — local DuckDB or Databricks Delta behind one interface, selected by `DATA_BACKEND`. The governance is identical either way.
@@ -621,7 +621,8 @@ streamlit run aiops_panel.py       # observability dashboard
 Switching provider or dataset:
 
 ```bash
-$env:PLANNER_PROVIDER="gemini"      # gemini | groq | cerebras | xai | anthropic
+$env:PLANNER_PROVIDER="gemini"      # gemini (default) | groq | xai | anthropic
+$env:PLANNER_FALLBACK="groq"        # retried once here when the provider is down; "none" = off
 $env:PLANNER_SCHEMA="fhir"          # hospital | fhir
 $env:PLANNER_MIN_INTERVAL_SEC="12"  # pace calls for free/low-tier rate limits (Groq free tier ~8K TPM)
 ```
@@ -661,6 +662,11 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
+- [x] **One setting picks the planner's provider, with an automatic fallback**:
+  `PLANNER_PROVIDER` (default `gemini`); a call the provider cannot serve
+  (402/429/5xx) is retried once on Groq (`PLANNER_FALLBACK`), and the answer says
+  which provider served it. Shown by unit tests; on the deploy it needs
+  `GROQ_API_KEY`, which is not set yet.
 
 ## Scope and honest limitations
 
