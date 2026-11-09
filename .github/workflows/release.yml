@@ -83,7 +83,8 @@ jobs:
       - name: Log in to GHCR
         env:
           GH_TOKEN: ${{ github.token }}
-        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       - name: Build and push
         run: |
@@ -108,8 +109,11 @@ jobs:
             [ "$(docker inspect --format '{{.State.Health.Status}}' api)" = healthy ] && break
             sleep 3
           done
-          docker inspect --format '{{.State.Health.Status}}' api | grep -qx healthy
-          curl -fsS http://127.0.0.1:8000/v1/health | grep -q "$version"
+          if ! docker inspect --format '{{.State.Health.Status}}' api | grep -qx healthy; then
+            docker logs api; exit 1
+          fi
+          curl -fsS http://127.0.0.1:8000/v1/health \
+            | python3 -c "import json,sys; v=json.load(sys.stdin)['version']; sys.exit(v != sys.argv[1])" "$version"
           sleep 30
           {
             echo "image size: $(docker image inspect --format '{{.Size}}' "$IMAGE:$version" | awk '{printf "%.0f MB", $1/1e6}')"
