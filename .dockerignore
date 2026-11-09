@@ -19,6 +19,11 @@ tests/
 reference/
 docs/
 .phoenix/
+venv*/
+.venv/
+# the bronze/silver parquet and the demo gold.duckdb are not read by the API
+medallion/*.parquet
+medallion/gold.duckdb
 # derived and gitignored; mount it if you have it (see docker-compose.yml)
 medallion/fhir_gold.duckdb
 medallion/fhir_deid.duckdb

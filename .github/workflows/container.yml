@@ -43,11 +43,11 @@ jobs:
       - name: Memory at idle (Render budget, item 17)
         run: docker stats --no-stream --format 'memory {{.MemUsage}}' api
 
+      # Trivy, from its own image pinned by DIGEST (0.58.2, Jan 2025), not the
+      # trivy-action wrapper: a digest cannot be moved under us, a tag can.
       - name: Scan (Trivy; fail on fixable CRITICAL findings)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: governed-clinical-agent:ci
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          format: table
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy@sha256:665030f4d33a82c1e8d9d5e0453365842236723c1ee5cc3becca698268e66a56 \
+            image --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress \
+            governed-clinical-agent:ci

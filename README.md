@@ -601,7 +601,7 @@ or with a local Arize Phoenix for traces, in one command (`docker-compose.yml`; 
 API_KEY=change-me GEMINI_API_KEY=... docker compose up --build
 ```
 
-The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docker stats`, 2026-11-09). That is within the Render budget, but Render still builds from `requirements-api.txt`; switching it to the image is the owner's call. The image is 814 MB on disk.
+The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docker stats`, 2026-11-09; 110.8 MiB idle again after trimming the build context). That is within the Render budget, but Render still builds from `requirements-api.txt`; switching it to the image is the owner's call. The image is 743 MB on disk.
 
 Then open **http://localhost:8000/ui** — a self-contained web UI to ask questions
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
