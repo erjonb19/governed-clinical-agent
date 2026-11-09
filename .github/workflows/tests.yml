@@ -28,15 +28,31 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt -r requirements.txt pytest
+          pip install -r requirements-api.txt -r requirements.txt pytest pytest-cov==7.1.0
+
+      # Code quality gates (backlog item 15), each at today's level and only
+      # ratcheting up; config in pyproject.toml. Pinned so a new tool release
+      # cannot turn a push red on its own.
+      - name: Lint (ruff)
+        run: |
+          pip install ruff==0.16.9
+          ruff check .
+          ruff format --check .      # every file except the ratchet list in pyproject
+
+      - name: Types (mypy, strict on the listed modules)
+        run: |
+          pip install mypy==2.3.1
+          mypy critic.py nightly_alerts.py
 
       # No deselects: the ENTIRE suite runs. The six previously-deselected tests
       # were triaged and fixed -- two were real bugs in the explainer (a sensitive
       # path leaked into denial messages, and approval denials were misreported as
       # path denials), the rest were bad test expectations. Network-marked tests
       # remain opt-in and are skipped here.
-      - name: Run tests (pytest)
-        run: pytest -q -m "not network"
+      # Coverage floor: 68% of the app code (tests, demos and scripts not
+      # counted; measured 69% on 2026-11-09). Raise it as tests are added.
+      - name: Run tests (pytest, with the coverage floor)
+        run: pytest -q -m "not network" --cov --cov-report=term --cov-fail-under=68
 
   # The documented dev install (`pip install -e ".[dev]"`, CLAUDE.md) must give
   # the guard the SAME sqlglot and duckdb as requirements-api.txt. Before the

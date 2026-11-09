@@ -37,6 +37,9 @@ import json
 import os
 import subprocess
 import sys
+from typing import Any
+
+Report = dict[str, Any]  # one eval_harness report (eval_runs/*.json)
 
 REGRESSION, OUTAGE, HEALTHY = "regression", "outage", "healthy"
 LABELS = {REGRESSION: "eval-regression", OUTAGE: "provider-outage"}
@@ -44,19 +47,21 @@ TITLES = {REGRESSION: "nightly eval regression: {ds}", OUTAGE: "nightly provider
 COLORS = {REGRESSION: "B60205", OUTAGE: "FBCA04"}
 
 
-def classify(gate_exit: int, report: dict | None) -> str:
+def classify(gate_exit: int, report: Report | None) -> str:
     """The night's verdict for one dataset."""
     if gate_exit == 0:
         return HEALTHY
     if gate_exit == 2:
         return OUTAGE
-    return REGRESSION      # 1 (below the gate), or the job broke: red, investigate
+    return REGRESSION  # 1 (below the gate), or the job broke: red, investigate
 
 
-def _numbers(report: dict | None) -> str:
+def _numbers(report: Report | None) -> str:
     if not report:
-        return ("No report was written during this job: the harness stopped before scoring, "
-                "or every attempt ran past its time limit (see the run log).")
+        return (
+            "No report was written during this job: the harness stopped before scoring, "
+            "or every attempt ran past its time limit (see the run log)."
+        )
     total = (report.get("completed_runs") or 0) + (report.get("provider_error_runs") or 0)
     lines = [
         f"- status: `{report.get('status')}`",
@@ -68,54 +73,83 @@ def _numbers(report: dict | None) -> str:
     ]
     failed = [c for c in report.get("cases", []) if not c.get("passed")]
     if failed:
-        lines.append("- cases below a majority: " + ", ".join(
-            f"`{c['id']}` {c.get('correct_runs')}/{c.get('runs')}" for c in failed[:15]))
+        lines.append(
+            "- cases below a majority: "
+            + ", ".join(f"`{c['id']}` {c.get('correct_runs')}/{c.get('runs')}" for c in failed[:15])
+        )
     unanswered = report.get("unanswered_cases") or []
     if unanswered:
         lines.append("- cases hardly answered: " + ", ".join(f"`{c}`" for c in unanswered[:15]))
     return "\n".join(lines)
 
 
-def actions(dataset: str, verdict: str, report: dict | None,
-            open_issues: dict[str, int], run_url: str = "") -> list[dict]:
+def actions(
+    dataset: str,
+    verdict: str,
+    report: Report | None,
+    open_issues: dict[str, int],
+    run_url: str = "",
+) -> list[dict[str, Any]]:
     """What to do on GitHub. open_issues is {title: number} of open issues."""
     link = f"\n\nRun: {run_url}" if run_url else ""
     when = (report or {}).get("timestamp", "")
     title = {k: t.format(ds=dataset) for k, t in TITLES.items()}
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     if verdict in (REGRESSION, OUTAGE):
-        what = ("Accuracy fell below the gate, or the harness broke." if verdict == REGRESSION
-                else "Inconclusive after one retry: the provider was unavailable or cases went "
-                     "unanswered. **Not an accuracy regression.**")
+        what = (
+            "Accuracy fell below the gate, or the harness broke."
+            if verdict == REGRESSION
+            else "Inconclusive after one retry: the provider was unavailable or cases went "
+            "unanswered. **Not an accuracy regression.**"
+        )
         body = f"**{dataset}** nightly eval {when}: {what}\n\n{_numbers(report)}{link}"
         n = open_issues.get(title[verdict])
-        out.append({"action": "comment", "number": n, "body": body} if n else
-                   {"action": "open", "title": title[verdict], "label": LABELS[verdict],
-                    "body": body})
+        out.append(
+            {"action": "comment", "number": n, "body": body}
+            if n
+            else {"action": "open", "title": title[verdict], "label": LABELS[verdict], "body": body}
+        )
     # the provider answered (pass or fail): an open outage issue is over. Only
     # on a report that really scored -- after an outage, a crashed retry leaves
     # the outage report as the newest one
-    scored = bool(report) and report.get("status") not in ("provider_unavailable", "incomplete")
+    scored = report is not None and report.get("status") not in (
+        "provider_unavailable",
+        "incomplete",
+    )
     if verdict in (REGRESSION, HEALTHY) and scored and open_issues.get(title[OUTAGE]):
-        out.append({"action": "close", "number": open_issues[title[OUTAGE]],
-                    "body": f"The provider answered again ({when}).{link}"})
+        out.append(
+            {
+                "action": "close",
+                "number": open_issues[title[OUTAGE]],
+                "body": f"The provider answered again ({when}).{link}",
+            }
+        )
     if verdict == HEALTHY and open_issues.get(title[REGRESSION]):
-        out.append({"action": "close", "number": open_issues[title[REGRESSION]],
-                    "body": f"Healthy again ({when}):\n\n{_numbers(report)}{link}"})
+        out.append(
+            {
+                "action": "close",
+                "number": open_issues[title[REGRESSION]],
+                "body": f"Healthy again ({when}):\n\n{_numbers(report)}{link}",
+            }
+        )
     return out
 
 
-def latest_report(dataset: str, since: float = 0.0, out_dir: str = "eval_runs") -> dict | None:
+def latest_report(dataset: str, since: float = 0.0, out_dir: str = "eval_runs") -> Report | None:
     """The newest report for this dataset written after `since` (epoch seconds)."""
-    paths = [p for p in glob.glob(os.path.join(out_dir, f"eval_*_{dataset}_*.json"))
-             if os.path.getmtime(p) >= since]
+    paths = [
+        p
+        for p in glob.glob(os.path.join(out_dir, f"eval_*_{dataset}_*.json"))
+        if os.path.getmtime(p) >= since
+    ]
     if not paths:
         return None
     with open(max(paths, key=os.path.getmtime), encoding="utf-8") as f:
-        return json.load(f)
+        report: Report = json.load(f)
+    return report
 
 
-def open_issues_by_title(listed: list[dict]) -> dict[str, int]:
+def open_issues_by_title(listed: list[dict[str, Any]]) -> dict[str, int]:
     """{title: number} of our open issues, matched by exact title (oldest wins),
     so a label removed by hand never causes a duplicate."""
     ours = {t.format(ds="") for t in TITLES.values()}
@@ -135,8 +169,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--gate-exit", type=int, required=True)
-    ap.add_argument("--since", type=float, default=0.0,
-                    help="only reports written after this epoch time count")
+    ap.add_argument(
+        "--since", type=float, default=0.0, help="only reports written after this epoch time count"
+    )
     ap.add_argument("--dry-run", action="store_true", help="print the actions, call nothing")
     args = ap.parse_args()
 
@@ -144,10 +179,17 @@ def main() -> int:
     verdict = classify(args.gate_exit, report)
     run_url = ""
     if os.environ.get("GITHUB_RUN_ID"):
-        run_url = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
-                   f"{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
-    listed = [] if args.dry_run else json.loads(_gh(
-        "issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title"))
+        run_url = (
+            f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+            f"{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+        )
+    listed = (
+        []
+        if args.dry_run
+        else json.loads(
+            _gh("issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title")
+        )
+    )
     todo = actions(args.dataset, verdict, report, open_issues_by_title(listed), run_url)
     print(f"{args.dataset}: gate exit {args.gate_exit} -> {verdict}; {len(todo)} action(s)")
     for a in todo:
@@ -156,10 +198,19 @@ def main() -> int:
             continue
         if a["action"] == "open":
             kind = REGRESSION if a["label"] == LABELS[REGRESSION] else OUTAGE
-            _gh("label", "create", a["label"], "--force", "--color", COLORS[kind],
-                "--description", "Opened by the nightly eval (nightly_alerts.py)")
-            _gh("issue", "create", "--title", a["title"], "--body", a["body"],
-                "--label", a["label"])
+            _gh(
+                "label",
+                "create",
+                a["label"],
+                "--force",
+                "--color",
+                COLORS[kind],
+                "--description",
+                "Opened by the nightly eval (nightly_alerts.py)",
+            )
+            _gh(
+                "issue", "create", "--title", a["title"], "--body", a["body"], "--label", a["label"]
+            )
         elif a["action"] == "comment":
             _gh("issue", "comment", str(a["number"]), "--body", a["body"])
         elif a["action"] == "close":

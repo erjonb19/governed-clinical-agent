@@ -154,6 +154,7 @@ What real AI, data and software engineering teams would add, checked against the
     fails the `pytest` workflow; the README's CI section lists them.
   - Today: no linter, type checker or coverage in CI (`tests.yml` runs pytest and the
     guard's editable install only). 766 tests.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 15", except one part.** In `tests.yml`: `ruff check` (floor: E9/F63/F7/F82, zero hits today; F401/F811/F841 have 45 hits, many in `src/`, next), `ruff format --check` with a ratchet list of the 139 files that predate it (a file leaves the list in its own PR), `mypy` strict on `critic.py` and `nightly_alerts.py`, coverage `--cov-fail-under=68` (68.8% measured, tests/demos/scripts not counted); `.pre-commit-config.yaml` with the same tools. **Not done: strict mypy on `sql_guard.py` (8 errors) and `phi_guard.py` (62)** -- fixing them edits the guard files, which the owner merges; they are the next PRs under this item. Unticked until then.
 
 - [ ] **16. Supply chain and merge rules.** Dependabot for pip and GitHub Actions (grouped,
   weekly); CodeQL for Python and the workflows; `pip-audit` on both requirements files in
