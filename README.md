@@ -704,6 +704,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   committed answers (they test the guard, harness, Gold and scoring, not a model),
   a prompt or schema change without re-recording fails the push, and 3 cases run
   live on Groq; model accuracy stays with the live Gemini nightly (see [CI](#ci)).
+- [x] **SLOs with a p99**: stack-latency targets in [Service level objectives](#service-level-objectives),
+  checked weekly on a GitHub runner on recorded answers (`slo.py`); a miss opens a
+  `slo-miss` issue. `/metrics` reports p50/p95/p99 of model calls.
 
 ## Service level objectives
 
