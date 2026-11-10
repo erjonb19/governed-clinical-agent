@@ -28,9 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -52,7 +52,7 @@ jobs:
 
       - name: Upload eval report
         if: always()              # keep the report even if the gate fails
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report-quick
           path: eval_runs/
@@ -64,9 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -78,7 +78,7 @@ jobs:
       # the same cache as the nightly FHIR job (a branch reads main's cache)
       - name: Cache FHIR Gold
         id: fhir-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             data/synthea
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload FHIR eval report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report-fhir-quick
           path: eval_runs/
@@ -117,9 +117,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -147,13 +147,16 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PLANNER_PROVIDER: "groq"
           PLANNER_MIN_INTERVAL_SEC: "20"
-          EVAL_CASES: "t1_count_all,t2_avg_mspb_pa,t4_best_value_top10"
+          # t2_avg_mspb_pa is not here (owner, 2026-11-09): Groq's gpt-oss-120b
+          # appends ORDER BY ... LIMIT 1 to that one-row average, which DuckDB
+          # refuses. It stays in the bank and in every Gemini eval. README.
+          EVAL_CASES: "t1_count_all,t2_count_ny_5star,t4_best_value_top10"
           EVAL_RUNS: "1"
         run: scripts/eval_gate.sh warn
 
       - name: Upload eval report
         if: always() && steps.key.outputs.present == 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report-groq-live
           path: eval_runs/

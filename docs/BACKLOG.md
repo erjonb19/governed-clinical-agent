@@ -12,6 +12,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Order of work (owner, 2026-11-08)
 
+**First (owner, 2026-11-09): item 28, the security audit** (plan only), after any PR already in progress. The items it adds are placed by the owner when he merges it.
+
 1. **Open PRs first.** #40 (age cap): bring it up to date with `main` (which now has #50),
    run its full FHIR eval on a GitHub runner, and **ask the owner before merging**. #46
    (de-identified FHIR layer, PR A) stays as it is unless the owner says otherwise.
@@ -80,9 +82,14 @@ Langfuse), **26** (the data intake platform's Stage 22).
   - Today: only the Overview findings are cached (per data vintage). Questions are not.
   - **Done 2026-11-09 (overnight run), PR "Item 6".** `llm_cache.py` caches the model's TEXT (plan SQL, critic verdict), never rows or decisions, keyed on `replay.request_key` (role, system-prompt hash, user text) + provider + model + data vintage (`REFRESH.json`) + guard version (hash of `sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`); a hit still goes through the guard, the query and `check_output`. `LLM_CACHE`, `LLM_CACHE_DB`, `LLM_CACHE_TTL_SEC`; `/metrics` -> `llm_cache` (hits, misses, hit_rate, entries); cached calls are `cached: true`, $0, and marked on the plan span. Off in the eval harness, scheduled runs and the test suite (an autouse fixture). Pinned by `tests/unit/test_llm_cache.py`.
 
-- [ ] **7. SLOs and P99 latency**, built on the latency tracking that already exists. Write the SLO targets in the README and alert when they're missed.
+- [x] **7. SLOs and P99 latency**, built on the latency tracking that already exists. Write the SLO targets in the README and alert when they're missed.
   - Done when: `/metrics` reports p50, p95 and p99; the README states the SLO targets; a missed SLO opens a GitHub issue (through the item 3 channel).
   - Today: `cost_tracker.py` reports per-call latency and p50/p95. There is no p99 and no SLO.
+  - **Done 2026-11-09, in the PR "Item 7".**
+    - `/metrics` reports p50, p95 and p99.
+    - The README's "Service level objectives" table gives the stack-latency targets, which come from item 20's measurements: p95 <= 150 ms at 1 user; p95 <= 400 ms and p99 <= 600 ms at 5 users; no failed requests. It also covers availability (`live-check.yml`) and says that model latency is reported but has no target.
+    - `load-test.yml` runs weekly and then runs `slo.py --alert`. A miss opens one `slo-miss` issue, a repeat comments on it, and the first run that meets every target closes it. The issue logic is unit-tested.
+    - **Seen on a runner:** run 42657985385, 5 users at p95 106 ms and p99 136 ms. SLO met, so no issue was opened.
 
 - [x] **8. Feature flag for the planner backend** as a plain config setting (no paid service), so I can switch LLM providers without a code change.
   - Done when: one documented setting picks the provider; when the chosen provider is down (402/429/5xx), the call automatically falls back to **Groq** (`openai/gpt-oss-120b`), and the answer records which provider served it; switching needs no code change (shown by a test and a README step).
@@ -105,6 +112,13 @@ Langfuse), **26** (the data intake platform's Stage 22).
 - [ ] **11. The manual FHIR eval compares against main instead of requiring every case to pass** (owner, 2026-11-06; don't change it before then).
   - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
   - Today: it fails unless every case passes by majority of its runs. Model noise alone can fail that bar: `main`'s own nightly on 2026-11-05 had `f4_avg_glucose_prediabetic` at 1/3, and #50's run on 2026-11-06 ended inconclusive on Gemini's daily quota.
+  - **Status 2026-11-09: built, in the PR "Item 11", not yet run live.** `eval-fhir-manual.yml` checks out `main` beside the branch, runs the eval on both against the same Gold, and decides with `scripts/compare_evals.py`:
+    - it passes only if the branch's accuracy over completed runs is at least `main`'s;
+    - an inconclusive run on either side is not a pass;
+    - per-case scores go side by side in the job summary.
+    - It always runs main's copy of the script, never the branch's.
+    - The cost is two sweeps of the Gemini daily quota. `compare_main=false` gives one sweep, and `require_all_cases=true` keeps the old bar as an option.
+    - Unit-tested on reports. The first live run waits for a day with quota to spare. Unticked until then.
 
 - [ ] **12. Send the deployed app's traces to a free hosted backend** (owner, 2026-11-06), instead of running Phoenix on Render. Phoenix Cloud's free tier, falling back to Langfuse Cloud Hobby if Phoenix Cloud doesn't fit. Keep the SQLite traces as they are.
   - Done when: with the owner's two Render environment variables set, a question asked on the deploy appears in the hosted backend with its steps; the SQLite traces and Traces view are unchanged; a test shows a down, refusing or hanging backend never breaks or slows a request; what can leave the server is documented and pinned.
@@ -118,7 +132,7 @@ Langfuse), **26** (the data intake platform's Stage 22).
     - the nightly and the manual FHIR eval stay live on Gemini and remain the accuracy measure;
     - **no second Groq account** to get more quota.
   - Done when: a push runs the replayed subsets and the live 3-case Groq check; a deliberately changed prompt without re-recording fails the push; the README says which gate tests what; `GROQ_API_KEY` is a repository secret (owner).
-  - **Status 2026-11-09 (overnight run): built, in the PR "Item 13".** Both subsets replay `tests/evals/recordings/push_gate.json` (19 recordings, **authored from each case's reference SQL**, like the UI E2E's, because recording a real model needs a live sweep and the owner allowed one only, for #40; `python scripts/record_push_gate.py --live groq` replaces them with a real model's answers once `GROQ_API_KEY` exists). A replay miss is its own failure mode and fails the gate outright, shown end to end by `test_a_missing_recording_turns_the_real_gate_red`; `test_every_subset_case_has_a_recording_for_todays_prompt` fails in pytest when a prompt changes without re-recording. **Seen live on this PR's first push (run 42559758272):** hospital replay 6/6, FHIR replay 13/13 (cached Gold), and the live Groq check 3/3 on `openai/gpt-oss-120b` in 41 s (`t1_count_all` 748, `t2_avg_mspb_pa` 0.984, `t4_best_value_top10` 10 rows) -- so `GROQ_API_KEY` is already a repository secret.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 13".** Both subsets replay `tests/evals/recordings/push_gate.json` (19 recordings, **authored from each case's reference SQL**, like the UI E2E's, because recording a real model needs a live sweep and the owner allowed one only, for #40; `python scripts/record_push_gate.py --live groq` replaces them with a real model's answers once `GROQ_API_KEY` exists). A replay miss is its own failure mode and fails the gate outright, shown end to end by `test_a_missing_recording_turns_the_real_gate_red`; `test_every_subset_case_has_a_recording_for_todays_prompt` fails in pytest when a prompt changes without re-recording. **Seen live on this PR's first push (run 42559758272):** hospital replay 6/6, FHIR replay 13/13 (cached Gold), and the live Groq check 3/3 on `openai/gpt-oss-120b` in 41 s (`t1_count_all` 748, `t2_avg_mspb_pa` 0.984, `t4_best_value_top10` 10 rows) -- so `GROQ_API_KEY` is already a repository secret. **2026-11-09, owner's decision:** `t2_avg_mspb_pa` failed the live check on #69 and #73 the same way: Groq appended `ORDER BY avg_mspb_score, facility_id LIMIT 1` to a one-row average, which DuckDB refuses. It was replaced by `t2_count_ny_5star` (a filtered count, nothing to order) and stays in the bank and the Gemini evals. The difference is noted in the README.
   - The analysis below (2026-11-07) is kept as the record of why.
   - Compared (2026-11-07), against our prompt sizes:
     - **GitHub Models (GITHUB_TOKEN, no secret): not possible.** GitHub's own docs (docs.github.com, GitHub Models pages) say the service was **retired on 2026-07-30**: playground, catalog and inference API are no longer available to anyone.
@@ -179,7 +193,7 @@ What real AI, data and software engineering teams would add, checked against the
     on every push; the image's memory at idle is measured (Render budget).
   - Today: no Dockerfile for the API (`docker/Dockerfile.sandbox` is the Milestone-1 tool
     sandbox); Render builds from `requirements-api.txt`.
-  - **Status 2026-11-09 (overnight run): built, in the PR "Item 17".** `Dockerfile` (python:3.11-slim, `requirements-api.txt`, non-root `app` user owning only `logs/`, `HEALTHCHECK` on `/health`, `GIT_COMMIT` build arg reported by `/health`), `.dockerignore`, `docker-compose.yml` (API + `arizephoenix/phoenix:version-21.0.0`), `container.yml` (build, start, wait healthy, non-root check, smoke test of `/v1/health`, auth and the guard, memory, and a Trivy CRITICAL-fixable gate run from `aquasec/trivy` pinned by digest, 0.58.2, not the movable `trivy-action` tag). **Measured locally:** healthy, 109 MiB idle, 118 MiB after 30 guarded queries, 743 MB image -- inside the Render budget. **Not yet verified:** `docker compose up` end to end with Phoenix (this sandbox's Docker daemon had no route to Docker Hub for the Phoenix pull) and the first Trivy result (CI). **Owner (ask):** pushing the image to GHCR, and whether Render switches to it. Unticked until compose and the scan are seen working.
+  - **Status 2026-11-09 (overnight run): built, in the PR "Item 17".** `Dockerfile` (python:3.11-slim, `requirements-api.txt`, non-root `app` user owning only `logs/`, `HEALTHCHECK` on `/health`, `GIT_COMMIT` build arg reported by `/health`), `.dockerignore`, `docker-compose.yml` (API + `arizephoenix/phoenix:version-21.0.0`), `container.yml` (build, start, wait healthy, non-root check, smoke test of `/v1/health`, auth and the guard, memory, and a Trivy CRITICAL-fixable gate run from `aquasec/trivy` pinned by digest, 0.58.2, not the movable `trivy-action` tag). **Measured locally:** healthy, 109 MiB idle, 118 MiB after 30 guarded queries, 743 MB image -- inside the Render budget. **Not yet verified:** `docker compose up` end to end with Phoenix (this sandbox's Docker daemon had no route to Docker Hub for the Phoenix pull) and the first Trivy result (CI). **Owner (ask):** pushing the image to GHCR, and whether Render switches to it. Unticked until compose and the scan are seen working. **2026-11-09, owner's decision:** push the v1.1.0 tag and the image to GHCR. `release.yml` gains an `image` job: on a release tag it pushes `ghcr.io/erjonb19/governed-clinical-agent:X.Y.Z` and `:latest` with the job's own token (`packages: write`), pulls the image back, starts it, and writes its idle memory to the job summary. Render stays on the Python runtime unless the image idles under 400 MB.
 
 - [ ] **18. A package layout** (plan first, then the owner's OK). About 60 modules sit at the
   repo root beside `src/` (the Milestone-1 runtime). Move them into one package with
@@ -273,6 +287,8 @@ What real AI, data and software engineering teams would add, checked against the
   decision; a three-minute walkthrough script for the owner to record (ask, guard refusal,
   approval, trace), linked from the README.
   - Done when: both exist and the README links them.
+
+- [ ] **28. Security audit against `docs/SECURITY_STANDARDS.md`** (owner, 2026-11-09). Plan only, change no code. Audit the repo against Section 19.3 of `docs/SECURITY_STANDARDS.md` and every section that applies to this stack, and report each gap in the file's SEVERITY format. Add one backlog item per gap, numbered after this one, with anything Critical (CVSS 9+) first in the Order of work. Propose a `.claude/settings.json` from Section 17.2, tailored so unattended runs don't stall: keep the deny list, and explain each change to the ask list. Check every vendor-specific setting (npm, uv, GitHub, Claude Code permission syntax) against the vendor's current docs before proposing it. One docs-only PR, which the owner reviews and merges himself (security decisions are his). Check Section 14.2 first: the agent's DuckDB connection should have external access off and the configuration locked.
 
 ## Later (keep, don't start)
 
