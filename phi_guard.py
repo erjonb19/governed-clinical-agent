@@ -1514,6 +1514,27 @@ def _region_ok(x: str) -> str:
     return f"(({x}) = 0 OR ({x}) >= {MIN_CELL})"
 
 
+def _aggregates_null_side(sel: exp.Select) -> bool:
+    """Does an aggregate of this scope read a column of the null-supplying side
+    of an outer join? Such a side is a filter in the join's ON clause. A RIGHT
+    or FULL join makes every side optional: refused outright (fail closed)."""
+    optional = set()
+    for j in sel.args.get("joins") or []:
+        side = (j.args.get("side") or "").upper()
+        if side in ("RIGHT", "FULL"):
+            return True
+        if side == "LEFT":
+            optional.add((j.this.alias_or_name or "").lower())
+    if not optional:
+        return False
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window):
+            for col in node.find_all(exp.Column):
+                if (col.table or "").lower() in optional:
+                    return True
+    return False
+
+
 def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
     """{id(select or FILTER node): [SQL conditions]} so that no combination of
     the filtered aggregates in one query isolates fewer than 11 people: every
@@ -1521,6 +1542,11 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
     11+ people, and, for row counts, so do the people with a row in each
     in/out pattern. Raises _CannotCorrelate when that cannot be written."""
     for sel, _ in rewrites:
+        if _aggregates_null_side(sel):
+            # count(DISTINCT x.patient_id) over `LEFT JOIN ... x ON ... AND
+            # x.class_code = 'EMER'` is a filtered count no WHERE/FILTER shows,
+            # beside the unfiltered count of the other side (third review)
+            raise _CannotCorrelate("an aggregate over the optional side of an outer join")
         group = sel.args.get("group")
         if group is not None and any(group.args.get(k) for k in ("rollup", "cube",
                                                                   "grouping_sets")):
@@ -1652,7 +1678,7 @@ def check(tree: exp.Expression) -> PhiDecision:
     if not a.findings:
         try:
             pair_conds = _combination_checks(a.rewrites, a.filters, q)
-        except _CannotCorrelate:
+        except Exception:     # _CannotCorrelate, or any surprise: deny (fail closed)
             a.findings.append(
                 "several filtered aggregates over patient rows in one query, in a form whose "
                 "overlap cannot be checked (a JOIN or a filtered derived table beside another "

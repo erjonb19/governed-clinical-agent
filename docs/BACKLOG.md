@@ -297,6 +297,7 @@ What real AI, data and software engineering teams would add, checked against the
     - **(b)** for such keys, apply the region check across the groups, treating each group as a unit (as #83 does for FILTERs), which caps a query at 3 groups;
     - **(c)** accept and document it as residual risk, like cross-query differencing.
     - (a) would refuse common eval shapes (top conditions by people); check them against `test_every_fhir_eval_answer_is_reachable_through_the_guard` first.
+  - **Same class, no GROUP BY (third review, 2026-11-10):** a people count beside a row or pair count in one scope. Examples: `count(*)` and `count(DISTINCT patient_id)` over `SELECT DISTINCT patient_id, class_code ...`, which give 27 and 15, or women's AMB visits, which give 18 and 15. If you know each person has at most 2 values or rows, the difference between the two numbers gives a group of 1-10. The options above apply to both shapes.
   - Today: answered; documented in #83 as not covered.
 
 ## Later (keep, don't start)

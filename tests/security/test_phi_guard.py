@@ -1562,3 +1562,35 @@ def test_two_scopes_grouped_the_same_way_still_run(encounter_tool):
     r = encounter_tool.execute({"sql": PER_GENDER_RATE})
     assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
 
+
+# third adversarial review (2026-11-10): a filter in an outer join's ON clause
+OUTER_JOIN_LEAKS = {
+    "LEFT JOIN, grouped": (
+        "SELECT e.gender, count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) "
+        "AS with_er FROM gold_encounter e LEFT JOIN gold_encounter x ON e.patient_id = "
+        "x.patient_id AND x.class_code = 'EMER' GROUP BY e.gender"),
+    "LEFT JOIN, ungrouped": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e LEFT JOIN gold_encounter x ON e.patient_id = x.patient_id "
+        "AND x.class_code = 'EMER' WHERE e.gender = 'female'"),
+    "LEFT JOIN to a per-patient subquery": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e LEFT JOIN (SELECT patient_id FROM gold_encounter "
+        "WHERE class_code = 'EMER' GROUP BY patient_id) x ON e.patient_id = x.patient_id "
+        "WHERE e.gender = 'female'"),
+    "FULL JOIN": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e FULL JOIN gold_encounter x ON e.patient_id = x.patient_id "
+        "AND x.class_code = 'EMER' WHERE e.gender = 'female'"),
+}
+
+
+@pytest.mark.parametrize("name", list(OUTER_JOIN_LEAKS))
+def test_an_outer_join_filter_cannot_recover_the_3_women(encounter_tool, name):
+    r = encounter_tool.execute({"sql": OUTER_JOIN_LEAKS[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (15 in nums and 12 in nums), (name, r.output["rows"])
+
