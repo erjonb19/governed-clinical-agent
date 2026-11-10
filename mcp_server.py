@@ -68,7 +68,7 @@ from typing import Annotated, Any, Optional
 # make `from src...` imports work when run from the repo root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
@@ -157,11 +157,13 @@ _EXEC_LOCK = None
 
 
 def attach_host(audit_logger=None, lock=None) -> None:
-    """Join the hosting API's audit trail and DuckDB lock (app.py, D5).
+    """Join the hosting API's audit trail (app.py, D5), and optionally a lock.
 
     Mounted, the tools run in the API's process on the API's analytics tool, so
-    their calls must be audited where the API's are, and serialised with the
-    API's own queries: one DuckDB connection is not safe across threads.
+    their calls must be audited where the API's are. The API passes no lock
+    since backlog item 20: the analytics tool opens a DuckDB cursor of its own
+    per execution, which is safe across threads. `lock` stays for a host whose
+    tool is not.
     """
     global _EXEC_LOCK
     runtime.audit_logger = audit_logger
@@ -283,8 +285,9 @@ def _refusal(error: str, findings, dataset: str) -> str:
 def offloaded_tool(fn):
     """Register `fn` as an MCP tool that runs on a worker thread.
 
-    FastMCP runs a sync tool on the event loop itself. Mounted in the API, a
-    tool waits on the API's DuckDB lock, which /propose holds across an LLM
+    mcp 1.x's FastMCP ran a sync tool on the event loop itself (2.x's MCPServer
+    offloads it, but this wrapper keeps the guarantee whatever the SDK does).
+    Mounted in the API, a tool waits on the API's DuckDB lock, which /propose holds across an LLM
     call -- so a sync tool would freeze every request, /health included, for
     that long. The registered tool is an async wrapper that hands the call to a
     thread; its schema comes from `fn`'s signature (functools.wraps). The module
@@ -302,16 +305,18 @@ def offloaded_tool(fn):
     return fn
 
 
+# The server (mcp 2.x renamed FastMCP to MCPServer; its HTTP settings moved from
+# the constructor to the transport, so they live in the HTTP_* constants below
+# and build_http_handler passes them to the session manager).
+mcp = MCPServer("guarded-runtime")
+
 # Stateless JSON responses: every tool here is a single request/response, so no
 # session state or SSE stream is needed, and any instance can answer any call.
-# FastMCP's own Host-header check is off because it only admits localhost and
+# The SDK's own Host-header check is off because it only admits localhost and
 # would reject the deployed hostname; the Origin check in MCPAuth replaces it.
-mcp = FastMCP(
-    "guarded-runtime",
-    stateless_http=True,
-    json_response=True,
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-)
+HTTP_STATELESS = True
+HTTP_JSON_RESPONSE = True
+HTTP_TRANSPORT_SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 
 @offloaded_tool
@@ -578,13 +583,15 @@ def build_http_handler(key: Optional[str]):
     app builds one per lifespan, and its tests restart the app. The handler is
     the MCP endpoint itself, behind MCPAuth.
     """
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+    from mcp.server.streamable_http_manager import (
+        StreamableHTTPASGIApp,
+        StreamableHTTPSessionManager,
+    )
     manager = StreamableHTTPSessionManager(
-        app=mcp._mcp_server,
-        json_response=mcp.settings.json_response,
-        stateless=mcp.settings.stateless_http,
-        security_settings=mcp.settings.transport_security,
+        app=mcp._lowlevel_server,
+        json_response=HTTP_JSON_RESPONSE,
+        stateless=HTTP_STATELESS,
+        security_settings=HTTP_TRANSPORT_SECURITY,
     )
     return manager, MCPAuth(StreamableHTTPASGIApp(manager), key)
 

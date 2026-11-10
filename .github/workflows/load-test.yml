@@ -1,0 +1,45 @@
+# .github/workflows/load-test.yml -- /query under concurrency on RECORDED model
+# answers (backlog item 20; docs/benchmarks.md), and the weekly SLO check
+# (backlog item 7, slo.py): a miss opens one `slo-miss` issue, a met week closes
+# it. $0, no secrets, no model calls.
+name: load test
+
+on:
+  schedule:
+    - cron: "41 4 * * 2"     # Tuesdays 04:41 UTC: the weekly SLO check
+  workflow_dispatch:
+    inputs:
+      requests:
+        description: "requests per concurrency level"
+        default: "200"
+
+permissions:
+  contents: read
+  issues: write       # slo.py opens, comments on and closes the slo-miss issue
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-api.txt
+      - name: Run at 1, 5 and 20 concurrent users
+        env:
+          REQUESTS: ${{ inputs.requests || '200' }}   # a scheduled run has no inputs
+        run: python scripts/load_test.py --requests "$REQUESTS" --json load.json
+      - name: SLO check (slo.py; issue on a miss)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python slo.py load.json --alert
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: load-test
+          path: load.json

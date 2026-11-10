@@ -76,6 +76,7 @@ def summarize(path: str | None = None) -> dict:
         "latency_ms_avg": round(sum(latencies) / len(latencies)) if latencies else None,
         "latency_ms_p50": pct(50),
         "latency_ms_p95": pct(95),
+        "latency_ms_p99": pct(99),
     }
 
 

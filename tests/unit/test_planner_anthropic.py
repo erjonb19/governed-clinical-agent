@@ -221,3 +221,95 @@ def test_a_dated_snapshot_is_priced_as_its_alias():
     # only an 8-digit date suffix is stripped; anything else stays unlisted (dearest)
     dearest = max(planner_mod.MODEL_RATES.values(), key=lambda r: r["input"] + r["output"])
     assert planner_mod.rate_for("anthropic", "claude-haiku-5-5-fast") == dearest
+
+
+# --- the real SDK, no network -----------------------------------------------
+# The stubs above are SimpleNamespaces. These drive a REAL anthropic client over
+# an in-process transport, so the request the SDK serialises, the response type
+# it parses and the exception classes it raises are the installed version's, not
+# a guess. A pin bump that changes any of them fails here.
+
+def _real_client(handler):
+    import anthropic
+    import httpx2   # anthropic's own HTTP client
+
+    return anthropic.Anthropic(
+        api_key="test-dummy-not-a-key", max_retries=0,
+        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+
+def _reply(status, body):
+    import httpx2
+
+    return lambda req: httpx2.Response(status, json=body)
+
+
+def _message_json(text="SELECT 1", stop_reason="end_turn", stop_details=None):
+    content = [{"type": "thinking", "thinking": "", "signature": "sig"}]
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    return {"id": "msg_test", "type": "message", "role": "assistant",
+            "model": "claude-haiku-5-5", "stop_sequence": None, "content": content,
+            "stop_reason": stop_reason, "stop_details": stop_details,
+            "usage": {"input_tokens": 1200, "output_tokens": 300}}
+
+
+def test_real_sdk_request_and_response_round_trip(planner):
+    import json
+
+    import httpx2
+
+    p, _ = planner
+    sent = []
+
+    def handler(req):
+        sent.append(json.loads(req.content))
+        return httpx2.Response(200, json=_message_json("SELECT 1 AS n"))
+
+    p._client = _real_client(handler)
+    sql, m = p.generate_sql_with_metrics("q")
+    assert sql == "SELECT 1 AS n"
+    assert (m.prompt_tokens, m.completion_tokens) == (1200, 300)
+    body = sent[0]
+    assert body["output_config"] == {"effort": "low"} and body["max_tokens"] == 4000
+    assert not {"temperature", "top_p", "top_k", "thinking"} & body.keys()
+
+
+def test_real_sdk_refusal_carries_its_category(planner):
+    p, _ = planner
+    details = {"type": "refusal", "category": "cyber", "explanation": None}
+    p._client = _real_client(_reply(200, _message_json(None, "refusal", details)))
+    with pytest.raises(planner_mod.PlannerError, match="refusal: cyber"):
+        p.generate_sql_with_metrics("q")
+
+
+@pytest.mark.parametrize("status,unavailable", [
+    (429, True), (500, True), (503, True), (504, True), (529, True),
+    (400, False), (401, False), (403, False),
+])
+def test_real_sdk_errors_classify_as_outage_or_bug(planner, status, unavailable):
+    import anthropic
+
+    p, _ = planner
+    err = {"type": "error", "error": {"type": "api_error", "message": "m"}}
+    p._client = _real_client(_reply(status, err))
+    with pytest.raises(anthropic.APIStatusError) as ei:
+        p._call_anthropic("s", "q")
+    assert planner_mod.is_provider_unavailable(ei.value) is unavailable
+    assert planner_mod._should_fall_back(ei.value) is unavailable
+
+
+def test_real_sdk_connection_error_is_an_outage(planner):
+    import anthropic
+    import httpx2
+
+    p, _ = planner
+
+    def handler(req):
+        raise httpx2.ConnectError("no route")
+
+    p._client = _real_client(handler)
+    with pytest.raises(anthropic.APIConnectionError) as ei:
+        p._call_anthropic("s", "q")
+    assert planner_mod.is_provider_unavailable(ei.value)
+    assert planner_mod._should_fall_back(ei.value)
