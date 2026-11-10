@@ -12,6 +12,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Order of work (owner, 2026-11-08)
 
+**First (owner, 2026-11-09): item 28, the security audit** (plan only), after any PR already in progress. The items it adds are placed by the owner when he merges it.
+
 1. **Open PRs first.** #40 (age cap): bring it up to date with `main` (which now has #50),
    run its full FHIR eval on a GitHub runner, and **ask the owner before merging**. #46
    (de-identified FHIR layer, PR A) stays as it is unless the owner says otherwise.
@@ -285,6 +287,8 @@ What real AI, data and software engineering teams would add, checked against the
   decision; a three-minute walkthrough script for the owner to record (ask, guard refusal,
   approval, trace), linked from the README.
   - Done when: both exist and the README links them.
+
+- [ ] **28. Security audit against `docs/SECURITY_STANDARDS.md`** (owner, 2026-11-09). Plan only, change no code. Audit the repo against Section 19.3 of `docs/SECURITY_STANDARDS.md` and every section that applies to this stack, and report each gap in the file's SEVERITY format. Add one backlog item per gap, numbered after this one, with anything Critical (CVSS 9+) first in the Order of work. Propose a `.claude/settings.json` from Section 17.2, tailored so unattended runs don't stall: keep the deny list, and explain each change to the ask list. Check every vendor-specific setting (npm, uv, GitHub, Claude Code permission syntax) against the vendor's current docs before proposing it. One docs-only PR, which the owner reviews and merges himself (security decisions are his). Check Section 14.2 first: the agent's DuckDB connection should have external access off and the configuration locked.
 
 ## Later (keep, don't start)
 
