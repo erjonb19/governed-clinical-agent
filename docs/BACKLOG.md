@@ -290,6 +290,14 @@ What real AI, data and software engineering teams would add, checked against the
 
 - [ ] **28. Security audit against `docs/SECURITY_STANDARDS.md`** (owner, 2026-11-09). Plan only, change no code. Audit the repo against Section 19.3 of `docs/SECURITY_STANDARDS.md` and every section that applies to this stack, and report each gap in the file's SEVERITY format. Add one backlog item per gap, numbered after this one, with anything Critical (CVSS 9+) first in the Order of work. Propose a `.claude/settings.json` from Section 17.2, tailored so unattended runs don't stall: keep the deny list, and explain each change to the ask list. Check every vendor-specific setting (npm, uv, GitHub, Claude Code permission syntax) against the vendor's current docs before proposing it. One docs-only PR, which the owner reviews and merges himself (security decisions are his). Check Section 14.2 first: the agent's DuckDB connection should have external access off and the configuration locked.
 
+- [ ] **29. Overlapping groups from a GROUP BY on a column that varies within a person** (owner, 2026-11-10; found by the adversarial reviews of #83). One grouped scope, for example `SELECT gender, class_code, count(DISTINCT patient_id) ... GROUP BY gender, class_code`, puts a person in several groups (a woman with an outpatient visit and an ER visit counts in both). Each group covers 11+, and #83 refuses this beside a subtotal (ROLLUP/GROUPING SETS) or a second scope. Alone, no two of its numbers give a small group directly: "women with an outpatient visit" minus "women with an ER visit" is a group only if one set contains the other. But someone who knows, or assumes, that every woman has an outpatient visit can read the 3 women without an ER visit from it. This is an inference risk, not a direct leak.
+  - Done when: the owner chooses a rule and it is built with tests. Options:
+    - **(a)** refuse GROUP BY keys that vary within a person (any non-person column of an event table: `class_code`, `condition_name`, ...) unless the count is of rows, not people;
+    - **(b)** for such keys, apply the region check across the groups, treating each group as a unit (as #83 does for FILTERs), which caps a query at 3 groups;
+    - **(c)** accept and document it as residual risk, like cross-query differencing.
+    - (a) would refuse common eval shapes (top conditions by people); check them against `test_every_fhir_eval_answer_is_reachable_through_the_guard` first.
+  - Today: answered; documented in #83 as not covered.
+
 ## Later (keep, don't start)
 
 - [ ] **MCP server over Streamable HTTP with real auth.**
