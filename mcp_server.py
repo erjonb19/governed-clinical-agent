@@ -157,11 +157,13 @@ _EXEC_LOCK = None
 
 
 def attach_host(audit_logger=None, lock=None) -> None:
-    """Join the hosting API's audit trail and DuckDB lock (app.py, D5).
+    """Join the hosting API's audit trail (app.py, D5), and optionally a lock.
 
     Mounted, the tools run in the API's process on the API's analytics tool, so
-    their calls must be audited where the API's are, and serialised with the
-    API's own queries: one DuckDB connection is not safe across threads.
+    their calls must be audited where the API's are. The API passes no lock
+    since backlog item 20: the analytics tool opens a DuckDB cursor of its own
+    per execution, which is safe across threads. `lock` stays for a host whose
+    tool is not.
     """
     global _EXEC_LOCK
     runtime.audit_logger = audit_logger

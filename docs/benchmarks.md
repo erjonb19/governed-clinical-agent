@@ -34,18 +34,41 @@ also contribute. Part 2 will show how much the lock alone accounts for.
 
 Percentiles: p95/p99 are nearest-rank, p50 is the interpolated median.
 
-Not yet measured: the same on a GitHub runner (`load-test.yml`, dispatch only),
-and the "after" numbers, which come with the lock change (item 20, part 2).
+Not yet measured: the same on a GitHub runner (`load-test.yml`, dispatch only).
 
-## What item 20 part 2 changes, and how it will be checked
+## After item 20 part 2 (2026-11-09)
 
-- Replace the global lock with a read-only DuckDB cursor per request (DuckDB
-  connections are not safe to share across threads; cursors from one
-  connection are), keep the per-statement timeout working per cursor.
-- Bound concurrent model calls with a semaphore; return 429 with
-  `Retry-After` when the queue is full.
-- Re-run this table; a test runs denied and allowed queries in parallel and
-  checks every decision and audit line.
+Same command, same sandbox, same day. Measured in two steps, so each change
+shows what it did on its own:
+
+| step | users | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|---|
+| baseline (above) | 1 / 5 / 20 | 26.2 / 120.1 / 494.3 ms | 30.3 / 144.6 / 534.1 ms | 33.7 / 153.9 / 543.6 ms | 38.0 / 41.0 / 40.2 req/s |
+| 1. global lock replaced by a DuckDB cursor per query | 1 / 5 / 20 | 26.6 / 106.4 / 497.7 ms | 32.1 / 177.6 / 598.4 ms | 36.4 / 193.7 / 624.4 ms | 37.0 / 42.8 / 39.6 req/s |
+| 2. + one long-lived WAL writer for the tracer | 1 / 5 / 20 | 16.3 / 89.7 / 360.1 ms | 22.0 / 107.8 / 486.6 ms | 24.4 / 126.3 / 494.8 ms | 59.5 / 55.5 / 53.7 req/s |
+
+**What this shows (and what it does not):**
+- **The lock was not the cap.** Replacing it changed nothing measurable on its
+  own (step 1, within run-to-run noise). With replayed answers DuckDB execution
+  is about 1 ms of a 25 ms request, so serialising it cost little. The change
+  still matters with a real model: queries, `/raw-sql` and `/mcp` no longer
+  wait behind each other, and `/propose`, which held the lock across a model
+  call, no longer blocks anyone's queries (it now serialises only with other
+  approval runs).
+- **The tracer was a real queue.** A profile of one request (cProfile, 30
+  requests) put about 18 ms of it in `tracing._write`: a new SQLite connection,
+  a full-sync commit and a close per span, about ten spans a run, all under one
+  lock. One long-lived writer with WAL and `synchronous=NORMAL` (step 2) cut
+  single-user p50 from 26 to 16 ms and raised throughput from ~40 to ~55 req/s.
+- **What is left is Python CPU in one process.** Throughput is still flat as
+  users increase (55-60 req/s from 1 to 20 users): the graph, the guard's SQL
+  parsing and the PHI checks are pure Python under the GIL, so one uvicorn
+  worker uses about one core. More throughput needs more processes (item 24,
+  two replicas), which needs the state in Postgres first (item 19).
+- Runs that call the model are capped at `MAX_CONCURRENT_RUNS` (default 4);
+  past `RUN_QUEUE_WAIT_SEC` (default 15 s) a caller gets 429 with
+  `Retry-After: 5`. This table does not exercise that limit: its requests
+  finish in milliseconds.
 
 ## On a GitHub runner (2026-11-09, main before item 20 part 2)
 
