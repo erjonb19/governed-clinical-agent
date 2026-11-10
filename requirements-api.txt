@@ -36,7 +36,7 @@ python-dotenv==1.2.4
 databricks-sql-connector==4.4.0
 
 # MCP over Streamable HTTP, mounted in the API at /mcp (PLAN v2 item 5, D5).
-mcp==1.30.0   # 1.28.0 had 6 advisories (pip-audit, 2026-11-09)
+mcp==2.3.0   # 1.28.0 had 6 advisories (pip-audit, 2026-11-09)
 
 # Trace export over OTLP to a self-hosted Arize Phoenix (trace_export.py,
 # backlog item 2). Only used when TRACE_OTLP_ENDPOINT is set; Phoenix itself is

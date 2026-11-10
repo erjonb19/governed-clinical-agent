@@ -23,10 +23,11 @@ import sys
 import time
 
 import httpx
+import httpx2  # the HTTP client mcp 2.x is built on (a dependency of mcp)
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 pytestmark = [pytest.mark.e2e, pytest.mark.anyio]
 
@@ -132,9 +133,11 @@ async def test_stdio():
                          ids=["bearer", "x-api-key"])
 async def test_http(request, server, header):
     url = request.getfixturevalue(server)
-    async with streamablehttp_client(url, headers=header) as (r, w, _):
-        async with ClientSession(r, w) as s:
-            await _exercise(s)
+    # mcp 2.x takes headers on the HTTP client it is given, not as an argument
+    async with httpx2.AsyncClient(headers=header) as http:
+        async with streamable_http_client(url, http_client=http) as (r, w):
+            async with ClientSession(r, w) as s:
+                await _exercise(s)
 
 
 @pytest.mark.parametrize("server", ["standalone", "mounted"])
