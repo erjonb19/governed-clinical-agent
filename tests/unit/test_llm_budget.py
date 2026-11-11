@@ -40,18 +40,20 @@ def test_the_cost_cap_is_checked_against_the_worst_case_before_the_run():
     assert b.status()["est_usd"] == 0.6
 
 
-def test_settling_charges_the_actual_cost_never_more_than_reserved():
+def test_settling_charges_the_actual_cost():
     _, now = _clock(datetime(2026, 11, 11, 12, tzinfo=timezone.utc))
     b = DailyBudget(max_runs=100, max_usd=1.0, now=now)
     r = b.reserve(0.6)
     b.settle(r, 0.01)
     assert b.status()["est_usd"] == 0.01
-    r = b.reserve(0.6)
-    b.settle(r, 5.0)  # an estimate above the worst case keeps the worst case
-    assert b.status()["est_usd"] == pytest.approx(0.61)
     r = b.reserve(0.3)
     b.settle(r, None)  # nothing reported: the worst case stays charged
-    assert b.status()["est_usd"] == pytest.approx(0.91)
+    assert b.status()["est_usd"] == pytest.approx(0.31)
+    r = b.reserve(0.5)
+    b.settle(r, 0.9)  # cost more than the estimate: charged in full, never undercounted
+    assert b.status()["est_usd"] == pytest.approx(1.21)
+    with pytest.raises(BudgetExceeded):
+        b.reserve(0.0001)  # and the next run sees it
 
 
 def test_worst_case_covers_every_attempt_plan_and_critic():
@@ -60,6 +62,15 @@ def test_worst_case_covers_every_attempt_plan_and_critic():
     assert worst_case_usd(p, 3) == pytest.approx(6 * (4000 * 0.10 + 4000 * 0.50) / 1e6)
     assert worst_case_usd(SimpleNamespace(provider="replay", _model="x"), 3) == 0.0
     assert worst_case_usd(None, 3) == 0.0
+
+
+def test_worst_case_prices_at_the_dearer_of_primary_and_fallback():
+    gemini = SimpleNamespace(provider="gemini", _model="gemini-flash-lite-latest", _max_tokens=800)
+    alone = worst_case_usd(gemini, 3)
+    with_groq = worst_case_usd(SimpleNamespace(**vars(gemini), fallback_provider="groq"), 3)
+    # groq ($0.59 / $0.79) is dearer than gemini ($0.15 / $0.60)
+    assert with_groq == pytest.approx(6 * (4000 * 0.59 + 800 * 0.79) / 1e6)
+    assert with_groq > alone
 
 
 @pytest.fixture

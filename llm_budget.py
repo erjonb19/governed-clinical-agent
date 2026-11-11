@@ -13,8 +13,10 @@ case against two daily caps, the same pattern as `scheduled_runs.py`:
 The worst case is every attempt at full prompt and full output, for the plan
 and the critic call. A run whose cost is reported back is then charged what
 it actually cost; one that raises, or reports nothing, keeps its worst case.
-So the caps cannot be exceeded. Past either cap the caller gets 429 with a
-Retry-After that runs to the next UTC midnight.
+A run starts only if its worst case fits under both caps; the worst case
+uses the dearer of the primary and fallback rates, and a run that somehow
+cost more is charged in full, so the count never undercounts. Past either
+cap the caller gets 429 with a Retry-After that runs to the next UTC midnight.
 
 Per process and in memory: a restart (or a Render redeploy) starts a fresh
 day's count. Provider-side spend caps, set in each provider's console, are
@@ -45,12 +47,19 @@ def worst_case_usd(planner: Any, max_attempts: int) -> float:
     """The most one run can cost: every attempt, plan and critic, at full size."""
     if planner is None or getattr(planner, "provider", "") == "replay":
         return 0.0  # no planner, or recorded answers (CI, load test): no model is called
-    from nl_to_sql_planner import rate_for
+    from nl_to_sql_planner import PROVIDERS, rate_for
 
-    rate = rate_for(getattr(planner, "provider", ""), getattr(planner, "_model", ""))
     out = getattr(planner, "_max_tokens", DEFAULT_MAX_OUTPUT_TOKENS) or DEFAULT_MAX_OUTPUT_TOKENS
-    per_call = (PROMPT_TOKENS_WORST * rate["input"] + out * rate["output"]) / 1_000_000
-    return max_attempts * CALLS_PER_ATTEMPT * per_call
+
+    def per_call(rate: dict) -> float:
+        return (PROMPT_TOKENS_WORST * rate["input"] + out * rate["output"]) / 1_000_000
+
+    # every call may be served by the fallback (item 8): price it at the dearer
+    worst = per_call(rate_for(getattr(planner, "provider", ""), getattr(planner, "_model", "")))
+    fb = getattr(planner, "fallback_provider", None)
+    if fb and fb in PROVIDERS:
+        worst = max(worst, per_call(rate_for(fb, PROVIDERS[fb].get("model", ""))))
+    return max_attempts * CALLS_PER_ATTEMPT * worst
 
 
 class BudgetExceeded(Exception):
@@ -103,13 +112,14 @@ class DailyBudget:
             return worst_usd
 
     def settle(self, reserved: float, actual_usd: Optional[float]) -> None:
-        """Replace a reservation with what the run actually cost (never more
-        than reserved: an estimate above the worst case keeps the worst case)."""
+        """Replace a reservation with what the run actually cost. A run that
+        cost more than its worst-case estimate is charged in full: the count
+        must never undercount. (The check before the NEXT run then sees it.)"""
         if actual_usd is None or actual_usd < 0:
             return
         with self._lock:
             self._roll()
-            self.usd = max(0.0, self.usd - reserved + min(actual_usd, reserved))
+            self.usd = max(0.0, self.usd - reserved + actual_usd)
 
     def status(self) -> dict:
         with self._lock:
