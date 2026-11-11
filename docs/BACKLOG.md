@@ -12,7 +12,12 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Order of work (owner, 2026-11-08)
 
-**First (owner, 2026-11-09): item 28, the security audit** (plan only), after any PR already in progress. The items it adds are placed by the owner when he merges it.
+**First (owner, 2026-11-11): the security audit's items, in the audit's proposed placement** (item 28 is done; `docs/SECURITY_AUDIT_2026-11-10.md`), after the open PRs #40 and #83:
+1. **30, 31**: the two Highs (DuckDB external access; Actions pinned to SHAs).
+2. **The Mediums that close exposure:** 33, 34, 35, 36, 37, 40, 43, then 44-51 (branch protection, `uv` lockfile and cooldown — `uv` approved, owner 2026-11-11 — Dependabot cooldown, secret scanning, workflow permissions, release permissions, image digests, checksums).
+3. **Then item 22** (which closes or unblocks 32, 38, 42 and 56), then the rest of the order below; 39, 41, 52 and the Lows 53-69 after item 22.
+
+
 
 1. **Open PRs first.** #40 (age cap): bring it up to date with `main` (which now has #50),
    run its full FHIR eval on a GitHub runner, and **ask the owner before merging**. #46
