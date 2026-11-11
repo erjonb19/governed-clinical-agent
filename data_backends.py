@@ -34,7 +34,11 @@ class LocalDuckDBBackend:
         # read-only, like AnalyticsQueryTool's connection: it only runs validated
         # SELECTs, and DuckDB refuses two connections to one file in one process
         # unless their configuration matches (the eval harness holds both)
-        self.con = duckdb.connect(db_path, read_only=db_path != ":memory:")
+        # the same locked, no-external-access configuration as the agent's own
+        # connection (item 30): DuckDB refuses two connections to one file in
+        # one process with different configurations
+        from analytics_query_tool import connect_agent_db
+        self.con = connect_agent_db(db_path, read_only=db_path != ":memory:")
 
     def execute(self, sql: str) -> tuple[list[str], list[dict]]:
         cur = self.con.execute(sql)
@@ -71,7 +75,7 @@ class DatabricksBackend:
                 "DATABRICKS_HTTP_PATH, and DATABRICKS_TOKEN in the environment."
             )
 
-    def execute(self, sql: str) -> tuple[list[str], list[dict]]:
+    def execute(self, sql: str, max_rows: int | None = None) -> tuple[list[str], list[dict]]:
         from databricks import sql as dbsql  # lazy import
         from analytics_query_tool import query_timeout
         with dbsql.connect(
@@ -87,7 +91,10 @@ class DatabricksBackend:
             with conn.cursor() as cur:
                 cur.execute(sql)
                 cols = [d[0] for d in cur.description] if cur.description else []
-                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                # at most one row past the agent's cap (item 43); the eval
+                # harness's reference calls pass no cap and get everything
+                raw = cur.fetchall() if max_rows is None else cur.fetchmany(max_rows + 1)
+                rows = [dict(zip(cols, r)) for r in raw]
         return cols, rows
 
 
