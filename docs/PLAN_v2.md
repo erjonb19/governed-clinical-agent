@@ -450,7 +450,11 @@ after a real table (refused outright: one name may not mean two things in a quer
 and any grouping key that is not a plain column beside another scope (`TRUE OR 'x' = gender` is
 one group, the total), and sources nested too deep to compare (refused, not compared as equal). A second review found one
 more: a CTE name reused in a nested WITH was read as the outer one (the checks resolve CTEs by name),
-which hid a second table or a filter; two CTEs with the same name are now refused.
+which hid a second table or a filter; two CTEs with the same name are now refused. A third review found
+a column-list alias (`gold_patient AS p(..., gender, ...)`) could relabel city as gender, so a one-group
+"grouping" passed as a gender split beside the real one; any column-list alias on patient data is now
+refused. It also found an older, worse leak (one person's exact value from `unnest()` in a projection),
+fixed separately as backlog item 71.
 `test_item_70_shapes_are_refused`, `test_what_item_70_leaves_answerable`; all 28
 FHIR eval references still pass the guard.
 

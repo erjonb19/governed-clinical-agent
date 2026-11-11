@@ -1845,6 +1845,15 @@ def check(tree: exp.Expression) -> PhiDecision:
                                findings=[fn], protected=True)
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
+    if any(a.args.get("columns") for a in tree.find_all(exp.TableAlias)):
+        # third item-70 review (2026-11-11): `gold_patient AS p(..., gender, ...)`
+        # renames columns by position, so city could stand in for gender (a
+        # one-group "grouping" = the total) and an identifier could hide under a
+        # safe name from every label check. Fail closed.
+        return PhiDecision(False, "PHI rule: a column-list alias (AS name(col, ...)) renames "
+                                  "columns and is not allowed on patient data; alias each "
+                                  "column in a SELECT instead",
+                           findings=["column-list alias"], protected=True)
     real = {t.lower() for t in TABLES} | _public_tables()
     cte_names = [(c.alias_or_name or "").lower() for c in tree.find_all(exp.CTE)]
     reused = sorted({n for n in cte_names if cte_names.count(n) > 1})

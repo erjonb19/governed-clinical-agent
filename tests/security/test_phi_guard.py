@@ -1236,6 +1236,15 @@ ITEM_70_REFUSED = {
         "WITH t AS (SELECT patient_id FROM gold_patient) SELECT (SELECT count(*) FROM t) AS a, "
         "(WITH T AS (SELECT patient_id FROM gold_encounter) SELECT count(DISTINCT patient_id) "
         "FROM T) AS b"),
+    # the third review (same day): a column-list alias relabels a column
+    "a column-list alias that renames city to gender": (
+        "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender UNION ALL "
+        "SELECT gender, count(*) AS n FROM gold_patient AS p(patient_id, given_name, family_name, x, "
+        "birth_date, is_deceased, marital_status, gender, state, postal_code, age_years) GROUP BY gender"),
+    "a column-list alias on a derived table": (
+        "SELECT g, count(*) AS n FROM (SELECT gender, city FROM gold_patient) AS d(x, g) GROUP BY g"),
+    "a column-list alias on a CTE": (
+        "WITH c(g) AS (SELECT city FROM gold_patient) SELECT g, count(*) AS n FROM c GROUP BY g"),
     "GROUP BY ALL on both scopes": (
         "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY ALL) AS t "
         "FROM gold_patient GROUP BY ALL"),
