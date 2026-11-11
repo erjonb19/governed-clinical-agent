@@ -1,8 +1,9 @@
 # .github/workflows/data-refresh.yml
 # Monthly refresh of the CMS hospital Gold. Re-fetches the source CMS datasets,
 # rebuilds the Gold, VALIDATES it with the eval gate (so bad/changed source data
-# can't silently ship), stamps medallion/REFRESH.json, and commits the refreshed
-# Gold back to main. This is what makes the "refreshed monthly" claim real.
+# can't silently ship), stamps medallion/REFRESH.json, and opens a PR with the
+# refreshed Gold (audit item 44: main is protected, nothing pushes to it
+# directly). This is what makes the "refreshed monthly" claim real.
 #
 # The Synthea FHIR set is a fixed Sep-2019 sample and does not change, so it is
 # intentionally NOT on a refresh cadence.
@@ -18,7 +19,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write            # to commit the refreshed Gold back to the repo
+  contents: write            # to push the refresh branch
+  pull-requests: write       # to open the PR against main
+  actions: write             # to dispatch the required checks on that branch
 
 jobs:
   refresh-hospital:
@@ -108,10 +111,30 @@ jobs:
                 f"{vintages} vintage(s) since {earliest}")
           PY
 
-      - name: Commit refreshed Gold
+      - name: Open a PR with the refreshed Gold
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add medallion/hospital_gold.duckdb medallion/REFRESH.json
-          git commit -m "data refresh: rebuild hospital Gold from CMS ($(date -u +%Y-%m-%d))" \
-            && git push || echo "no changes to commit"
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          day="$(date -u +%Y-%m-%d)"
+          branch="data-refresh/${day}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          git commit -m "data refresh: rebuild hospital Gold from CMS (${day})"
+          # a failed push or PR now fails the job (it used to print "no
+          # changes to commit" and pass)
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "data refresh: hospital Gold from CMS (${day})" \
+            --body "Monthly refresh by data-refresh.yml (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}). The hospital eval gate already passed on this data. Merge once the checks are green."
+          # A PR opened with the workflow token starts no workflows by itself,
+          # so dispatch the required checks on the branch; their results land
+          # on the PR's commit.
+          for wf in tests.yml e2e.yml mcp-e2e.yml container.yml codeql.yml eval-on-push.yml; do
+            gh workflow run "$wf" --ref "$branch"
+          done
