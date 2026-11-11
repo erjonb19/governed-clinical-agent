@@ -83,6 +83,14 @@ class QueryTimeout(Exception):
                          f"of large tables")
 
 
+def _error_type(text: str | None) -> str | None:
+    """'IOException: Could not set lock on file "/srv/x.duckdb"' -> 'IOException'."""
+    if not text:
+        return text
+    head = text.split(":", 1)[0].strip()
+    return head if head.isidentifier() else "error"
+
+
 def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
     """Execute and fetch on a DuckDB connection, interrupting it after
     `seconds`. DuckDB has no statement_timeout setting, so a timer calls
@@ -214,7 +222,7 @@ class AnalyticsQueryTool(BaseTool):
             # -- opened read-only below -- still serve. The reason is kept so
             # the visibility endpoints can say what happened rather than
             # presenting a locked warehouse as an empty one.
-            self._primary_error = str(e)
+            self._primary_error = f"{type(e).__name__}: {e}"
             print(f"WARNING: primary database {db_path!r} could not be opened "
                   f"({e}); starting with an empty in-memory database.")
             self._con = connect_agent_db(":memory:", read_only=False)
@@ -268,7 +276,7 @@ class AnalyticsQueryTool(BaseTool):
                 from data_backends import DatabricksBackend
                 self._databricks = DatabricksBackend()
             except BaseException as e:   # SystemExit (creds) / ImportError (driver)
-                self._databricks_error = str(e)
+                self._databricks_error = f"{type(e).__name__}: {e}"
         self._default_backend = "databricks" if (want_dbx and self._databricks) else "local"
 
     @property
@@ -288,10 +296,13 @@ class AnalyticsQueryTool(BaseTool):
         return {
             "default": self._default_backend,
             "available": ["local"] + (["databricks"] if self._databricks else []),
-            "local_db": self._db_path,
+            # /health shows these unauthenticated (item 40): a file name, not a
+            # server path, and the error's type, not its text (which carries
+            # paths or connection details; the startup log keeps it)
+            "local_db": os.path.basename(self._db_path) if self._db_path else self._db_path,
             "databricks_configured": self._databricks is not None,
-            "databricks_error": self._databricks_error,
-            "local_db_error": self._primary_error,
+            "databricks_error": _error_type(self._databricks_error),
+            "local_db_error": _error_type(self._primary_error),
         }
 
     def execute(self, params: Dict[str, Any]) -> ToolResult:
@@ -317,7 +328,7 @@ class AnalyticsQueryTool(BaseTool):
                 if self._databricks is None:
                     return ToolResult(success=False, output={"safe_sql": decision.safe_sql},
                                       error=f"Databricks backend not configured: "
-                                            f"{self._databricks_error or 'set DATABRICKS_* env vars'}")
+                                            f"{_error_type(self._databricks_error) or 'set DATABRICKS_* env vars'}")
                 cols, rows = self._databricks.execute(decision.safe_sql)
             else:
                 ds = params.get("dataset")

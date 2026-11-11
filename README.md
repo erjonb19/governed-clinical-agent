@@ -723,6 +723,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **No exception text to clients** (audit item 40): errors answer with their type and
+  the trace id; the details are in the trace and the server log; `/health` shows types only.
 - [x] **Daily model budget** (audit item 37): every run that calls the model reserves its
   worst case against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` ($1.00, estimated) per UTC day;
   past either it gets 429 until midnight UTC. In memory, so a restart resets the count;

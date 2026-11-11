@@ -132,6 +132,10 @@ FINDINGS = [
 ]
 
 
+class _Refused(Exception):
+    """The guarded path refused a finding's SQL; its reason is the guard's text."""
+
+
 def compute(run_sql: Callable[[str], dict], vintage: Optional[str]) -> list[dict]:
     """Every finding, each computed or explained. `run_sql` is the guarded path
     (returns the API's response dict: allowed, decided_by, reason, rows)."""
@@ -144,10 +148,18 @@ def compute(run_sql: Callable[[str], dict], vintage: Optional[str]) -> list[dict
             for sql in f["sql"]:
                 r = run_sql(sql)
                 if not r.get("allowed"):
-                    raise RuntimeError(f"{r.get('decided_by')}: {r.get('reason')}")
+                    if r.get("decided_by") in ("guard", "policy"):
+                        # the guard's / policy's own fixed refusal text
+                        raise _Refused(f"{r.get('decided_by')}: {r.get('reason')}")
+                    # an execution error's text can carry a server path: by type only
+                    raise _Refused(str(r.get("decided_by") or "error"))
                 results.append(r.get("rows") or [])
             card.update(f["render"](results), status="ok")
         except Exception as e:
-            card.update(status="unavailable", reason=f"{type(e).__name__}: {e}"[:300])
+            # a guard/policy refusal shows its own fixed text, an execution error
+            # only its kind, any other failure its type (item 40). A failed
+            # finding shows no number either way.
+            reason = str(e) if isinstance(e, _Refused) else type(e).__name__
+            card.update(status="unavailable", reason=reason[:300])
         out.append(card)
     return out
