@@ -59,10 +59,6 @@ jobs:
       - name: Run tests (pytest, with the coverage floor)
         run: pytest -q -m "not network" --cov --cov-report=term --cov-fail-under=67
 
-  # Known vulnerabilities in the pinned dependencies (backlog item 16), from the
-  # PyPA advisory database. A new advisory against a pin turns the push red.
-  # No advisories are ignored: databricks-sql-connector 4.9.0 (#90) allows
-  # oauthlib 4.0.1, which fixes the two that were ignored by name until then.
   # Secret scanning (backlog item 47): gitleaks over the whole git history on
   # every push and PR. The binary is pinned by version AND by the SHA-256 the
   # release publishes, checked before it runs; --redact keeps any finding's
@@ -91,6 +87,10 @@ jobs:
       - name: Scan the history
         run: ./gitleaks git --redact --no-banner --verbose .
 
+  # Known vulnerabilities in the pinned dependencies (backlog item 16), from the
+  # PyPA advisory database. A new advisory against a pin turns the push red.
+  # No advisories are ignored: databricks-sql-connector 4.9.0 (#90) allows
+  # oauthlib 4.0.1, which fixes the two that were ignored by name until then.
   pip-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
