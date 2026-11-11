@@ -378,9 +378,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **45. No lockfile, no hashes, no release-age cooldown for Python installs** (Medium; security audit finding 16, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: requirements*.txt (== top-level only); render.yaml:15; Dockerfile:23
   - Done when: uv with a committed uv.lock and `exclude-newer = "1 week"` (uv's documented cooldown; needs a recent uv), `uv sync --locked` in CI, Render and the Dockerfile. Or `--generate-hashes` + `--require-hashes`.; a test or check shows it.
-- [ ] **46. Dependabot uses only the 3-day default cooldown** (Medium; security audit finding 17, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **46. Dependabot uses only the 3-day default cooldown** (Medium; security audit finding 17, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: .github/dependabot.yml:6-29
   - Done when: `cooldown: { default-days: 7 }` on pip and github-actions (documented for both; security updates are never delayed by it).; a test or check shows it.
+  - Done 2026-11-11: `cooldown: default-days: 7` on both ecosystems in `.github/dependabot.yml`; `tests/unit/test_dependabot_config.py` fails if an ecosystem lacks it. GitHub validates the file on the next Dependabot run (an invalid key shows on the repo's Dependency graph -> Dependabot tab).
 - [ ] **47. No secret scanning in pre-commit or CI** (Medium; security audit finding 18, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: .pre-commit-config.yaml:6-24; no gitleaks/trufflehog job
   - Done when: gitleaks pre-commit hook and a CI job (`gitleaks detect --redact`), pinned.; a test or check shows it.
