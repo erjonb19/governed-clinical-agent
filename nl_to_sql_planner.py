@@ -320,7 +320,8 @@ Columns:
   is_deceased      BOOLEAN
   marital_status   TEXT
   city, state, postal_code  TEXT
-  age_years        INTEGER  age today (or at death)
+  age_years        INTEGER  age today (or at death); over 90 counts as 90 and shows as "90+",
+                            so add no age cap of your own
 
 Table: gold_encounter  (one row per encounter/visit)
 Columns:

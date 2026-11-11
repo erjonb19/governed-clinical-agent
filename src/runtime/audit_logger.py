@@ -26,6 +26,7 @@ class AuditEventType(Enum):
     SANDBOX_EXECUTION = "sandbox_execution"
     CRITIC_REVIEW = "critic_review"
     ANSWER = "answer"
+    AUTH_FAILURE = "auth_failure"
 
 
 class DecisionType(Enum):
@@ -493,6 +494,30 @@ class AuditLogger:
             context={**{k: version.get(k) for k in
                         ("prompt_version", "model", "provider", "git_commit")},
                      "trace_id": trace_id, "decided_by": decided_by},
+        )
+        return self._log_event(event)
+
+    def log_auth_failure(
+        self,
+        client: str,
+        path: str,
+        surface: str,
+        failures_in_window: int,
+        throttled: bool,
+    ) -> str:
+        """
+        Log a refused API key (backlog item 35): who (client address), where,
+        and how many failures that client has in the window. Never the key.
+        """
+        event = AuditEvent(
+            timestamp=datetime.now().isoformat(),
+            event_type=AuditEventType.AUTH_FAILURE,
+            agent_id=self.agent_id,
+            capability=f"auth.{surface}",
+            decision=DecisionType.DENY,
+            reason="throttled: too many failed keys" if throttled else "invalid or missing API key",
+            context={"client": client, "path": path, "surface": surface,
+                     "failures_in_window": failures_in_window, "throttled": throttled},
         )
         return self._log_event(event)
 

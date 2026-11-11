@@ -34,7 +34,11 @@ class LocalDuckDBBackend:
         # read-only, like AnalyticsQueryTool's connection: it only runs validated
         # SELECTs, and DuckDB refuses two connections to one file in one process
         # unless their configuration matches (the eval harness holds both)
-        self.con = duckdb.connect(db_path, read_only=db_path != ":memory:")
+        # the same locked, no-external-access configuration as the agent's own
+        # connection (item 30): DuckDB refuses two connections to one file in
+        # one process with different configurations
+        from analytics_query_tool import connect_agent_db
+        self.con = connect_agent_db(db_path, read_only=db_path != ":memory:")
 
     def execute(self, sql: str) -> tuple[list[str], list[dict]]:
         cur = self.con.execute(sql)
