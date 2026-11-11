@@ -390,10 +390,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **48. Four workflows set no top-level permissions** (Medium; security audit finding 19, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: tests.yml, eval-on-push.yml, mcp-e2e.yml, eval-fhir-manual.yml
   - Done when: `permissions: contents: read` at the top of each.; a test or check shows it.
+- [x] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `permissions: contents: read` at the top of tests.yml, eval-on-push.yml, mcp-e2e.yml and eval-fhir-manual.yml (none of their jobs uses the token for anything else). `tests/unit/test_workflow_permissions.py` fails on any workflow without top-level permissions.
 - [ ] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: release.yml:25-26 (pip install … pytest unpinned, tests run under the write token); release.yml:33, data-refresh.yml:28 (checkout without persist-credentials: false)
   - Done when: contents:read at the workflow level, write only on the `gh release create` job; persist-credentials: false except where data-refresh pushes; pin pytest.; a test or check shows it.
+  - Done 2026-11-11: release.yml is `contents: read`; the checks and the test suite run in a `check` job with no stored git credentials; a separate `release` job with `contents: write` runs only `gh release create` (no checkout, no repository code); the image job's checkout keeps no credentials either; pytest pinned (9.2.0). data-refresh.yml keeps its credentials because it pushes. `tests/unit/test_release_workflow.py`.
 - [ ] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: Dockerfile:12, docker/Dockerfile.sandbox:1 (python:3.11-slim); docker-compose.yml:36; tests.yml postgres:16
   - Done when: Pin by @sha256 digest; Dependabot `docker` updates keep them current.; a test or check shows it.

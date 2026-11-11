@@ -723,6 +723,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **Least-privilege release workflow** (audit item 49): tests run read-only; only a job
+  that runs no repository code may create the release.
 - [x] **Read-only workflow tokens** (audit item 48): every workflow declares top-level
   permissions; the test, eval and MCP workflows run with `contents: read`.
 - [x] **Dependabot cooldown** (audit item 46): new versions wait 7 days before Dependabot
