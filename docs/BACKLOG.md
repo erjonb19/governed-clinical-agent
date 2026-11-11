@@ -306,9 +306,16 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **32. Reviewer identity is a typed name; anyone can approve anything, including their own proposal** (Medium; security audit finding 3, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:417 (decided_by: str), app.py:932-966, approval_graph.py:275, web/index.html:1086
   - Done when: Reviewer from the verified key (item 22); until then mark decided_by "self-asserted"; refuse a decision by the proposer's key or by anyone but `assigned_to`; run the groundedness check on edited text.; a test or check shows it.
-- [ ] **33. No security headers on any response** (Medium; security audit finding 4, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **33. No security headers on any response** (Medium; security audit finding 4, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-335 (middleware), app.py:381-391 (/ui sets only Cache-Control)
   - Done when: A header middleware: CSP `default-src 'self'; script-src 'sha256-<inline>'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`, nosniff, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy, HSTS; a test on /ui.; a test or check shows it.
+  - **Done 2026-11-11, in the PR "Item 33".**
+    - **Every response** gets `_SecurityHeaders` in `app.py`: nosniff, a strict-origin-when-cross-origin Referrer-Policy, a Permissions-Policy with camera, microphone and location off, HSTS, and `X-Frame-Options: DENY`.
+    - **The `/ui` page** also gets a Content Security Policy. Scripts may come only from this origin plus the page's one inline script, allowed by its SHA-256, which is computed from the file actually served. Inline styles are allowed. No frames, objects or base-URI changes.
+    - **The UI's one inline `onclick`** became a handler set from the script.
+    - **Tests:** `tests/integration/test_security_headers.py`. A local Chromium load of `/ui`, clicking through every view, showed no console errors and no CSP violations.
+    - `/docs` gets the headers but no CSP, because putting it behind a flag is item 53.
+
 - [ ] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423 (question, sql, decided_by, reason, edited_proposal: no max_length)
   - Done when: Field(max_length=...) (question 2,000, sql 20,000, names 200) and a 64 KB body cap.; a test or check shows it.

@@ -723,6 +723,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet.
+- [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
+  frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
+  only runs its own script (by hash), so injected script could not read the stored key.
 
 ## Service level objectives
 
