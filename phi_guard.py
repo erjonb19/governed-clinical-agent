@@ -1573,6 +1573,34 @@ def _aggregates_null_side(sel: exp.Select) -> bool:
     return False
 
 
+# Columns every person has exactly one value of, in every patient table: a
+# GROUP BY on them partitions people instead of overlapping them.
+_PERSON_CONSTANT = {"gender", "state"}
+
+
+def _person_constant_grouping(sel: exp.Select, root: exp.Expression) -> bool:
+    """With 2+ aggregate scopes, a grouped scope must read base tables
+    directly (no derived table or CTE that could rename a column) and group
+    only by columns constant per person: gender, state, or gold_patient's own
+    columns (sixth review, 2026-11-11). Fail closed otherwise."""
+    tables = {}
+    for src in _sources(sel):
+        if not isinstance(src, exp.Table) or _cte_body(src.name or "", root) is not None:
+            return False
+        tables[(src.alias_or_name or "").lower()] = (src.name or "").lower()
+    for g in sel.args["group"].expressions:
+        cols = list(g.find_all(exp.Column))
+        if not cols:
+            return False
+        for c in cols:
+            table = tables.get((c.table or "").lower())
+            if table is None and len(tables) == 1:
+                table = next(iter(tables.values()))
+            if not (c.name.lower() in _PERSON_CONSTANT or table == "gold_patient"):
+                return False
+    return True
+
+
 def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
     """{id(select or FILTER node): [SQL conditions]} so that no combination of
     the filtered aggregates in one query isolates fewer than 11 people: every
@@ -1616,6 +1644,14 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
                                 or any(f.find_ancestor(exp.Select) is sel for f, _ in filters))
                            for sel, _ in rewrites):
             raise _CannotCorrelate("a grouped scope beside a filtered ungrouped one")
+        for sel, _ in rewrites:
+            if sel.args.get("group") is not None and not _person_constant_grouping(sel, root):
+                # sixth review (2026-11-11): grouping by a column that varies
+                # within a person (class_code) overlaps the groups, so a group
+                # beside the total is a filter (30 - 27 = the 3 women); and a
+                # derived table can rename such a column to look like gender
+                raise _CannotCorrelate("a grouping that is not constant per person beside "
+                                       "another scope")
     units = _filtered_units(rewrites, filters, averages_count)
     by_sel: dict = {}
     for u in units:

@@ -1695,3 +1695,33 @@ def test_several_filtered_averages_cannot_solve_for_a_small_group(varying_age_to
     # women (15) vs women with an ER visit (12): both averages shown = solvable
     assert not ("a_w" in shown and "a_a" in shown), (name, row)
 
+
+# sixth review (2026-11-11): a grouping that is not constant per person, or a
+# renamed one, beside another scope
+PER_PERSON_GROUPING_LEAKS = {
+    "class_code groups beside a total": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS t, c.class_code, c.n "
+        "FROM (SELECT class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY class_code) c"),
+    "class_code renamed to gender in a derived table": (
+        "SELECT gender, count(DISTINCT patient_id) AS n FROM gold_encounter GROUP BY gender "
+        "UNION ALL SELECT gender, count(DISTINCT patient_id) FROM (SELECT patient_id, "
+        "class_code AS gender FROM gold_encounter) d GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(PER_PERSON_GROUPING_LEAKS))
+def test_a_per_person_varying_grouping_beside_another_scope_is_refused(encounter_tool, name):
+    r = encounter_tool.execute({"sql": PER_PERSON_GROUPING_LEAKS[name]})
+    if r.success:
+        nums = _numbers(r.output["rows"])
+        assert not (30 in nums and 27 in nums), (name, r.output["rows"])
+        assert not (15 in nums and 27 in nums), (name, r.output["rows"])
+    else:
+        assert "cannot be checked" in r.error, r.error
+
+
+def test_the_owner_s_per_gender_shape_still_runs_after_the_grouping_rule(encounter_tool):
+    r = encounter_tool.execute({"sql": PER_GENDER_RATE})
+    assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
+
