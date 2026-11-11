@@ -397,21 +397,41 @@ class _BodySizeLimit:
                 if too_big:
                     return await self._refuse(send)
         seen = 0
+        tripped = False
+        started = False
 
         class _TooBig(Exception):
             pass
 
         async def counting_receive():
-            nonlocal seen
+            nonlocal seen, tripped
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body") or b"")
                 if seen > self.limit:
+                    tripped = True
                     raise _TooBig()
             return message
+
+        async def guarded_send(message):
+            # once the body is too big, whatever the app answers (FastAPI turns a
+            # failed body read into a 400) is dropped: the 413 below is the answer
+            nonlocal started
+            if tripped:
+                return
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
         try:
-            await self.app(scope, counting_receive, send)
-        except _TooBig:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            # _TooBig may arrive bare, wrapped in an ExceptionGroup (anyio task
+            # groups), or not at all (caught by the framework); the flag is the
+            # truth. Anything else, unrelated to the size, propagates.
+            if not tripped:
+                raise
+        if tripped and not started:
             await self._refuse(send)
 
     async def _refuse(self, send):

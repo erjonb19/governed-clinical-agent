@@ -89,3 +89,48 @@ def test_normal_requests_still_work(client):
         "/raw-sql", json={"sql": "SELECT count(*) AS n FROM gold_hospital_profile"}, headers=H
     )
     assert r.status_code == 200 and r.json()["allowed"] is True
+
+
+def _chunks(total, size=8192):
+    sent = 0
+    while sent < total:
+        n = min(size, total - sent)
+        sent += n
+        yield b" " * n
+
+
+def test_a_chunked_oversized_body_is_refused_with_413(client):
+    c, app_module = client
+    total = app_module.MAX_BODY_BYTES + 10_000
+    r = c.post(
+        "/raw-sql", content=_chunks(total), headers={**H, "Content-Type": "application/json"}
+    )
+    assert r.status_code == 413, (r.status_code, r.text[:200])
+
+
+def test_a_chunked_oversized_mcp_body_is_refused_with_413(client):
+    c, app_module = client
+    total = app_module.MAX_BODY_BYTES + 10_000
+    r = c.post(
+        "/mcp/",
+        content=_chunks(total),
+        headers={
+            **H,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    if r.status_code in (404, 503):
+        pytest.skip(f"MCP mount not available here ({r.status_code})")
+    assert r.status_code == 413, (r.status_code, r.text[:200])
+
+
+def test_a_small_chunked_body_still_works(client):
+    c, _ = client
+    body = b'{"sql": "SELECT count(*) AS n FROM gold_hospital_profile"}'
+    r = c.post(
+        "/raw-sql",
+        content=iter([body[:20], body[20:]]),
+        headers={**H, "Content-Type": "application/json"},
+    )
+    assert r.status_code == 200 and r.json()["allowed"] is True
