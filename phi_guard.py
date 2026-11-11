@@ -1911,6 +1911,10 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
             # join is a Subquery whose body is a Table carrying joins, which
             # every source check below would skip (fourth review)
             return "a parenthesized join; write the joins without parentheses"
+    if any(True for _ in q.find_all(exp.TableSample)):
+        # USING SAMPLE / TABLESAMPLE with a seed keeps a chosen subset: 14 of 15
+        # rows beside the total gave back the one left out (fifth review)
+        return "USING SAMPLE / TABLESAMPLE on patient data"
     for grp in q.find_all(exp.Group):
         if any(grp.args.get(k) for k in ("rollup", "cube", "grouping_sets")):
             # GROUPING SETS / ROLLUP / CUBE add rows the query chooses: as a
@@ -2004,7 +2008,11 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
-    multiplied = _row_multiplication(q)
+    try:
+        multiplied = _row_multiplication(q)
+    except Exception as e:                                 # fail closed (fifth review)
+        return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
+                                  f"{type(e).__name__}", protected=True)
     if multiplied:
         return PhiDecision(False, f"PHI rule: {multiplied}. Rows of patient data may not be "
                                   f"multiplied or duplicated inside a query (fail closed); join "

@@ -2089,6 +2089,13 @@ ROW_JOIN_LEAKS = {
     "ROLLUP in a per-patient source": (
         "SELECT count(*) AS n FROM gold_patient p JOIN (SELECT patient_id FROM gold_condition "
         "GROUP BY patient_id, ROLLUP (condition_name)) t ON p.patient_id = t.patient_id"),
+    # the fifth review: a seeded sample is a filter the differencing checks don't see
+    "a seeded sample beside the total": (
+        "SELECT (SELECT sum(age_years) FROM gold_patient) AS c, (SELECT sum(age_years) FROM "
+        "gold_patient USING SAMPLE 14 ROWS (reservoir, 1)) AS d"),
+    "TABLESAMPLE on a join source": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c TABLESAMPLE 18 ROWS "
+        "ON p.patient_id = c.patient_id"),
     "one person's birth year": (
         "SELECT sum(year(CAST(birth_date AS DATE))) AS s FROM gold_patient p, range(1000000) t(i) "
         "WHERE p.age_years = 43 OR t.i = 0"),
