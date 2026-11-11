@@ -51,14 +51,18 @@ def worst_case_usd(planner: Any, max_attempts: int) -> float:
 
     out = getattr(planner, "_max_tokens", DEFAULT_MAX_OUTPUT_TOKENS) or DEFAULT_MAX_OUTPUT_TOKENS
 
-    def per_call(rate: dict) -> float:
-        return (PROMPT_TOKENS_WORST * rate["input"] + out * rate["output"]) / 1_000_000
+    def per_call(rate: dict, max_out: int) -> float:
+        return (PROMPT_TOKENS_WORST * rate["input"] + max_out * rate["output"]) / 1_000_000
 
-    # every call may be served by the fallback (item 8): price it at the dearer
-    worst = per_call(rate_for(getattr(planner, "provider", ""), getattr(planner, "_model", "")))
+    # every call may be served by the fallback (item 8): price it at the dearer,
+    # each with its own output cap (Anthropic's is 4000, the others' 800)
+    worst = per_call(
+        rate_for(getattr(planner, "provider", ""), getattr(planner, "_model", "")), out
+    )
     fb = getattr(planner, "fallback_provider", None)
     if fb and fb in PROVIDERS:
-        worst = max(worst, per_call(rate_for(fb, PROVIDERS[fb].get("model", ""))))
+        fb_out = PROVIDERS[fb].get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+        worst = max(worst, per_call(rate_for(fb, PROVIDERS[fb].get("model", "")), fb_out))
     return max_attempts * CALLS_PER_ATTEMPT * worst
 
 

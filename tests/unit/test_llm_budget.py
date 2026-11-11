@@ -126,3 +126,19 @@ def test_query_past_the_daily_cap_is_429_and_raw_sql_is_not_held_back(client):
     assert q.status_code == 200  # a guarded query that calls no model is not budgeted
     m = client.get("/metrics", headers={"X-API-Key": "test-key"})
     assert m.status_code == 200 and m.json()["llm_budget"]["max_runs"] == 0
+
+
+def test_the_fallback_is_priced_with_its_own_output_cap():
+    from nl_to_sql_planner import PROVIDERS
+
+    gemini = SimpleNamespace(
+        provider="gemini",
+        _model="gemini-flash-lite-latest",
+        _max_tokens=800,
+        fallback_provider="anthropic",
+    )
+    out = PROVIDERS["anthropic"]["max_tokens"]
+    rate = (4000 * 0.10 + out * 0.50) / 1e6  # haiku, the default ANTHROPIC_MODEL
+    assert worst_case_usd(gemini, 3) == pytest.approx(
+        6 * max(rate, (4000 * 0.15 + 800 * 0.60) / 1e6)
+    )
