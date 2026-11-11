@@ -126,6 +126,7 @@ def main() -> int:
         "PLANNER_FALLBACK": "none",
         "RATE_LIMIT_QUERY": "100000/minute",
         "RATE_LIMIT_READ": "100000/minute",
+        "LLM_DAILY_RUNS": "1000000",  # recorded answers: the daily model budget (item 37) is moot
         "TRACE_DB": os.path.join(tmp, "traces.sqlite"),
         "CHECKPOINT_DB": os.path.join(tmp, "cp.sqlite"),
         "APPROVALS_DB": os.path.join(tmp, "approvals.sqlite"),
