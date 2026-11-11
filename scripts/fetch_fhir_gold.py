@@ -41,6 +41,7 @@ PUBLISHING A NEW COPY (only needed when the build logic changes)
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import sys
@@ -57,6 +58,29 @@ DUCKDB_MAGIC_OFFSET = 8
 DUCKDB_MAGIC = b"DUCK"
 MIN_PLAUSIBLE_BYTES = 1_000_000       # the real artifact is ~43 MB
 DOWNLOAD_TIMEOUT_SEC = 60             # per-read timeout; see download()
+
+# Expected SHA-256 of each published Gold asset (audit item 51). A download
+# whose hash differs is refused, so a replaced or tampered asset never lands on
+# the deploy. FHIR_GOLD_SHA256 overrides (for a newly published asset); a URL
+# with no known hash is used with a loud warning that prints its hash to pin.
+PUBLISHED_SHA256 = {
+    "https://github.com/erjonb19/governed-clinical-agent/releases/download/"
+    "fhir-gold-20260901/fhir_gold.duckdb":
+        "606cd78992d821a8eed95a2d67a3670383c5197d6b558b6f18ce713649b79fda",
+}
+
+
+def expected_sha256(url: str) -> str | None:
+    pinned = (os.environ.get("FHIR_GOLD_SHA256") or "").strip().lower()
+    return pinned or PUBLISHED_SHA256.get(url)
+
+
+def sha256_of(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _looks_like_duckdb(path: str) -> tuple[bool, str]:
@@ -102,6 +126,15 @@ def download(url: str, dest: str) -> None:
         ok, detail = _looks_like_duckdb(tmp)
         if not ok:
             sys.exit(f"ERROR: downloaded file is not usable -- {detail}")
+        got, want = sha256_of(tmp), expected_sha256(url)
+        if want is None:
+            print(f"WARNING: no expected SHA-256 for this URL; got {got}. Pin it in "
+                  "PUBLISHED_SHA256 (scripts/fetch_fhir_gold.py) or FHIR_GOLD_SHA256.")
+        elif got != want:
+            sys.exit(f"ERROR: SHA-256 mismatch for {url}\n  expected {want}\n  got      {got}\n"
+                     "  The asset changed. Refusing it; publish a new release and pin its hash.")
+        else:
+            detail += ", SHA-256 verified"
 
         shutil.move(tmp, dest)
         print(f"OK: FHIR Gold in place ({detail})")
