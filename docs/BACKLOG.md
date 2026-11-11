@@ -327,9 +327,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **39. The audit trail is lost on every redeploy, is editable by the app, and has no backup** (Medium; security audit finding 10, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:154, 211-213 (JSONL under logs/); approval.py:110-145 (SQLite unless STATE_DB_URL)
   - Done when: Ship audit events to an append-only store (an INSERT-only table in the item-19 Postgres, or a log drain); set STATE_DB_URL on the deploy; a dated restore test in docs/runbooks.; a test or check shows it.
-- [ ] **40. Raw exception text reaches clients, including unauthenticated /health** (Medium; security audit finding 11, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **40. Raw exception text reaches clients, including unauthenticated /health** (Medium; security audit finding 11, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:664, :690 (planner error: {e}), :906/:958 (503), :966 (400); /health at app.py:548-573 returns planner_error, graph_error, approval_error and the gold_db path
   - Done when: A fixed message plus trace_id to clients; details in the trace; /health reports exception type only (as mcp_error already does).; a test or check shows it.
+  - Done 2026-11-11: `_public_error` (app.py). A planner error answers `planner error (<Type>); details are in trace <id>`, with the full text in the trace (both paths; the single-shot path now records it too) and never in the response. `/health`'s planner/graph/approval errors and a trace's checkpoint error are the exception type only, the full text goes to the server log at startup; `gold_db` in `/health` and `/datasets` is the file name, not the server path. The approval queue's own validation messages (unknown decision, missing edited_proposal, already decided) are kept: they are fixed text written for the reviewer. `tests/integration/test_query_graph.py`.
 - [ ] **41. The free-text question goes to the model providers unredacted** (Medium; security audit finding 12, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: nl_to_sql_planner (via app.py:651 and the graph)
   - Done when: An identifier pass before the planner call (item 23's redactor), log only the decision, and a "do not enter real patient data" notice in the UI.; a test or check shows it.

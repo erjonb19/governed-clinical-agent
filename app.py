@@ -189,6 +189,20 @@ def require_api_key(provided: Optional[str] = Security(_api_key_header)) -> None
 #                   once (free-tier rate limits); a request that waits longer
 #                   than RUN_QUEUE_WAIT_SEC for a slot gets 429 + Retry-After.
 _STATE: dict[str, Any] = {"runtime": None, "planner": None, "planner_error": None}
+
+
+def _public_error(e: BaseException) -> str:
+    """What a client may see of an exception (item 40): its type only. The
+    message can carry file paths, provider responses or configuration; it goes
+    to the server log and the trace, never into a response or /health."""
+    if isinstance(e, SystemExit):
+        return "SystemExit (not configured: see the server log)"
+    return type(e).__name__
+
+
+def _startup_failure(what: str, e: BaseException) -> str:
+    print(f"WARNING: {what} unavailable ({type(e).__name__}: {e})")
+    return _public_error(e)
 _APPROVAL_LOCK = threading.Lock()
 
 
@@ -265,7 +279,7 @@ async def lifespan(app: FastAPI):
         _STATE["planner"] = NLToSQLPlanner()
     except BaseException as e:  # SystemExit if no API key
         _STATE["planner"] = None
-        _STATE["planner_error"] = str(e)
+        _STATE["planner_error"] = _startup_failure("planner", e)
     # The planner graph behind /query (PLAN v2 D2): plan -> critic -> guard ->
     # execute, with bounded self-correction, every run checkpointed under its
     # trace id. Same runtime, same guard, same lock as /raw-sql. Optional: if it
@@ -279,7 +293,7 @@ async def lifespan(app: FastAPI):
                 checkpoint_db=os.environ.get("CHECKPOINT_DB"),   # read now, not at import
                 schema_docs={k: v["schema_doc"] for k, v in DATASETS.items()})
         except BaseException as e:
-            _STATE["graph_error"] = str(e)
+            _STATE["graph_error"] = _startup_failure("planner graph", e)
     # Approval agent is optional: /query and /raw-sql work without it. It needs
     # the planner (to draft) and the checkpointer (to persist the pause).
     try:
@@ -290,7 +304,7 @@ async def lifespan(app: FastAPI):
     except BaseException as e:
         _STATE["approval_agent"] = None
         _STATE["approval_store"] = ApprovalStore()   # queue is still readable
-        _STATE["approval_error"] = str(e)
+        _STATE["approval_error"] = _startup_failure("approvals", e)
     # The MCP server's tools over Streamable HTTP at /mcp (PLAN v2 item 5, D5),
     # behind MCP_API_KEY (falling back to API_KEY, D6). Optional: without the
     # mcp package /mcp answers 503 and /health says why. app.py already refused
@@ -582,7 +596,7 @@ def health() -> dict:
         "git_commit": versioning.git_commit(),
         # where approvals and checkpoints live (item 19); never the credentials
         "state_store": __import__("state_db").describe(),
-        "gold_db": GOLD_DB,
+        "gold_db": os.path.basename(GOLD_DB),   # file name only, never a server path (item 40)
         "gold_db_present": os.path.exists(GOLD_DB),
         "runtime_ready": _STATE.get("runtime") is not None,
         "planner_enabled": _STATE.get("planner") is not None,
@@ -651,7 +665,7 @@ def datasets(dataset: Optional[str] = None) -> dict:
                                 "available": os.path.exists(v["db"])}
                                for k, v in DATASETS.items()],
         "source": _DATASET_SOURCES.get(active, {}),
-        "gold_db": db,
+        "gold_db": os.path.basename(db),
         "gold_db_present": os.path.exists(db),
         "last_built": None,
         "tables": [],
@@ -726,10 +740,12 @@ def _query(req: QueryRequest) -> dict:
             tracer.event("answer", outcome="planner_error")
             version = versioning.answer_version(getattr(e, "metrics", None),
                                                 DATASETS[ds]["schema_doc"], planner)
-            tracer.end_trace(tid, status="error", decided_by="planner_error", **version)
+            tracer.end_trace(tid, status="error", decided_by="planner_error",
+                             error=f"{type(e).__name__}: {e}"[:500], **version)
             _audit_answer(False, "planner_error", version, tid)
             return {"allowed": False, "decided_by": "planner_error",
-                    "reason": f"planner error: {e}", "trace_id": tid, "version": version}
+                    "reason": f"planner error ({_public_error(e)}); details are in trace {tid}",
+                    "trace_id": tid, "version": version}
         out = run_governed_sql(sql, req.backend, ds)
         if not out.get("allowed") and getattr(metrics, "cache_key", None):
             import llm_cache          # refused or failed: do not replay it (item 6)
@@ -791,7 +807,8 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
                                             DATASETS[ds]["schema_doc"], agent.planner)
         _audit_answer(False, "planner_error", version, tid)
         return {"allowed": False, "decided_by": "planner_error",
-                "reason": f"planner error: {type(e).__name__}: {e}"[:500], "trace_id": tid,
+                "reason": f"planner error ({_public_error(e)}); details are in trace {tid}",
+                "trace_id": tid,
                 "version": version}
     calls = [st["metrics"] for st in state.get("trajectory") or []
              if st.get("step") in ("plan", "critic") and st.get("metrics")]
@@ -923,7 +940,7 @@ def get_trace(request: Request, trace_id: str) -> dict:
         try:
             trace["checkpoint"] = agent.state(trace_id)
         except Exception as e:
-            trace["checkpoint"] = {"error": str(e)[:200]}
+            trace["checkpoint"] = {"error": _public_error(e)}
     return trace
 
 

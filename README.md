@@ -722,7 +722,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `slo-miss` issue. `/metrics` reports p50/p95/p99 of model calls.
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
-  it lists are **not** fixed yet.
+  it lists are **not** fixed yet, except those ticked below.
+- [x] **No exception text to clients** (audit item 40): errors answer with their type and
+  the trace id; the details are in the trace and the server log; `/health` shows types only.
 
 ## Service level objectives
 
