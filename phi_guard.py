@@ -1356,12 +1356,17 @@ def _enclosing_select(node: exp.Expression) -> Optional[exp.Select]:
     return node
 
 
+# The only aggregates that are NOT differencing units: averages (owner,
+# 2026-11-11). Everything else counts as counting, fail closed -- a list of
+# counting aggregates missed count_star(), regr_count(), fsum()/kahan_sum() of 1s,
+# and var_pop/var_samp give n within one query (fourth review, 2026-11-11).
+_AVERAGE_AGGS = {"avg", "mean", "favg"}
+
+
 def _counting_agg(node: exp.Expression) -> bool:
-    """COUNT or SUM: an aggregate whose value counts people or rows (SUM of 1s
-    is a row count). AVG, MEDIAN, MIN/MAX, STDDEV... summarise values and are
-    not differencing partners on their own (owner, 2026-11-11)."""
-    return isinstance(node, (exp.Count, exp.Sum)) or (
-        isinstance(node, exp.Anonymous) and (node.name or "").lower() in ("count", "sum"))
+    """Can this aggregate's value be turned into a count of people or rows?
+    True for every aggregate except an average."""
+    return _agg_name(node) not in _AVERAGE_AGGS
 
 
 def _counts(sel: exp.Select) -> bool:

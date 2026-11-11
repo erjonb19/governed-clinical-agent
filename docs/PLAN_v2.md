@@ -384,7 +384,10 @@ client side.
 
 **Averages beside counts (owner, 2026-11-11), part of the accepted cross-query risk.** The
 region check and the refusal of JOIN / CTE / derived-table filters apply only to aggregates
-that COUNT people or rows (COUNT, SUM). An average, median, min/max or standard deviation is
+that can be turned into a count: every aggregate except an average (`avg`, `mean`, `favg`).
+A fourth review showed a list of counting aggregates misses row counters (`count_star()`,
+`regr_count`, `fsum` of 1s) and that `var_pop`/`var_samp` give n within one query, so only
+averages are exempt (fail closed). An average is
 not a differencing unit, so a query like "patients with a BMI above the average BMI" (a JOIN
 count beside an AVG subquery, FHIR eval `f5_above_avg_bmi_patients`) is answered. The
 trade-off is that two averages over nested sets, combined with the two set sizes, give the

@@ -1616,3 +1616,28 @@ def test_a_join_count_beside_another_count_is_still_refused():
     d = validate_query(F5_SHAPE.replace("SELECT AVG(value_num)", "SELECT COUNT(DISTINCT patient_id)"))
     assert not d.allowed and "cannot be checked" in d.reason, d.reason
 
+
+# fourth review (2026-11-11): row counters other than COUNT/SUM, and the
+# variance family, are counting aggregates too; only averages are exempt
+@pytest.mark.parametrize("agg", ["count_star()", "regr_count(age_at_encounter, age_at_encounter)",
+                                 "fsum(length_of_stay_days)", "kahan_sum(length_of_stay_days)"])
+def test_other_row_counters_are_units_too(encounter_tool, agg):
+    r = encounter_tool.execute({"sql": (
+        f"SELECT {agg} FILTER (WHERE gender = 'female') AS a, "
+        f"{agg} FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS b FROM gold_encounter")})
+    if not r.success:
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (30 in nums and 12 in nums), (agg, r.output["rows"])
+
+
+@pytest.mark.parametrize("agg", ["count_star()", "regr_count(age_at_encounter, age_at_encounter)",
+                                 "var_pop(age_at_encounter)", "stddev_samp(age_at_encounter)",
+                                 "fsum(length_of_stay_days)"])
+def test_a_hidden_filter_beside_a_non_average_aggregate_is_refused(agg):
+    d = validate_query(
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), we AS (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        f"SELECT (SELECT {agg} FROM w) AS a, (SELECT {agg} FROM we) AS b")
+    assert not d.allowed and "cannot be checked" in d.reason, (agg, d.reason)
+
