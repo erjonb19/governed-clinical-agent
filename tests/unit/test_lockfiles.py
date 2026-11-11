@@ -79,3 +79,16 @@ def test_no_workflow_installs_a_requirements_file_without_hashes():
                 pytest.fail(f"{os.path.basename(wf)}: {line.strip()}")
             if "pip install" in line and ".lock" in line:
                 assert "--require-hashes" in line, (wf, line)
+
+
+@pytest.mark.parametrize("req", sorted({r for reqs in LOCKS.values() for r in reqs}))
+def test_every_requirement_is_pinned_exactly(req):
+    # an unpinned or ranged line (`foo`, `foo>=1`) would pass the agreement check
+    # above and then be missing from the lock -- an ImportError on the next deploy
+    for line in _read(req).splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            assert re.fullmatch(r"[A-Za-z0-9._-]+(\[[^\]]*\])?==[^\s;]+(\s*;.*)?", line), (
+                req,
+                line,
+            )

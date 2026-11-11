@@ -724,7 +724,7 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
 - [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
-  Dockerfiles and every CI job install with `pip install --require-hashes -r <lock>`, so the whole
+  Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
   dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the
   locks with nothing newer than 7 days except the packages pinned by name.
 - [x] **Images pinned by digest** (audit item 50): base, Phoenix and CI Postgres images.
