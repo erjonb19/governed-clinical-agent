@@ -385,9 +385,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **47. No secret scanning in pre-commit or CI** (Medium; security audit finding 18, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: .pre-commit-config.yaml:6-24; no gitleaks/trufflehog job
   - Done when: gitleaks pre-commit hook and a CI job (`gitleaks detect --redact`), pinned.; a test or check shows it.
-- [ ] **48. Four workflows set no top-level permissions** (Medium; security audit finding 19, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **48. Four workflows set no top-level permissions** (Medium; security audit finding 19, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: tests.yml, eval-on-push.yml, mcp-e2e.yml, eval-fhir-manual.yml
   - Done when: `permissions: contents: read` at the top of each.; a test or check shows it.
+  - Done 2026-11-11: `permissions: contents: read` at the top of tests.yml, eval-on-push.yml, mcp-e2e.yml and eval-fhir-manual.yml (none of their jobs uses the token for anything else). `tests/unit/test_workflow_permissions.py` fails on any workflow without top-level permissions.
 - [ ] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: release.yml:25-26 (pip install … pytest unpinned, tests run under the write token); release.yml:33, data-refresh.yml:28 (checkout without persist-credentials: false)
   - Done when: contents:read at the workflow level, write only on the `gh release create` job; persist-credentials: false except where data-refresh pushes; pin pytest.; a test or check shows it.

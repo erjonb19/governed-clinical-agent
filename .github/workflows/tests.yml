@@ -14,6 +14,10 @@ on:
     - cron: "15 7 * * *"   # nightly, beside eval-nightly.yml (07:00)
   workflow_dispatch:
 
+# read-only token for every job (audit item 48); a job that needs more asks for it
+permissions:
+  contents: read
+
 jobs:
   pytest:
     runs-on: ubuntu-latest

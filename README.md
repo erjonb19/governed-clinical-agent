@@ -723,6 +723,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **Read-only workflow tokens** (audit item 48): every workflow declares top-level
+  permissions; the test, eval and MCP workflows run with `contents: read`.
 - [x] **Dependabot cooldown** (audit item 46): new versions wait 7 days before Dependabot
   proposes them; security updates are not delayed.
 - [x] **Row cap on set operations** (audit item 43): a UNION returns at most the row cap and

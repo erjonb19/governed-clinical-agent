@@ -12,6 +12,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# read-only token for every job (audit item 48); a job that needs more asks for it
+permissions:
+  contents: read
+
 jobs:
   mcp-e2e:
     runs-on: ubuntu-latest
