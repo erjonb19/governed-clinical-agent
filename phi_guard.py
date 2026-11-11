@@ -1782,6 +1782,31 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
     return out
 
 
+_ROW_MULTIPLIERS = {"unnest", "generate_subscripts", "explode", "posexplode", "explode_outer",
+                    "posexplode_outer", "inline", "json_each", "json_tree"}
+
+
+def _row_multiplier(tree: exp.Expression) -> Optional[str]:
+    """The name of a set-returning function used anywhere but as a FROM / JOIN
+    source, or None (item 71)."""
+    for node in tree.find_all(exp.Explode, exp.Unnest, exp.Anonymous, exp.Func):
+        if isinstance(node, exp.Explode):
+            name = "unnest"
+        elif isinstance(node, exp.Unnest):
+            if isinstance(node.parent, (exp.From, exp.Join, exp.Lateral)):
+                continue
+            name = "unnest"
+        else:
+            name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+            if name not in _ROW_MULTIPLIERS:
+                continue
+            if isinstance(node.parent, exp.Table) and isinstance(
+                    node.parent.parent, (exp.From, exp.Join, exp.Lateral)):
+                continue
+        return name
+    return None
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1796,6 +1821,17 @@ def check(tree: exp.Expression) -> PhiDecision:
                                findings=[fn], protected=True)
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
+    srf = _row_multiplier(tree)
+    if srf:
+        # backlog item 71 (2026-11-11): unnest() in a projection turns one row
+        # into as many as its argument says, so `unnest(CASE WHEN patient_id =
+        # 'p3' THEN range(1000000) ELSE [1] END)` under sum(age) gave back one
+        # person's exact age, and a count gave their zip -- in ONE scope that
+        # still covers 11 people. Set-returning functions are allowed only as a
+        # FROM source (constant arguments, checked below). Fail closed.
+        return PhiDecision(False, f"PHI rule: {srf}() returns rows, not a value, and is only "
+                                  f"allowed as a FROM source with constant arguments on patient "
+                                  f"data", findings=[srf], protected=True)
     unknown = _unknown_columns_by_alias(tree)
     if unknown:
         return _no_such_column(unknown)

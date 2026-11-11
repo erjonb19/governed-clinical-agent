@@ -1974,3 +1974,40 @@ def test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group(partial_
     for row in rows:
         a, b = row.get("a"), row.get("b")
         assert a is None or b is None or a - b == 0 or a - b >= 11, row
+
+
+# --- backlog item 71: set-returning functions outside FROM (2026-11-11) -------------
+# unnest() in a projection multiplies one person's rows: under sum(age) or
+# count(*) in ONE scope that still covers 11 people, the multiplier carried one
+# person's exact age or zip out (found by the third review of item 70).
+ROW_MULTIPLIER_LEAKS = {
+    "an age by a million-fold row multiplier": (
+        "SELECT sum(age_years) AS s FROM (SELECT patient_id, age_years, unnest(CASE WHEN "
+        "patient_id = 'p3' THEN range(1000000) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a zip by a zip-sized row multiplier": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, unnest(CASE WHEN patient_id = 'p3' THEN "
+        "range(CAST(postal_code AS INTEGER)) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a group size by a thousand-fold multiplier": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, unnest(CASE WHEN gender = 'male' THEN "
+        "range(1000) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a filter made of an empty list": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT count(*) FROM (SELECT patient_id, "
+        "unnest(CASE WHEN gender = 'female' THEN [1] ELSE [] END) AS u FROM gold_patient) t) AS b"),
+    "generate_subscripts in a projection": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, generate_subscripts([1, 2], 1) AS u "
+        "FROM gold_patient) t"),
+}
+
+
+@pytest.mark.parametrize("name", list(ROW_MULTIPLIER_LEAKS))
+def test_a_row_multiplier_outside_from_is_refused(tool, name):
+    r = tool.execute({"sql": ROW_MULTIPLIER_LEAKS[name]})
+    assert not r.success, (name, r.output)
+    assert "returns rows" in (r.error or ""), r.error
+
+
+def test_constant_set_returning_sources_in_from_still_run():
+    for sql in ("SELECT count(*) AS n FROM gold_patient, range(3) r",
+                "SELECT count(*) AS n FROM gold_patient, unnest([1, 2]) u(x)"):
+        d = validate_query(sql)
+        assert d.allowed, (sql, d.reason)

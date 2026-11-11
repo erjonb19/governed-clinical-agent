@@ -12,6 +12,8 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 
 ## Order of work (owner, 2026-11-08; updated 2026-11-11)
 
+**Urgent (2026-11-11): item 71** (one person's exact value through a row multiplier), ahead of everything, because it leaks a named person's data.
+
 **First (owner, 2026-11-11): the security audit's items, in the audit's proposed placement** (item 28 is done; `docs/SECURITY_AUDIT_2026-11-10.md`), after the open PRs #40 and #83:
 1. **30, 31**: the two Highs (DuckDB external access; Actions pinned to SHAs).
 2. **The Mediums that close exposure:** 33, 34, 35, 36, 37, 40, 43, then 44-51 (branch protection, `uv` lockfile and cooldown — `uv` approved, owner 2026-11-11 — Dependabot cooldown, secret scanning, workflow permissions, release permissions, image digests, checksums).
@@ -474,6 +476,10 @@ What real AI, data and software engineering teams would add, checked against the
   - Leak 2: `(SELECT count(*) FROM gold_patient)` beside `(SELECT count(DISTINCT patient_id) FROM gold_encounter)` -- the second table works as a filter (people with no encounter). The "units over different sources" refusal covers only filtered units. Likely on real data with gold_medication, gold_procedure or gold_condition.
   - Options: (a) refuse any grouped scope beside another aggregate scope, and any two aggregate scopes over different person tables (simple, fail closed; may refuse rate questions); (b) a runtime complement check: total minus the groups shown, and the difference between scopes over different tables, must be 0 or 11+ (keeps more questions, more code to attack).
   - Done when: the two strict xfails in `tests/security/test_phi_guard.py` (`test_a_total_beside_grouped_counts_cannot_recover_the_suppressed_group`, `test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group`) pass, every eval reference is still answered, and the FHIR eval comparison passes.
+
+- [x] **71. One person's exact value through a row multiplier in one query** (Critical for PHI; found 2026-11-11 by the third adversarial review of the item-70 fix; open on `main` since set-returning functions were first allowed). `unnest()` in a projection turned one row into as many as its argument said, so `sum(age_years)` over `unnest(CASE WHEN patient_id = 'p3' THEN range(1000000) ELSE [1] END)` gave back p3's exact age (43,000,662 = 43 x 10^6 + the others), a count gave p3's zip, and an empty list worked as a hidden filter -- each in ONE scope that still covered 11 people, so suppression never fired. Taken first, out of order, because it leaks one named person's value.
+  - Done 2026-11-11: in any query on patient data, a set-returning function (`unnest`, `generate_subscripts`, `explode`/`posexplode`, `inline`, `json_each`, `json_tree`) anywhere but as a FROM / JOIN source is refused (`phi_guard._row_multiplier`, fail closed); FROM sources keep the existing constant-arguments rule. `test_a_row_multiplier_outside_from_is_refused` (all five reproductions pass on `main` today and are refused here); all 28 FHIR eval references unaffected. Guard PR: needs the FHIR comparison before merge (rule 0).
+  - Still open, noted by the same review, no longer exploitable without a multiplier: an identifier or quasi-identifier compared with a literal inside a projection CASE is not refused (the WHERE/HAVING/ON/ORDER BY rule does not look at projections). An aggregate over a CASE is already refused (plain-argument rule), so no channel is known; worth closing with the same rule as WHERE.
 
 ## Later (keep, don't start)
 
