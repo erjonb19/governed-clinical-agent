@@ -723,6 +723,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet.
+- [x] **The agent's database connection is locked down** (audit item 30): no file or network
+  access and no extension loading, with the configuration locked so generated SQL cannot
+  undo it. This layer sits under the guard: even SQL that slipped past the guard could not
+  read the server's environment or call out (`tests/security/test_duckdb_lockdown.py`).
 
 ## Service level objectives
 

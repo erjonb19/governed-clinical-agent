@@ -302,9 +302,14 @@ What real AI, data and software engineering teams would add, checked against the
 
 ### Security audit items (item 28, 2026-11-10; the owner places them in the Order of work)
 
-- [ ] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: analytics_query_tool.py:155, :171, :204; data_backends.py:37
   - Done when: open every agent connection with enable_external_access, autoinstall and autoload off and lock_configuration on (lock last); a test that a cursor cannot SET it back or read a file with the guard bypassed; a test or check shows it.
+  - **Done 2026-11-11, in the PR "Item 30".**
+    - **The change:** every agent DuckDB connection now goes through `connect_agent_db` / `lock_down` in `analytics_query_tool.py`. That covers the tool's primary connection, its dataset connections and its seeded `:memory:` demo, plus the eval harness's `LocalDuckDBBackend`. Each one gets `enable_external_access`, `autoinstall_known_extensions` and `autoload_known_extensions` off, then `lock_configuration` on.
+    - **Why runtime SET:** DuckDB refuses a second connection to one file with a different connect-time config. Connections to one file share one instance, so the settings cover all of them.
+    - **Tests:** `tests/security/test_duckdb_lockdown.py`, 26 of them, run directly on the connections with the guard bypassed. They check that the settings are off and locked, that generated `SET`s cannot undo them, and that `read_text('/proc/self/environ')`, `read_csv` of a file or URL, and `ATTACH` are all refused. Queries through the guard still answer.
+
 - [ ] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: every .github/workflows/*.yml, ~52 `uses:` lines (e.g. tests.yml:22 actions/checkout@v7, codeql.yml:29 github/codeql-action/init@v4)
   - Done when: Pin each to `@<40-char sha> # vX.Y.Z`; Dependabot's github-actions updates (already on) keep SHAs current.; a test or check shows it.
