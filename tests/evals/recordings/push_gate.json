@@ -1,35 +1,59 @@
 {
-  "2e6e9b69cf4d75953ab4cfa35481b2563b67892ffb75951f2f0fbab305a58b80": {
+  "0a20d98269281042eeaaf9f7e40042537cbeb75d79aaaf4669fcb993a1171376": {
     "authored": true,
-    "case_id": "f1_count_patients",
-    "completion_tokens": 9,
+    "case_id": "f1_avg_age",
+    "completion_tokens": 16,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "a2ed5aff1bd53ae4",
+    "prompt_tokens": 1489,
+    "reference_sha256": "259475683975212a",
     "role": "plan",
-    "text": "SELECT count(*) AS n FROM gold_patient",
-    "user": "How many patients are in the dataset in total?"
+    "text": "SELECT round(avg(least(age_years, 90)), 1) AS v FROM gold_patient",
+    "user": "What is the average age of patients in years? Round to 1 decimal."
   },
-  "47a2cecfa28f9536b3a01f650d5df86445e8330bbbdd2dabdd3752c0f06d1698": {
+  "16d5c163629f3328d33395d2df0567d2d20b8bd3590da8bf020be8bddcf4965d": {
     "authored": true,
-    "case_id": "f2_avg_glucose",
-    "completion_tokens": 22,
+    "case_id": "f4_htn_and_obesity",
+    "completion_tokens": 58,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "4e56d849ab2563f4",
+    "prompt_tokens": 1489,
+    "reference_sha256": "e66f8022f5352de6",
     "role": "plan",
-    "text": "SELECT round(avg(value_num), 2) AS v FROM gold_observation WHERE measure_name = 'Glucose'",
-    "user": "What is the average Glucose value across all glucose observations? Round to 2 decimals."
+    "text": "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_observation o ON c.patient_id = o.patient_id WHERE c.condition_name = 'Hypertension' AND c.is_active AND o.measure_name = 'Body Mass Index' AND o.value_num > 30",
+    "user": "How many distinct patients have BOTH an active hypertension diagnosis AND a recorded Body Mass Index above 30?"
   },
-  "4e42adc0218ace4904c5d28410f7742e3e658d16557910b2b8a4c3978899ee5c": {
+  "48e916fbb222683e9714ba7ad3bcceb8ad4ceb9777f6fa74311699715ab3f858": {
+    "authored": true,
+    "case_id": "f4_chemoradiation_and_cisplatin",
+    "completion_tokens": 60,
+    "dataset": "fhir",
+    "model": "authored",
+    "prompt_tokens": 1489,
+    "reference_sha256": "17f16d6d2ccfbe30",
+    "role": "plan",
+    "text": "SELECT count(DISTINCT p.patient_id) AS n FROM gold_procedure p JOIN gold_medication m ON p.patient_id = m.patient_id WHERE p.procedure_name = 'Combined chemotherapy and radiation therapy (procedure)' AND m.medication_name LIKE '%Cisplatin%'",
+    "user": "How many distinct patients have BOTH a combined chemotherapy and radiation therapy procedure ('Combined chemotherapy and radiation therapy (procedure)') AND a Cisplatin medication order (medication_name contains 'Cisplatin')?"
+  },
+  "49bf279d0423179ae42957673b91f56c584f0a8591fa64d5ebf20bc9cf8a7d90": {
+    "authored": true,
+    "case_id": "f3_patients_90_plus",
+    "completion_tokens": 15,
+    "dataset": "fhir",
+    "model": "authored",
+    "prompt_tokens": 1489,
+    "reference_sha256": "8d499dee8ff4fdc1",
+    "role": "plan",
+    "text": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 90",
+    "user": "How many patients are aged 90 or older?"
+  },
+  "509d0d5af47d4920ba1c3fd2950d1921e7033cc44583e4b2c74ea953af2a18bb": {
     "authored": true,
     "case_id": "f3_top_conditions",
     "completion_tokens": 29,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
+    "prompt_tokens": 1489,
     "reference_sha256": "9d6ccc9ac4b576c0",
     "role": "plan",
     "text": "SELECT condition_name FROM gold_condition GROUP BY condition_name ORDER BY count(*) DESC, condition_name ASC LIMIT 5",
@@ -59,53 +83,17 @@
     "text": "SELECT count(*) AS n FROM gold_hospital_profile",
     "user": "How many hospitals are in the dataset in total?"
   },
-  "6ad92a4ca8db5c9b1c8994340d3d1c498c2e103653fae75f98782987553d8bd8": {
-    "authored": true,
-    "case_id": "f5_emer_rate_by_gender",
-    "completion_tokens": 26,
-    "dataset": "fhir",
-    "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "357d033b7f0fdd39",
-    "role": "plan",
-    "text": "SELECT round(100.0 * count(*) FILTER (WHERE class_code = 'EMER') / count(*), 2) AS v FROM gold_encounter",
-    "user": "What percent of all encounters are emergency encounters (class_code 'EMER')? Round to 2 decimals."
-  },
-  "6ea60f2475645d581e65e7370a98c971e48615ebb6c4335258f99ed64e1dc1ea": {
-    "authored": true,
-    "case_id": "f4_htn_and_obesity",
-    "completion_tokens": 58,
-    "dataset": "fhir",
-    "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "e66f8022f5352de6",
-    "role": "plan",
-    "text": "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_observation o ON c.patient_id = o.patient_id WHERE c.condition_name = 'Hypertension' AND c.is_active AND o.measure_name = 'Body Mass Index' AND o.value_num > 30",
-    "user": "How many distinct patients have BOTH an active hypertension diagnosis AND a recorded Body Mass Index above 30?"
-  },
-  "778d382d00198910c51826679fda710c427a5e372eabc04caeecc66940c7f3e7": {
+  "73e9de6c4b5097e9d5457c5f33d0aa6a4bcc812941b2779e7be52cb1075e50dc": {
     "authored": true,
     "case_id": "f3_top_medications",
     "completion_tokens": 40,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
+    "prompt_tokens": 1489,
     "reference_sha256": "aceaf30c9d2e12cd",
     "role": "plan",
     "text": "SELECT medication_name FROM gold_medication GROUP BY medication_name HAVING count(DISTINCT patient_id) >= 11 ORDER BY count(*) DESC, medication_name ASC LIMIT 5",
     "user": "Among medications ordered for at least 11 distinct patients, list the 5 most frequently ordered medication names, most frequent first."
-  },
-  "82e8dbb6a4b87535cf3aaad9da6f3c4de6ff98f135d1f876bbb008d0c27fc8b7": {
-    "authored": true,
-    "case_id": "f3_patients_90_plus",
-    "completion_tokens": 15,
-    "dataset": "fhir",
-    "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "8d499dee8ff4fdc1",
-    "role": "plan",
-    "text": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 90",
-    "user": "How many patients are aged 90 or older?"
   },
   "8334e10b515f967888a4606e9e8445e9dfc465b0c24098108051e694866e4302": {
     "authored": true,
@@ -119,13 +107,25 @@
     "text": "SELECT facility_id FROM gold_hospital_profile WHERE mspb_score IS NOT NULL ORDER BY mspb_score DESC, facility_id ASC LIMIT 5",
     "user": "List the facility_id of the 5 most expensive hospitals by MSPB score, highest first."
   },
-  "97b609dd33254ab444e33216ee202d49e1654b3c773c35504b487c935dd34b66": {
+  "99e036cb60cc66b551a2b6242fa4844d537d3a2aed19cd4014fce6716be792de": {
+    "authored": true,
+    "case_id": "f1_count_patients",
+    "completion_tokens": 9,
+    "dataset": "fhir",
+    "model": "authored",
+    "prompt_tokens": 1489,
+    "reference_sha256": "a2ed5aff1bd53ae4",
+    "role": "plan",
+    "text": "SELECT count(*) AS n FROM gold_patient",
+    "user": "How many patients are in the dataset in total?"
+  },
+  "9f966553dd38d68bd0f5b1c449d5baa2aae034c56f65350f6f00074eb7273c1f": {
     "authored": true,
     "case_id": "f5_above_avg_bmi_patients",
     "completion_tokens": 50,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
+    "prompt_tokens": 1489,
     "reference_sha256": "19ad7526635d376e",
     "role": "plan",
     "text": "SELECT count(DISTINCT patient_id) AS n FROM gold_observation WHERE measure_name = 'Body Mass Index' AND value_num > (SELECT avg(value_num) FROM gold_observation WHERE measure_name = 'Body Mass Index')",
@@ -143,41 +143,53 @@
     "text": "SELECT facility_id FROM gold_hospital_profile WHERE star_rating IS NOT NULL AND mspb_score IS NOT NULL AND mspb_score > 0 ORDER BY (star_rating / mspb_score) DESC, facility_id ASC LIMIT 5",
     "user": "Define value as star_rating divided by mspb_score. Among hospitals that have both a star rating and an MSPB score, list the facility_id of the 5 with the highest value ratio, highest first."
   },
-  "bf324f5891794a56aaf1e40e54b1f61b15a6e79279767762c4ebd57322370d7a": {
+  "b71ca8b141865a05de105f1a1725721ac168b0eb7e84f55ad2284387a16bc0ce": {
     "authored": true,
-    "case_id": "f1_avg_age",
-    "completion_tokens": 13,
+    "case_id": "f5_emer_rate_by_gender",
+    "completion_tokens": 26,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "a89a97834f13ffa2",
+    "prompt_tokens": 1489,
+    "reference_sha256": "357d033b7f0fdd39",
     "role": "plan",
-    "text": "SELECT round(avg(age_years), 1) AS v FROM gold_patient",
-    "user": "What is the average age of patients in years? Round to 1 decimal."
+    "text": "SELECT round(100.0 * count(*) FILTER (WHERE class_code = 'EMER') / count(*), 2) AS v FROM gold_encounter",
+    "user": "What percent of all encounters are emergency encounters (class_code 'EMER')? Round to 2 decimals."
   },
-  "cebbd6537c1af76841fa544f33ee56a6624beab73868dfae8759d95630519079": {
+  "c60f08884c6dc701b44a6189ab23fe060e92a1983196f50222df7597ae617edc": {
     "authored": true,
-    "case_id": "f4_chemoradiation_and_cisplatin",
-    "completion_tokens": 60,
+    "case_id": "f2_avg_glucose",
+    "completion_tokens": 22,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "17f16d6d2ccfbe30",
+    "prompt_tokens": 1489,
+    "reference_sha256": "4e56d849ab2563f4",
     "role": "plan",
-    "text": "SELECT count(DISTINCT p.patient_id) AS n FROM gold_procedure p JOIN gold_medication m ON p.patient_id = m.patient_id WHERE p.procedure_name = 'Combined chemotherapy and radiation therapy (procedure)' AND m.medication_name LIKE '%Cisplatin%'",
-    "user": "How many distinct patients have BOTH a combined chemotherapy and radiation therapy procedure ('Combined chemotherapy and radiation therapy (procedure)') AND a Cisplatin medication order (medication_name contains 'Cisplatin')?"
+    "text": "SELECT round(avg(value_num), 2) AS v FROM gold_observation WHERE measure_name = 'Glucose'",
+    "user": "What is the average Glucose value across all glucose observations? Round to 2 decimals."
   },
-  "daf41c7070718f4c0a3fcd8642b2b3ee3cf7d505c25b29f7919edfca16409ecb": {
+  "caca4b72d99a4ba433879ba587f6e18989731587ad3c199797d1c3e70b86eae6": {
     "authored": true,
-    "case_id": "f1_max_bmi",
-    "completion_tokens": 21,
+    "case_id": "f2_count_emergency_encounters",
+    "completion_tokens": 16,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "7a44ba8ff0abdd46",
+    "prompt_tokens": 1489,
+    "reference_sha256": "5361f9d99a09def8",
     "role": "plan",
-    "text": "SELECT max(value_num) AS v FROM gold_observation WHERE measure_name = 'Body Mass Index'",
-    "user": "What is the highest recorded Body Mass Index value?"
+    "text": "SELECT count(*) AS n FROM gold_encounter WHERE class_code = 'EMER'",
+    "user": "How many emergency encounters are there? Emergency encounters have class_code 'EMER'."
+  },
+  "d90fc1ac4fca11fcc9738368c25f4375e2a08018d590cb6003ddb99763d239a8": {
+    "authored": true,
+    "case_id": "f2_count_hypertension_patients",
+    "completion_tokens": 27,
+    "dataset": "fhir",
+    "model": "authored",
+    "prompt_tokens": 1489,
+    "reference_sha256": "d14451bdd0563124",
+    "role": "plan",
+    "text": "SELECT count(DISTINCT patient_id) AS n FROM gold_condition WHERE condition_name = 'Hypertension' AND is_active",
+    "user": "How many distinct patients have an active hypertension diagnosis?"
   },
   "db71491d9480719280140812954211cd8c254b7bf221e09eeb7655ca15bc11d0": {
     "authored": true,
@@ -191,29 +203,17 @@
     "text": "SELECT round(avg(mspb_score), 4) AS v FROM gold_hospital_profile WHERE state = 'PA' AND mspb_score IS NOT NULL",
     "user": "What is the average MSPB score for hospitals in Pennsylvania (PA)? Round to 4 decimals."
   },
-  "eb5cdf0a2f450ebbcca6d5fab5f4007c6987832fb88566699390c314e9720765": {
+  "ea85da001ec0cf0c6b6fd9001ac671390875c176e877b62888d99ec0856f2f55": {
     "authored": true,
-    "case_id": "f2_count_hypertension_patients",
-    "completion_tokens": 27,
+    "case_id": "f1_max_bmi",
+    "completion_tokens": 21,
     "dataset": "fhir",
     "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "d14451bdd0563124",
+    "prompt_tokens": 1489,
+    "reference_sha256": "7a44ba8ff0abdd46",
     "role": "plan",
-    "text": "SELECT count(DISTINCT patient_id) AS n FROM gold_condition WHERE condition_name = 'Hypertension' AND is_active",
-    "user": "How many distinct patients have an active hypertension diagnosis?"
-  },
-  "ede191090129ef053c19c383c95a27bd47afce1b09570c98d56a4fa3285ad710": {
-    "authored": true,
-    "case_id": "f2_count_emergency_encounters",
-    "completion_tokens": 16,
-    "dataset": "fhir",
-    "model": "authored",
-    "prompt_tokens": 1464,
-    "reference_sha256": "5361f9d99a09def8",
-    "role": "plan",
-    "text": "SELECT count(*) AS n FROM gold_encounter WHERE class_code = 'EMER'",
-    "user": "How many emergency encounters are there? Emergency encounters have class_code 'EMER'."
+    "text": "SELECT max(value_num) AS v FROM gold_observation WHERE measure_name = 'Body Mass Index'",
+    "user": "What is the highest recorded Body Mass Index value?"
   },
   "f875fe89c465b223dff2052ccb8d1c4c968bb7df6d5950ea905d2fcc13b1745a": {
     "authored": true,

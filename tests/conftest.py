@@ -104,3 +104,33 @@ def _no_answer_cache_by_default(tmp_path, monkeypatch):
         llm_cache.set_cache(None)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _fresh_llm_budget():
+    """The daily model budget is process-wide (item 37): every test starts with
+    a fresh, generous day, so the suite's many /query calls never exhaust it."""
+    import llm_budget
+
+    b = llm_budget.BUDGET
+    saved = (b.max_runs, b.max_usd, b.now)
+    b.max_runs, b.max_usd = 1_000_000, 1_000_000.0
+    b._day = ""
+    yield
+    b.max_runs, b.max_usd, b.now = saved
+    b._day = ""
+
+
+@pytest.fixture(autouse=True)
+def _fresh_auth_failures():
+    """Failed-key counts are process-wide (item 35); every test starts from none,
+    so one test's deliberate wrong keys never throttle the next one's."""
+    import auth_failures
+
+    f = auth_failures.FAILURES
+    saved = (f.per_window, f.window_sec, f.lockout, f.clock, f.audit)
+    f.reset()
+    f.lockout = False
+    yield
+    f.per_window, f.window_sec, f.lockout, f.clock, f.audit = saved
+    f.reset()
