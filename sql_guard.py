@@ -113,6 +113,7 @@ class Decision:
     phi_sql: Optional[str] = None
     phi_names: list = field(default_factory=list)
     phi_aggregate_root: bool = False
+    phi_age_outputs: list = field(default_factory=list)
     phi_suppressed: int = 0               # aggregates given the 11-person HAVING
 
 
@@ -302,6 +303,7 @@ def validate_query(sql: str,
                     phi_sql=phi.analysed_sql if phi.protected else None,
                     phi_names=phi.analysed_names if phi.protected else [],
                     phi_aggregate_root=phi.aggregate_root,
+                    phi_age_outputs=phi.age_outputs if phi.protected else [],
                     phi_suppressed=phi.suppressed_scopes)
 
 

@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -61,17 +61,15 @@ jobs:
 
   # Known vulnerabilities in the pinned dependencies (backlog item 16), from the
   # PyPA advisory database. A new advisory against a pin turns the push red.
-  # The two oauthlib advisories are ignored BY NAME until the owner decides:
-  # the fix (oauthlib 4.0.1) needs databricks-sql-connector 4.4.0 -> 4.9.0,
-  # which cannot be re-checked against a real workspace until the Databricks
-  # secrets exist (backlog item 10). Remove the --ignore-vuln lines with it.
+  # No advisories are ignored: databricks-sql-connector 4.9.0 (#90) allows
+  # oauthlib 4.0.1, which fixes the two that were ignored by name until then.
   pip-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -79,8 +77,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit==2.10.1
-          pip-audit --progress-spinner off -r requirements-api.txt -r requirements.txt \
-            --ignore-vuln PYSEC-2026-4114 --ignore-vuln CVE-2026-49272
+          pip-audit --progress-spinner off -r requirements-api.txt -r requirements.txt
 
   # The same suite against Postgres (backlog item 19): STATE_DB_URL points the
   # approval store and both graphs' checkpointers at a Postgres 16 service
@@ -107,9 +104,9 @@ jobs:
       # (tests/conftest.py), never STATE_DB_URL
       TEST_STATE_DB_URL: postgresql://ci:ci@localhost:5432/state_test
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -130,9 +127,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 

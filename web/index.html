@@ -996,7 +996,8 @@ async function loadReview(){
     if(r.status===401){ setConn("bad","Key needed");
       body.innerHTML=`<div class="card pad"><div class="pill deny">Not connected</div>
         <p style="margin:12px 0 0">The approval queue needs an access key.</p>
-        <button class="try" style="margin-top:8px" onclick="openDrawer()">Enter access key →</button></div>`;
+        <button class="try" style="margin-top:8px" id="revConnectBtn">Enter access key →</button></div>`;
+      $("revConnectBtn").onclick=openDrawer;
       setBadge(0); return; }
     d=await r.json();
   }catch(e){

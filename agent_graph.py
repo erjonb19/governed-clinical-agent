@@ -124,6 +124,7 @@ class AgentState(TypedDict, total=False):
     reason: Optional[str]
     safe_sql: Optional[str]
     row_count: Optional[int]
+    truncated: Optional[bool]   # more rows than the cap (item 43)
     columns: Optional[list]
     rows: Optional[list]
     trajectory: list                # every step, in order -- the agent's PATH
@@ -324,6 +325,7 @@ class GovernedAgentGraph:
         return {
             "allowed": True, "decided_by": "executed", "reason": None, "last_error": None,
             "safe_sql": out.get("safe_sql"), "row_count": out.get("row_count"),
+            "truncated": bool(out.get("truncated")),
             "columns": out.get("columns"), "backend_used": out.get("backend"),
             "trajectory": state.get("trajectory", []) + [step],
         }
