@@ -43,6 +43,33 @@ URL = ("https://synthetichealth.github.io/synthea-sample-data/"
 DEST_DIR = os.path.join("data", "synthea")
 ZIP_PATH = os.path.join(DEST_DIR, "synthea_sample_data_fhir_r4_sep2019.zip")
 
+# Expected SHA-256 of the fixed Sep-2019 zip (audit item 51). Not yet pinned:
+# the host is unreachable from the session that wrote this check. The next
+# download prints the hash; commit it here (or set SYNTHEA_SHA256), and from
+# then on a different file is refused.
+EXPECTED_SHA256: str | None = None
+
+
+def verify(path: str = ZIP_PATH) -> str:
+    """Hash the zip; exit on a mismatch with the pinned hash, if one is set."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 20):
+            h.update(chunk)
+    got = h.hexdigest()
+    want = (os.environ.get("SYNTHEA_SHA256") or EXPECTED_SHA256 or "").strip().lower()
+    if not want:
+        print(f"WARNING: Synthea zip SHA-256 is not pinned; got {got}. "
+              "Pin it as EXPECTED_SHA256 in fetch_synthea.py.")
+    elif got != want:
+        raise SystemExit(f"ERROR: Synthea zip SHA-256 mismatch\n  expected {want}\n"
+                         f"  got      {got}\n  Refusing it; delete {path} and re-download.")
+    else:
+        print(f"Synthea zip SHA-256 verified ({got[:12]}...)")
+    return got
+
 
 def download() -> None:
     os.makedirs(DEST_DIR, exist_ok=True)
@@ -154,6 +181,7 @@ def main():
         download()
     if not os.path.exists(ZIP_PATH):
         sys.exit("no zip on disk; run without --inspect first")
+    verify()   # before anything is extracted from it (audit item 51)
     bundle_dir = extract()
     inspect(bundle_dir)
     print(f"\nnext: build the flattener against these shapes")
