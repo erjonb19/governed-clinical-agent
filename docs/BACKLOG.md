@@ -305,6 +305,7 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: analytics_query_tool.py:155, :171, :204; data_backends.py:37
   - Done when: open every agent connection with enable_external_access, autoinstall and autoload off and lock_configuration on (lock last); a test that a cursor cannot SET it back or read a file with the guard bypassed; a test or check shows it.
+- [x] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - **Done 2026-11-11, in the PR "Item 30".**
     - **The change:** every agent DuckDB connection now goes through `connect_agent_db` / `lock_down` in `analytics_query_tool.py`. That covers the tool's primary connection, its dataset connections and its seeded `:memory:` demo, plus the eval harness's `LocalDuckDBBackend`. Each one gets `enable_external_access`, `autoinstall_known_extensions` and `autoload_known_extensions` off, then `lock_configuration` on.
     - **Why runtime SET:** DuckDB refuses a second connection to one file with a different connect-time config. Connections to one file share one instance, so the settings cover all of them.
@@ -313,6 +314,11 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: every .github/workflows/*.yml, ~52 `uses:` lines (e.g. tests.yml:22 actions/checkout@v7, codeql.yml:29 github/codeql-action/init@v4)
   - Done when: Pin each to `@<40-char sha> # vX.Y.Z`; Dependabot's github-actions updates (already on) keep SHAs current.; a test or check shows it.
+  - **Done 2026-11-11, in the PR "Item 31".**
+    - **The pins:** all 56 `uses:` lines in `.github/workflows/` are pinned to a full commit SHA with its `# vX.Y.Z`: checkout v7.0.1, setup-python v7.1.0, cache and cache/restore v6.1.0, upload-artifact v7.0.2, codeql-action v4.39.3. Each was resolved with `git ls-remote` and is the same commit the major tag pointed to, so CI runs what it ran before.
+    - **Updates:** Dependabot's existing `github-actions` entry updates SHA pins together with their comments.
+    - **Test:** `tests/unit/test_workflow_pins.py` fails on any unpinned `uses:`.
+
 - [ ] **32. Reviewer identity is a typed name; anyone can approve anything, including their own proposal** (Medium; security audit finding 3, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:417 (decided_by: str), app.py:932-966, approval_graph.py:275, web/index.html:1086
   - Done when: Reviewer from the verified key (item 22); until then mark decided_by "self-asserted"; refuse a decision by the proposer's key or by anyone but `assigned_to`; run the groundedness check on edited text.; a test or check shows it.

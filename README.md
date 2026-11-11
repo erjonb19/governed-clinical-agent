@@ -723,6 +723,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet.
+- [x] **CI actions pinned to commit SHAs** (audit item 31): no workflow runs a movable
+  action tag; `tests/unit/test_workflow_pins.py` fails on one that does.
 - [x] **The agent's database connection is locked down** (audit item 30): no file or network
   access and no extension loading, with the configuration locked so generated SQL cannot
   undo it. This layer sits under the guard: even SQL that slipped past the guard could not
