@@ -466,6 +466,7 @@ class GovernedResponse(BaseModel):
     sql: Optional[str] = None            # the SQL that was evaluated
     safe_sql: Optional[str] = None       # what the guard actually ran
     row_count: Optional[int] = None
+    truncated: Optional[bool] = None     # true when the result had more rows than the cap (item 43)
     columns: Optional[list] = None
     rows: Optional[list] = None
     planner_metrics: Optional[dict] = None   # per-call latency, tokens, est cost
@@ -517,6 +518,7 @@ def interpret_result(result: Any, sql: str) -> dict:
         "rows": out.get("rows"),
         "backend": out.get("backend"),
         "dataset": out.get("dataset"),
+        **({"truncated": True} if out.get("truncated") else {}),
     }
 
 
@@ -827,6 +829,8 @@ def _query_graph(req: QueryRequest, ds: str) -> dict:
         out.update(safe_sql=state.get("safe_sql"), row_count=state.get("row_count"),
                    columns=state.get("columns"), rows=state.get("rows"),
                    backend=state.get("backend_used"))
+        if state.get("truncated"):
+            out["truncated"] = True
         note = _unanswerable(out)
         if note:
             out["unanswerable"] = note
