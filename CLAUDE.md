@@ -28,6 +28,7 @@ upstream repo at Medtia/. The local folder still uses the old name.)
 
 ## Ground rules for the production-readiness work (owner, 2026-11-06)
 `docs/BACKLOG.md` is the source of truth for this work: always take the FIRST unchecked item in its "Order of work" (owner, 2026-11-08; item numbers never change, the order is set there). `docs/PROGRESS.md` gets one line per finished item.
+- **Rule 0, merging (owner, 2026-11-11).** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs (`sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`, or what the guard allows or refuses) also need the `eval-fhir-manual.yml` comparison to pass: the branch at least as accurate as `main`. Still ask the owner first, in chat, for anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (open those PRs and stop).
 - One backlog item per branch and PR. Keep each change small. Tests and evals must stay green.
 - Pull `main` from the `myfork` remote and push to `myfork`, never `origin`. (On the web, just work on this repo.)
 - Cost stays at $0: Render free plan, free tiers and self-hosted open-source tools only. Ask before adding anything that could bill.
