@@ -83,7 +83,8 @@ class QueryTimeout(Exception):
                          f"of large tables")
 
 
-def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
+def run_with_timeout(con, sql: str, seconds: float,
+                     max_rows: int | None = None) -> tuple[list, list]:
     """Execute and fetch on a DuckDB connection, interrupting it after
     `seconds`. DuckDB has no statement_timeout setting, so a timer calls
     con.interrupt(). `con` is a cursor of its own for this one execution
@@ -105,7 +106,11 @@ def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
     try:
         cur = con.execute(sql)
         cols = [d[0] for d in cur.description] if cur.description else []
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # max_rows (item 43): fetch at most one row past the cap. The guard adds
+        # or clamps a LIMIT on a plain SELECT, but not on a UNION / set
+        # operation, and fetchall() would pull all of it into memory.
+        raw = cur.fetchall() if max_rows is None else cur.fetchmany(max_rows + 1)
+        rows = [dict(zip(cols, r)) for r in raw]
         return cols, rows
     except duckdb.InterruptException:
         if fired[0]:
@@ -273,7 +278,8 @@ class AnalyticsQueryTool(BaseTool):
                     return ToolResult(success=False, output={"safe_sql": decision.safe_sql},
                                       error=f"Databricks backend not configured: "
                                             f"{self._databricks_error or 'set DATABRICKS_* env vars'}")
-                cols, rows = self._databricks.execute(decision.safe_sql)
+                cols, rows = self._databricks.execute(decision.safe_sql,
+                                                      max_rows=self._row_cap)
             else:
                 ds = params.get("dataset")
                 con = self._cons.get(ds, self._con) if ds else self._con
@@ -285,9 +291,15 @@ class AnalyticsQueryTool(BaseTool):
                 with self._cursor_lock:
                     cur = con.cursor()
                 try:
-                    cols, rows = run_with_timeout(cur, decision.safe_sql, query_timeout())
+                    cols, rows = run_with_timeout(cur, decision.safe_sql, query_timeout(),
+                                                  max_rows=self._row_cap)
                 finally:
                     cur.close()
+
+            # Never more than the row cap leaves this tool (item 43): the fetch
+            # stopped one row past it, so a longer result is marked truncated.
+            truncated = len(rows) > self._row_cap
+            rows = rows[: self._row_cap]
 
             # The PHI output check (phi_guard.py): trace every result column to
             # its sources and refuse PHI however it was renamed, and refuse
@@ -320,7 +332,8 @@ class AnalyticsQueryTool(BaseTool):
                     "safe_sql": decision.safe_sql,
                     "row_count": len(rows),
                     "columns": cols,
-                    "rows": rows[: self._row_cap],
+                    "rows": rows,
+                    **({"truncated": True, "row_cap": self._row_cap} if truncated else {}),
                     **({"phi_note": phi_note} if phi_note else {}),
                 },
             )
