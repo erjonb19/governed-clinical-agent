@@ -390,11 +390,178 @@ class _APIVersionPrefix:
             await send(message)
         await self.app(scope, receive, send_with_version)
 
+# Request size limits (security audit item 34, SECURITY_STANDARDS 7.1 / 8):
+# a question goes straight into a model prompt, so an unbounded one spends
+# quota (or money); reviewer text is stored. Over a field limit is a 422 from
+# validation; over the body limit is a 413 before anything is parsed.
+MAX_QUESTION_CHARS = 2_000
+MAX_SQL_CHARS = 20_000
+MAX_TEXT_CHARS = 20_000      # an approval reason or an edited proposal
+MAX_NAME_CHARS = 200         # names, decisions, datasets, backends
+MAX_BODY_BYTES = 64 * 1024
+
+
+class _BodySizeLimit:
+    """Refuse a request body over MAX_BODY_BYTES with 413 (item 34), by its
+    Content-Length or, for a chunked body without one, by counting the bytes
+    as they arrive. Runs before routing, so nothing parses an oversized body."""
+
+    def __init__(self, app, limit: int = MAX_BODY_BYTES):
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        for k, v in scope.get("headers") or []:
+            if k.lower() == b"content-length":
+                try:
+                    too_big = int(v) > self.limit
+                except ValueError:
+                    too_big = True
+                if too_big:
+                    return await self._refuse(send)
+        seen = 0
+        tripped = False
+        started = False
+
+        class _TooBig(Exception):
+            pass
+
+        async def counting_receive():
+            nonlocal seen, tripped
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > self.limit:
+                    tripped = True
+                    raise _TooBig()
+            return message
+
+        async def guarded_send(message):
+            # once the body is too big, whatever the app answers (FastAPI turns a
+            # failed body read into a 400) is dropped: the 413 below is the answer
+            nonlocal started
+            if tripped:
+                return
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            # _TooBig may arrive bare, wrapped in an ExceptionGroup (anyio task
+            # groups), or not at all (caught by the framework); the flag is the
+            # truth. Anything else, unrelated to the size, propagates.
+            if not tripped:
+                raise
+        if tripped and not started:
+            await self._refuse(send)
+
+    async def _refuse(self, send):
+        body = (b'{"detail":"request body too large (limit ' + str(self.limit).encode()
+                + b' bytes)"}')
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+def inline_scripts(html: str) -> list[str]:
+    """The text of each inline <script> (no src) in a page, exactly as the browser
+    hashes it for a CSP. An HTML parser, not a regex: a regex over HTML misses
+    forms such as `</script >` (CodeQL py/bad-tag-filter)."""
+    from html.parser import HTMLParser
+
+    class _Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._inline = False
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._inline = not any(k == "src" for k, _ in attrs)
+                self._buf = []
+
+        def handle_data(self, data):
+            if self._inline:
+                self._buf.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._inline:
+                self.bodies.append("".join(self._buf))
+                self._inline = False
+
+    p = _Scripts()
+    p.feed(html)
+    p.close()
+    return p.bodies
+
+
+class _SecurityHeaders:
+    """Security headers on every response (security audit item 33, SECURITY_
+    STANDARDS 9): no MIME sniffing, no referrer beyond the origin, no camera /
+    microphone / location, HSTS, and no framing. The UI page also gets a Content
+    Security Policy: scripts only from this origin plus the page's one inline
+    script, by its SHA-256 (computed from the file served, so they cannot
+    drift); no inline event handlers; no frames, objects or base-URI changes.
+    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
+    behind a flag is its own item (53)."""
+
+    COMMON = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),
+        (b"x-frame-options", b"DENY"),
+    ]
+    CSP_PATHS = ("/ui", "/v1/ui")
+
+    def __init__(self, app):
+        self.app = app
+        self.csp = self.build_csp().encode()
+
+    @staticmethod
+    def build_csp() -> str:
+        import base64
+        import hashlib
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
+                  encoding="utf-8") as f:
+            html = f.read()
+        hashes = " ".join(
+            "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+            + "'" for body in inline_scripts(html))
+        return ("default-src 'self'; script-src 'self' " + hashes + "; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+                "frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {k.lower() for k, _ in headers}
+                headers += [(k, v) for k, v in self.COMMON if k not in present]
+                if path in self.CSP_PATHS:
+                    headers.append((b"content-security-policy", self.csp))
+                message = {**message, "headers": headers}
+            await send(message)
+        await self.app(scope, receive, send_with_headers)
+
+
 # wire the limiter: state, the 429 handler, and the middleware that enforces it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
+app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
+app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
 
 
 class _MCPEndpoint:
@@ -456,32 +623,40 @@ def _ui():
 # Request / response models -- the contract.
 # ---------------------------------------------------------------------------
 class QueryRequest(BaseModel):
-    question: str = Field(..., examples=["Which hospitals give the best value, high quality and low cost?"])
-    backend: Optional[str] = Field(None, description="data backend: local (default) | databricks")
-    dataset: Optional[str] = Field(None, description="dataset: hospital | fhir")
+    question: str = Field(..., max_length=MAX_QUESTION_CHARS,
+                          examples=["Which hospitals give the best value, high quality and low cost?"])
+    backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="data backend: local (default) | databricks")
+    dataset: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="dataset: hospital | fhir")
 
 
 class SqlRequest(BaseModel):
-    sql: str = Field(..., examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
-    backend: Optional[str] = Field(None, description="data backend: local (default) | databricks")
-    dataset: Optional[str] = Field(None, description="dataset: hospital | fhir")
+    sql: str = Field(..., max_length=MAX_SQL_CHARS,
+                     examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
+    backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="data backend: local (default) | databricks")
+    dataset: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="dataset: hospital | fhir")
 
 
 class ProposeRequest(BaseModel):
-    question: str = Field(..., examples=["Which hospitals have the worst heart failure readmission rates?"])
-    capability: str = Field("brief.commit", examples=["brief.commit"])
+    question: str = Field(..., max_length=MAX_QUESTION_CHARS,
+                          examples=["Which hospitals have the worst heart failure readmission rates?"])
+    capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
 
 
 class DecisionRequest(BaseModel):
     """A reviewer's verdict on a pending proposal."""
-    decision: str = Field(..., examples=["approve"],
+    decision: str = Field(..., max_length=MAX_NAME_CHARS, examples=["approve"],
                           description="approve | reject | escalate | approve_with_edits")
-    decided_by: str = Field(..., examples=["e.brucaj"])
-    reason: Optional[str] = None
+    decided_by: str = Field(..., max_length=MAX_NAME_CHARS, examples=["e.brucaj"])
+    reason: Optional[str] = Field(None, max_length=MAX_TEXT_CHARS)
     edited_proposal: Optional[str] = Field(
-        None, description="required when decision is approve_with_edits")
+        None, max_length=MAX_TEXT_CHARS,
+        description="required when decision is approve_with_edits")
     escalated_to: Optional[str] = Field(
-        None, description="required when decision is escalate")
+        None, max_length=MAX_NAME_CHARS, description="required when decision is escalate")
 
 
 class GovernedResponse(BaseModel):
