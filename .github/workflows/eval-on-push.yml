@@ -23,6 +23,10 @@ on:
   push:
   workflow_dispatch:        # allows manual runs from the Actions tab
 
+# read-only token for every job (audit item 48); a job that needs more asks for it
+permissions:
+  contents: read
+
 jobs:
   quick-eval:
     runs-on: ubuntu-latest
