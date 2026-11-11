@@ -83,7 +83,16 @@ class QueryTimeout(Exception):
                          f"of large tables")
 
 
-def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
+def _error_type(text: str | None) -> str | None:
+    """'IOException: Could not set lock on file "/srv/x.duckdb"' -> 'IOException'."""
+    if not text:
+        return text
+    head = text.split(":", 1)[0].strip()
+    return head if head.isidentifier() else "error"
+
+
+def run_with_timeout(con, sql: str, seconds: float,
+                     max_rows: int | None = None) -> tuple[list, list]:
     """Execute and fetch on a DuckDB connection, interrupting it after
     `seconds`. DuckDB has no statement_timeout setting, so a timer calls
     con.interrupt(). `con` is a cursor of its own for this one execution
@@ -105,7 +114,11 @@ def run_with_timeout(con, sql: str, seconds: float) -> tuple[list, list]:
     try:
         cur = con.execute(sql)
         cols = [d[0] for d in cur.description] if cur.description else []
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # max_rows (item 43): fetch at most one row past the cap. The guard adds
+        # or clamps a LIMIT on a plain SELECT, but not on a UNION / set
+        # operation, and fetchall() would pull all of it into memory.
+        raw = cur.fetchall() if max_rows is None else cur.fetchmany(max_rows + 1)
+        rows = [dict(zip(cols, r)) for r in raw]
         return cols, rows
     except duckdb.InterruptException:
         if fired[0]:
@@ -142,6 +155,51 @@ def describe_execution_error(e: Exception) -> str:
                 f"format in the schema.")
     return redact_values(text)
 
+# The agent's DuckDB connections (security audit item 30, SECURITY_STANDARDS
+# 14.2): no file or network access, no extension installs or autoloads, and the
+# configuration locked so generated SQL cannot SET it back. The guard already
+# refuses file readers and settings; this is the layer under it, so a guard
+# escape still reaches neither /proc/self/environ nor the network. json, icu and
+# parquet are built into the wheel and stay available; the database file itself
+# is opened by the connection, which external access does not govern.
+#
+# Applied with SET after connecting, not as connect-time config: DuckDB refuses
+# a second connection to the same file in one process with a different config,
+# and every connection to one file shares one database instance -- so these
+# settings (global) cover every connection to it, the eval harness's reference
+# backend included.
+# Any setting these connections need (a future memory_limit, threads,
+# timezone...) must be added HERE: once lock_down runs, nothing can change it.
+AGENT_DB_SETTINGS = (
+    ("autoinstall_known_extensions", "false"),
+    ("autoload_known_extensions", "false"),
+    ("enable_external_access", "false"),
+)
+
+
+def lock_down(con) -> None:
+    """Apply AGENT_DB_SETTINGS and lock the configuration. Idempotent: an
+    instance another connection already locked is left as it is, after
+    checking it really is locked down."""
+    for name, value in AGENT_DB_SETTINGS:
+        current = str(con.execute(f"SELECT current_setting('{name}')").fetchone()[0]).lower()
+        if current != value:
+            con.execute(f"SET {name} = {value}")
+    if str(con.execute("SELECT current_setting('lock_configuration')").fetchone()[0]).lower() \
+            != "true":
+        con.execute("SET lock_configuration = true")
+
+
+def connect_agent_db(path: str, read_only: bool, seed=None):
+    """Open a DuckDB connection for agent queries, locked down (lock_down).
+    `seed(con)` runs first (demo tables in :memory:)."""
+    con = duckdb.connect(path, read_only=read_only)
+    if seed is not None:
+        seed(con)
+    lock_down(con)
+    return con
+
+
 class AnalyticsQueryTool(BaseTool):
     def __init__(self, db_path: str = ":memory:", seed_demo: bool = True,
                  row_cap: int = 1000, ledger=None, db_paths: Dict[str, str] | None = None):
@@ -154,7 +212,9 @@ class AnalyticsQueryTool(BaseTool):
             # read-only unless it is to be seeded with demo tables: the agent's
             # path never writes, and a function slipping the guard (checkpoint())
             # must not be able to either
-            self._con = duckdb.connect(db_path, read_only=not seed_demo and db_path != ":memory:")
+            self._con = connect_agent_db(
+                db_path, read_only=not seed_demo and db_path != ":memory:",
+                seed=(lambda c: self._seed_demo_gold(c)) if seed_demo else None)
         except Exception as e:
             # The PRIMARY connection failing is what actually takes the API
             # server down at startup: app.py passes the hospital Gold here, and
@@ -167,13 +227,11 @@ class AnalyticsQueryTool(BaseTool):
             # -- opened read-only below -- still serve. The reason is kept so
             # the visibility endpoints can say what happened rather than
             # presenting a locked warehouse as an empty one.
-            self._primary_error = str(e)
+            self._primary_error = f"{type(e).__name__}: {e}"
             print(f"WARNING: primary database {db_path!r} could not be opened "
                   f"({e}); starting with an empty in-memory database.")
-            self._con = duckdb.connect(":memory:")
+            self._con = connect_agent_db(":memory:", read_only=False)
             seed_demo = False
-        if seed_demo:
-            self._seed_demo_gold()
         # Multi-dataset support: one tool can serve several Gold databases (e.g.
         # hospital + clinical), chosen per request via params['dataset']. The
         # default connection above stays the fallback, so existing callers that
@@ -203,7 +261,7 @@ class AnalyticsQueryTool(BaseTool):
                 # treatment. /datasets then reports it unavailable, exactly as
                 # it does for one that was never built.
                 try:
-                    self._cons[name] = duckdb.connect(path, read_only=True)
+                    self._cons[name] = connect_agent_db(path, read_only=True)
                 except Exception as e:      # locked, corrupt, wrong version
                     self._dataset_errors[name] = str(e)
                     print(f"WARNING: dataset {name!r} at {path} could not be "
@@ -223,7 +281,7 @@ class AnalyticsQueryTool(BaseTool):
                 from data_backends import DatabricksBackend
                 self._databricks = DatabricksBackend()
             except BaseException as e:   # SystemExit (creds) / ImportError (driver)
-                self._databricks_error = str(e)
+                self._databricks_error = f"{type(e).__name__}: {e}"
         self._default_backend = "databricks" if (want_dbx and self._databricks) else "local"
 
     @property
@@ -243,10 +301,13 @@ class AnalyticsQueryTool(BaseTool):
         return {
             "default": self._default_backend,
             "available": ["local"] + (["databricks"] if self._databricks else []),
-            "local_db": self._db_path,
+            # /health shows these unauthenticated (item 40): a file name, not a
+            # server path, and the error's type, not its text (which carries
+            # paths or connection details; the startup log keeps it)
+            "local_db": os.path.basename(self._db_path) if self._db_path else self._db_path,
             "databricks_configured": self._databricks is not None,
-            "databricks_error": self._databricks_error,
-            "local_db_error": self._primary_error,
+            "databricks_error": _error_type(self._databricks_error),
+            "local_db_error": _error_type(self._primary_error),
         }
 
     def execute(self, params: Dict[str, Any]) -> ToolResult:
@@ -272,8 +333,9 @@ class AnalyticsQueryTool(BaseTool):
                 if self._databricks is None:
                     return ToolResult(success=False, output={"safe_sql": decision.safe_sql},
                                       error=f"Databricks backend not configured: "
-                                            f"{self._databricks_error or 'set DATABRICKS_* env vars'}")
-                cols, rows = self._databricks.execute(decision.safe_sql)
+                                            f"{_error_type(self._databricks_error) or 'set DATABRICKS_* env vars'}")
+                cols, rows = self._databricks.execute(decision.safe_sql,
+                                                      max_rows=self._row_cap)
             else:
                 ds = params.get("dataset")
                 con = self._cons.get(ds, self._con) if ds else self._con
@@ -285,9 +347,15 @@ class AnalyticsQueryTool(BaseTool):
                 with self._cursor_lock:
                     cur = con.cursor()
                 try:
-                    cols, rows = run_with_timeout(cur, decision.safe_sql, query_timeout())
+                    cols, rows = run_with_timeout(cur, decision.safe_sql, query_timeout(),
+                                                  max_rows=self._row_cap)
                 finally:
                     cur.close()
+
+            # Never more than the row cap leaves this tool (item 43): the fetch
+            # stopped one row past it, so a longer result is marked truncated.
+            truncated = len(rows) > self._row_cap
+            rows = rows[: self._row_cap]
 
             # The PHI output check (phi_guard.py): trace every result column to
             # its sources and refuse PHI however it was renamed, and refuse
@@ -301,6 +369,8 @@ class AnalyticsQueryTool(BaseTool):
                     return ToolResult(success=False,
                                       output={"safe_sql": decision.safe_sql, "backend": backend},
                                       error=f"DENIED by sql_guard: {refusal}")
+                # Safe Harbor: an age of 90 or more is shown as "90+"
+                rows = phi_guard.cap_age_values(decision, cols, rows)
                 if decision.phi_suppressed:
                     phi_note = (f"groups of fewer than {phi_guard.MIN_CELL} people are not "
                                 f"shown (CMS small-cell rule)")
@@ -320,7 +390,8 @@ class AnalyticsQueryTool(BaseTool):
                     "safe_sql": decision.safe_sql,
                     "row_count": len(rows),
                     "columns": cols,
-                    "rows": rows[: self._row_cap],
+                    "rows": rows,
+                    **({"truncated": True, "row_cap": self._row_cap} if truncated else {}),
                     **({"phi_note": phi_note} if phi_note else {}),
                 },
             )
@@ -332,8 +403,9 @@ class AnalyticsQueryTool(BaseTool):
                               error=f"query execution failed: {describe_execution_error(e)}")
 
     # -- demo data only; delete when you point at real Gold -----------------
-    def _seed_demo_gold(self) -> None:
-        self._con.execute("""
+    def _seed_demo_gold(self, con=None) -> None:
+        con = con if con is not None else self._con
+        con.execute("""
             CREATE TABLE gold_utilization (
                 region VARCHAR, year INTEGER,
                 admits_per_1k DOUBLE, ed_per_1k DOUBLE, readmit_per_1k DOUBLE
