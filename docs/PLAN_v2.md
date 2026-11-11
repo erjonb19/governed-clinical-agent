@@ -400,7 +400,7 @@ live cases `adv_diff_suppressed_group`, `adv_rare_singling_out`,
 
 | # | Class | Result on the fixture | Smallest fix |
 |---|---|---|---|
-| 1 | Differencing | Leaked: six one-query shapes gave a suppressed group back (total minus a FILTERed count, side by side, scalar subqueries, CTEs, a UNION sum). **Closed within one query** (owner's rule, 2026-11-03): a FILTERed count is nulled unless it and its complement in the group each cover 11; with two or more aggregate scopes in a query, each WHERE-filtered scope also needs its complement to cover 11 (a HAVING on a scalar count of the people the filter leaves out); a grouped one there is refused. Cost: a split is now hidden when EITHER side is under 11 (fixture: 12 women are no longer shown beside 3 men). Across two queries it always will | Across queries: options below |
+| 1 | Differencing | Leaked: six one-query shapes gave a suppressed group back (total minus a FILTERed count, side by side, scalar subqueries, CTEs, a UNION sum). **Closed within one query** (owner's rule, 2026-11-03): a FILTERed count is nulled unless it and its complement in the group each cover 11; with two or more aggregate scopes in a query, each WHERE-filtered scope also needs its complement to cover 11 (a HAVING on a scalar count of the people the filter leaves out); a grouped one there is refused. Cost: a split is now hidden when EITHER side is under 11 (fixture: 12 women are no longer shown beside 3 men). Across two queries it always will. **Nested filters closed 2026-11-09 (owner's decision):** each scope's complement was checked against the whole table, so "women" minus "women with an ER visit" (15 - 12) still gave 3; now, with 2-3 filtered units in one query (a WHERE scope or a FILTER aggregate), every region of their Venn diagram over the unfiltered rows must hold 0 or 11+ people, and so must the people per in/out row pattern for row counts. That implies the owner's pair rule, which alone was shown insufficient: total minus two disjoint units passed every pair. Shapes it cannot write are refused: more than 3 units, units over different sources, a grouped unit beside another scope's, and, with 2+ aggregate scopes, a row filter outside WHERE/FILTER (a JOIN, a filtered derived table or CTE) Also refused (second review, same day): ROLLUP/CUBE/GROUPING SETS over patient rows, and with 2+ aggregate scopes, grouped scopes at different grain or a grouped scope beside a filtered ungrouped one (grouped scopes on the same keys beside unfiltered totals still run, owner 2026-11-07). Also refused (third review, 2026-11-10): an aggregate over the optional side of an outer join (a LEFT JOIN's ON clause is a filter no WHERE shows; RIGHT/FULL joins are refused outright), and any unexpected error in this check denies the query. With 2+ aggregate scopes, a grouped scope must also read base tables directly and group only by columns constant per person (gender, state, gold_patient's columns): a GROUP BY class_code beside a total, or a column renamed in a derived table, is refused (sixth review, 2026-11-11). | Across queries: options below |
 | 2 | Hashed / encoded identifiers | Refused (md5, sha256, hash, reverse, base64, hex, initial plus birth year, as output, GROUP BY key, COUNT DISTINCT or WHERE) | none |
 | 3 | Month / week date grouping | Refused when the month or week is SHOWN. **Gap found:** `GROUP BY month(date)` with only `count(*)` selected is allowed: one unlabelled count per month, each held to 11 people (strict xfail, `HIDDEN_DATE_KEYS`) | apply the year-only rule to GROUP BY keys as to output columns |
 | 4 | Rare-condition singling out | Refused at row level; aggregates (age by sex, min/max age at onset, FILTERed average) come back suppressed | none |
@@ -413,6 +413,26 @@ THAT model, and this server cannot stop it: rows are the product. The guard
 still rules on every query the client sends, so injected text can change what
 is asked, never what is allowed. Treat result rows as untrusted data on the
 client side.
+
+**Averages beside counts (owner, 2026-11-11), part of the accepted cross-query risk.** The
+region check and the refusal of JOIN / CTE / derived-table filters apply only to aggregates
+that can be turned into a count: every aggregate except an average (`avg`, `mean`, `favg`).
+A fourth review showed a list of counting aggregates misses row counters (`count_star()`,
+`regr_count`, `fsum` of 1s) and that `var_pop`/`var_samp` give n within one query, so only
+averages are exempt (fail closed). An average is
+not a differencing unit, so a query like "patients with a BMI above the average BMI" (a JOIN
+count beside an AVG subquery, FHIR eval `f5_above_avg_bmi_patients`) is answered. The
+trade-off is that two averages over nested sets, combined with the two set sizes, give the
+sum of the values the inner set leaves out, and with one person left out, that person's
+value. The sizes are not available inside one such query, because counting both sets is
+refused. So this needs counts from separate queries: it is the same accepted cross-query
+risk as below, not a new single-query leak. **One limit (fifth review, same day):** with two or more FILTERED
+averages and one total count, the means alone solve for a small group's size and mean inside
+one query: total, the average of everyone, of women, of men, of women with an ER visit and of
+everyone else gave the 3 women without one and their mean age. So when a query holds two or
+more filtered averages (narrowed by a WHERE, a FILTER or a hidden filter), the averages are
+units too and the region check covers them. A single average beside counts stays answered. `test_a_join_count_beside_an_average_is_answered`
+and `test_a_join_count_beside_another_count_is_still_refused` pin both sides.
 
 **Single-query complementary suppression is still open (backlog item 70, 2026-11-11).**
 The seventh adversarial review of #83 found that `count(all) - sum(visible groups)`
