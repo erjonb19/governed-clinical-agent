@@ -334,3 +334,10 @@ def test_health_reports_startup_errors_by_type_only(make_client):
     assert "secret" not in blob and "/srv" not in blob, h
     assert h["planner_error"].startswith("SystemExit") and h["approval_error"] == "ValueError"
     assert "/" not in h["gold_db"], "a file name, never a server path"
+    tool = app_module._STATE["analytics_tool"]
+    tool._primary_error = f"IOException: {SECRETISH}"
+    tool._databricks_error = f"SystemExit: {SECRETISH}"
+    b = c.get("/health").json()["backends"]
+    assert b["local_db_error"] == "IOException" and b["databricks_error"] == "SystemExit"
+    assert "/" not in (b["local_db"] or ""), b
+    assert "secret" not in json.dumps(b)

@@ -193,3 +193,10 @@ def test_an_empty_denominator_is_unavailable_not_a_number(fid, rows):
     f = next(x for x in findings.FINDINGS if x["id"] == fid)
     with pytest.raises(ValueError):
         f["render"](rows)
+
+
+def test_an_unexpected_failure_shows_its_type_not_its_text():
+    def boom(sql):
+        raise OSError("/srv/app/medallion/hospital_gold.duckdb: permission denied")
+    cards = findings.compute(boom, "2026-10-04")
+    assert cards[0]["status"] == "unavailable" and cards[0]["reason"] == "OSError"

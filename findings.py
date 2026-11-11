@@ -132,6 +132,10 @@ FINDINGS = [
 ]
 
 
+class _Refused(Exception):
+    """The guarded path refused a finding's SQL; its reason is the guard's text."""
+
+
 def compute(run_sql: Callable[[str], dict], vintage: Optional[str]) -> list[dict]:
     """Every finding, each computed or explained. `run_sql` is the guarded path
     (returns the API's response dict: allowed, decided_by, reason, rows)."""
@@ -144,10 +148,13 @@ def compute(run_sql: Callable[[str], dict], vintage: Optional[str]) -> list[dict
             for sql in f["sql"]:
                 r = run_sql(sql)
                 if not r.get("allowed"):
-                    raise RuntimeError(f"{r.get('decided_by')}: {r.get('reason')}")
+                    raise _Refused(f"{r.get('decided_by')}: {r.get('reason')}")
                 results.append(r.get("rows") or [])
             card.update(f["render"](results), status="ok")
         except Exception as e:
-            card.update(status="unavailable", reason=f"{type(e).__name__}: {e}"[:300])
+            # a refusal is the guard's own fixed text; any other failure shows
+            # its type only (item 40). A failed finding shows no number either way.
+            reason = str(e) if isinstance(e, _Refused) else type(e).__name__
+            card.update(status="unavailable", reason=reason[:300])
         out.append(card)
     return out
