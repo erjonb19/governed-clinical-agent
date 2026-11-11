@@ -134,3 +134,12 @@ def test_a_small_chunked_body_still_works(client):
         headers={**H, "Content-Type": "application/json"},
     )
     assert r.status_code == 200 and r.json()["allowed"] is True
+
+
+def test_a_413_still_carries_the_security_headers(client):
+    c, app_module = client
+    r = c.post(
+        "/raw-sql", json={"sql": "SELECT 1 -- " + "x" * (app_module.MAX_BODY_BYTES + 10)}, headers=H
+    )
+    assert r.status_code == 413
+    assert r.headers.get("x-content-type-options") == "nosniff"

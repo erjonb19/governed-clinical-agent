@@ -443,12 +443,100 @@ class _BodySizeLimit:
         await send({"type": "http.response.body", "body": body})
 
 
+def inline_scripts(html: str) -> list[str]:
+    """The text of each inline <script> (no src) in a page, exactly as the browser
+    hashes it for a CSP. An HTML parser, not a regex: a regex over HTML misses
+    forms such as `</script >` (CodeQL py/bad-tag-filter)."""
+    from html.parser import HTMLParser
+
+    class _Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._inline = False
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._inline = not any(k == "src" for k, _ in attrs)
+                self._buf = []
+
+        def handle_data(self, data):
+            if self._inline:
+                self._buf.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._inline:
+                self.bodies.append("".join(self._buf))
+                self._inline = False
+
+    p = _Scripts()
+    p.feed(html)
+    p.close()
+    return p.bodies
+
+
+class _SecurityHeaders:
+    """Security headers on every response (security audit item 33, SECURITY_
+    STANDARDS 9): no MIME sniffing, no referrer beyond the origin, no camera /
+    microphone / location, HSTS, and no framing. The UI page also gets a Content
+    Security Policy: scripts only from this origin plus the page's one inline
+    script, by its SHA-256 (computed from the file served, so they cannot
+    drift); no inline event handlers; no frames, objects or base-URI changes.
+    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
+    behind a flag is its own item (53)."""
+
+    COMMON = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),
+        (b"x-frame-options", b"DENY"),
+    ]
+    CSP_PATHS = ("/ui", "/v1/ui")
+
+    def __init__(self, app):
+        self.app = app
+        self.csp = self.build_csp().encode()
+
+    @staticmethod
+    def build_csp() -> str:
+        import base64
+        import hashlib
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
+                  encoding="utf-8") as f:
+            html = f.read()
+        hashes = " ".join(
+            "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+            + "'" for body in inline_scripts(html))
+        return ("default-src 'self'; script-src 'self' " + hashes + "; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+                "frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {k.lower() for k, _ in headers}
+                headers += [(k, v) for k, v in self.COMMON if k not in present]
+                if path in self.CSP_PATHS:
+                    headers.append((b"content-security-policy", self.csp))
+                message = {**message, "headers": headers}
+            await send(message)
+        await self.app(scope, receive, send_with_headers)
+
+
 # wire the limiter: state, the 429 handler, and the middleware that enforces it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
+app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
 
 
 class _MCPEndpoint:

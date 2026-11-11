@@ -135,9 +135,10 @@ def test_3_approval_commits_and_records_the_reviewer(page, server):
     card = _propose(page, PROPOSE)
     assert "awaiting decision" in card.inner_text().lower()
     card.locator("button[data-act='approve']").click()
-    page.wait_for_function(
-        f"!document.querySelector('#queue') || ![...document.querySelectorAll('#queue .card')]"
-        f".some(c => c.innerText.includes({PROPOSE!r}))", timeout=60_000)
+    # a selector wait, not wait_for_function: the page's CSP (item 33) forbids
+    # evaluating JavaScript from a string, which is what wait_for_function does
+    page.wait_for_selector(f"#queue .card:has-text(\"{PROPOSE}\")", state="detached",
+                           timeout=60_000)
     # the decision is on the trace, under the reviewer's name
     traces = httpx.get(server + "/traces", headers={"X-API-Key": KEY}).json()["traces"]
     t = next(t for t in traces if t["name"] == "approval" and t["attrs"].get("question") == PROPOSE)
