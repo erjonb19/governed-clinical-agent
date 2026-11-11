@@ -1594,16 +1594,343 @@ def test_a_grouping_the_check_cannot_correlate_is_refused():
     assert not d.allowed and "cannot be checked" in d.reason, d.reason
 
 
-@pytest.mark.xfail(strict=True, reason="known gap: two scopes with NESTED filters in one query "
-                                       "(owner's decision pending, PLAN_v2 §0.4)")
 def test_nested_filters_in_two_scopes_cannot_recover_a_small_group(encounter_tool):
-    # each scope's complement is checked against the whole table (30 people),
-    # not against the other scope's narrower filter (women): 15 - 12 = 3
+    # each scope's complement alone is checked against the whole table (30
+    # people); the PAIR check (owner's decision 2026-11-09) compares the two
+    # filters: women minus women with an ER visit is 3, neither 0 nor 11+
     r = encounter_tool.execute({"sql": (
         "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') - "
         "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
         "AND class_code = 'EMER') AS n")})
     assert r.output["rows"] in ([], [{"n": None}]), r.output["rows"]
+
+
+# --- every PAIR of filtered aggregates (owner's decision 2026-11-09) -------------
+# Women 15 (12 with an ER visit, 3 without), men 15 (all with one). Any two
+# filtered units in one query -- WHERE scopes or FILTER aggregates -- must not
+# subtract to the 3 women; a pair the check cannot write is refused.
+
+NESTED_PAIRS = {
+    "two FILTERs in one SELECT, subtracted": (
+        "SELECT count(DISTINCT patient_id) FILTER (WHERE gender = 'female') - "
+        "count(DISTINCT patient_id) FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS n "
+        "FROM gold_encounter"),
+    "two FILTERs in one SELECT, side by side": (
+        "SELECT count(DISTINCT patient_id) FILTER (WHERE gender = 'female') AS a, "
+        "count(DISTINCT patient_id) FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS b "
+        "FROM gold_encounter"),
+    "two row-count FILTERs in one SELECT": (
+        "SELECT count(*) FILTER (WHERE gender = 'female') AS a, "
+        "count(*) FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS b "
+        "FROM gold_encounter"),
+    "two FILTERs grouped by state": (
+        "SELECT state, count(DISTINCT patient_id) FILTER (WHERE gender = 'female') AS a, "
+        "count(DISTINCT patient_id) FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS b "
+        "FROM gold_encounter GROUP BY state"),
+    "two scopes, different aliases": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') AS a, "
+        "(SELECT count(DISTINCT e.patient_id) FROM gold_encounter e WHERE e.gender = 'female' "
+        "AND e.class_code = 'EMER') AS b"),
+    "two row-count scopes, different aliases": (
+        "SELECT (SELECT count(*) FROM gold_encounter WHERE gender = 'female') AS a, "
+        "(SELECT count(*) FROM gold_encounter e WHERE e.gender = 'female' "
+        "AND e.class_code = 'EMER') AS b"),
+    "a WHERE scope and a FILTER in another": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') AS a, "
+        "(SELECT count(DISTINCT patient_id) FILTER (WHERE gender = 'female' AND "
+        "class_code = 'EMER') FROM gold_encounter) AS b"),
+    # adversarial review of the pair check (2026-11-09): every pair passes,
+    # the three together give 30 - 12 - 15 = 3
+    "three units, every pair passes": (
+        "SELECT count(DISTINCT patient_id) AS total, count(DISTINCT patient_id) FILTER (WHERE "
+        "gender = 'female' AND class_code = 'EMER') AS w_er, count(DISTINCT patient_id) FILTER "
+        "(WHERE gender = 'male') AS men FROM gold_encounter"),
+    "three scalar subqueries, every pair passes": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS total, "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
+        "AND class_code = 'EMER') AS w_er, (SELECT count(DISTINCT patient_id) FROM gold_encounter "
+        "WHERE gender = 'male') AS men"),
+    "three UNION branches": (
+        "SELECT count(DISTINCT patient_id) AS n FROM gold_encounter UNION ALL "
+        "SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
+        "AND class_code = 'EMER' UNION ALL "
+        "SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'male'"),
+    "the filters inside derived tables": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM (SELECT * FROM gold_encounter "
+        "WHERE gender = 'female') w) AS a, (SELECT count(DISTINCT patient_id) FROM (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') w) AS b"),
+    "the filters inside CTEs": (
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), we AS (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        "SELECT (SELECT count(DISTINCT patient_id) FROM w) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM we) AS b"),
+    "the filters in JOIN ONs": (
+        "SELECT (SELECT count(DISTINCT e.patient_id) FROM gold_encounter e JOIN "
+        "(SELECT 'female' AS g) x ON e.gender = x.g) AS a, "
+        "(SELECT count(DISTINCT e.patient_id) FROM gold_encounter e JOIN "
+        "(SELECT 'female' AS g, 'EMER' AS c) x ON e.gender = x.g AND e.class_code = x.c) AS b"),
+    "UNION branches": (
+        "SELECT count(DISTINCT patient_id) AS n FROM gold_encounter WHERE gender = 'female' "
+        "UNION ALL SELECT count(DISTINCT patient_id) FROM gold_encounter "
+        "WHERE gender = 'female' AND class_code = 'EMER'"),
+}
+
+
+def _numbers(rows):
+    return [v for row in rows for v in row.values() if isinstance(v, (int, float))]
+
+
+@pytest.mark.parametrize("name", list(NESTED_PAIRS))
+def test_no_pair_of_filtered_counts_recovers_the_3_women(encounter_tool, name):
+    r = encounter_tool.execute({"sql": NESTED_PAIRS[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    nums = _numbers(r.output["rows"])
+    assert 3 not in nums, (name, r.output["rows"])
+    # the women and the women with a visit may not BOTH be shown (people 15 and
+    # 12, or rows 30 and 12): the difference is the 3 women without one
+    assert not (15 in nums and 12 in nums), (name, r.output["rows"])
+    assert not (30 in nums and 12 in nums and 15 in nums), (name, r.output["rows"])
+
+
+def test_a_disjoint_pair_is_still_answered(encounter_tool):
+    # women and men overlap in nobody: each leaves the other's 15 out, 11+
+    r = encounter_tool.execute({"sql": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female') AS w, "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'male') AS m")})
+    assert r.success, r.error
+    assert r.output["rows"] == [{"w": 15, "m": 15}]
+
+
+def test_two_filters_with_a_safe_overlap_are_still_answered(encounter_tool):
+    # everyone with an outpatient visit (all 30) vs men (15): 15 women are in
+    # one and not the other, nobody the other way round (and men are 11+) --
+    # both 0 or 11+. (An ER count would be nulled anyway: the group's 30 minus
+    # its 27 is the 3 women, the single-unit check.)
+    r = encounter_tool.execute({"sql": (
+        "SELECT count(DISTINCT patient_id) FILTER (WHERE class_code = 'AMB') AS amb, "
+        "count(DISTINCT patient_id) FILTER (WHERE gender = 'male') AS men FROM gold_encounter")})
+    assert r.success, r.error
+    assert r.output["rows"] == [{"amb": 30, "men": 15}]
+
+
+def test_row_counts_over_different_tables_are_refused():
+    d = validate_query(
+        "SELECT (SELECT count(*) FROM gold_encounter WHERE gender = 'female') - "
+        "(SELECT count(*) FROM gold_condition WHERE gender = 'female') AS n")
+    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
+
+def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
+    d = validate_query(
+        "WITH a AS (SELECT state, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "WHERE gender = 'female' GROUP BY state), b AS (SELECT state, count(DISTINCT patient_id) "
+        "AS n FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER' GROUP BY state) "
+        "SELECT a.state, a.n - b.n AS n FROM a JOIN b ON a.state = b.state")
+    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
+
+# second adversarial review (2026-11-09): a GROUP BY is a filter per group
+GROUPED_LEAKS = {
+    "ROLLUP subtotal beside its parts": (
+        "SELECT gender, class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY ROLLUP (gender, class_code)"),
+    "GROUPING SETS": (
+        "SELECT gender, class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY GROUPING SETS ((gender), (gender, class_code))"),
+    "two scopes at different grain, joined": (
+        "WITH a AS (SELECT gender, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY gender), b AS (SELECT gender, class_code, count(DISTINCT patient_id) AS n "
+        "FROM gold_encounter GROUP BY gender, class_code) SELECT a.gender, b.class_code, "
+        "a.n AS total, b.n AS sub FROM a JOIN b ON a.gender = b.gender"),
+    "two GROUP BYs in a UNION": (
+        "SELECT gender, NULL AS class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY gender UNION ALL SELECT gender, class_code, count(DISTINCT patient_id) "
+        "FROM gold_encounter GROUP BY gender, class_code"),
+    "a grouped scope beside a filtered one": (
+        "SELECT g.gender, g.n, (SELECT count(DISTINCT patient_id) FROM gold_encounter "
+        "WHERE gender = 'female' AND class_code = 'EMER') AS er FROM (SELECT gender, "
+        "count(DISTINCT patient_id) AS n FROM gold_encounter GROUP BY gender) g"),
+}
+
+
+@pytest.mark.parametrize("name", list(GROUPED_LEAKS))
+def test_groupings_at_different_grain_cannot_recover_the_3_women(encounter_tool, name):
+    r = encounter_tool.execute({"sql": GROUPED_LEAKS[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (15 in nums and 12 in nums), (name, r.output["rows"])
+
+
+def test_two_scopes_grouped_the_same_way_still_run(encounter_tool):
+    r = encounter_tool.execute({"sql": PER_GENDER_RATE})
+    assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
+
+
+# third adversarial review (2026-11-10): a filter in an outer join's ON clause
+OUTER_JOIN_LEAKS = {
+    "LEFT JOIN, grouped": (
+        "SELECT e.gender, count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) "
+        "AS with_er FROM gold_encounter e LEFT JOIN gold_encounter x ON e.patient_id = "
+        "x.patient_id AND x.class_code = 'EMER' GROUP BY e.gender"),
+    "LEFT JOIN, ungrouped": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e LEFT JOIN gold_encounter x ON e.patient_id = x.patient_id "
+        "AND x.class_code = 'EMER' WHERE e.gender = 'female'"),
+    "LEFT JOIN to a per-patient subquery": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e LEFT JOIN (SELECT patient_id FROM gold_encounter "
+        "WHERE class_code = 'EMER' GROUP BY patient_id) x ON e.patient_id = x.patient_id "
+        "WHERE e.gender = 'female'"),
+    "FULL JOIN": (
+        "SELECT count(DISTINCT e.patient_id) AS everyone, count(DISTINCT x.patient_id) AS with_er "
+        "FROM gold_encounter e FULL JOIN gold_encounter x ON e.patient_id = x.patient_id "
+        "AND x.class_code = 'EMER' WHERE e.gender = 'female'"),
+}
+
+
+@pytest.mark.parametrize("name", list(OUTER_JOIN_LEAKS))
+def test_an_outer_join_filter_cannot_recover_the_3_women(encounter_tool, name):
+    r = encounter_tool.execute({"sql": OUTER_JOIN_LEAKS[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (15 in nums and 12 in nums), (name, r.output["rows"])
+
+
+# owner, 2026-11-11: a JOIN / CTE / derived-table scope is refused only beside
+# another scope that COUNTS people or rows. An average beside it is not a
+# differencing partner within the query (FHIR eval f5_above_avg_bmi_patients:
+# the model joins patients to observations beside the BMI average).
+F5_SHAPE = (
+    "SELECT COUNT(DISTINCT p.patient_id) AS patient_count FROM gold_observation AS o "
+    "JOIN gold_patient AS p ON o.patient_id = p.patient_id WHERE o.measure_name = "
+    "'Body Mass Index' AND o.value_num IS NOT NULL AND o.value_num > (SELECT AVG(value_num) "
+    "FROM gold_observation WHERE measure_name = 'Body Mass Index' AND value_num IS NOT NULL)")
+
+
+def test_a_join_count_beside_an_average_is_answered():
+    d = validate_query(F5_SHAPE)
+    assert d.allowed, d.reason
+    assert "count(distinct" in d.safe_sql.lower() and ">= 11" in d.safe_sql, d.safe_sql
+
+
+def test_a_join_count_beside_another_count_is_still_refused():
+    d = validate_query(F5_SHAPE.replace("SELECT AVG(value_num)", "SELECT COUNT(DISTINCT patient_id)"))
+    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
+
+# fourth review (2026-11-11): row counters other than COUNT/SUM, and the
+# variance family, are counting aggregates too; only averages are exempt
+@pytest.mark.parametrize("agg", ["count_star()", "regr_count(age_at_encounter, age_at_encounter)",
+                                 "fsum(length_of_stay_days)", "kahan_sum(length_of_stay_days)"])
+def test_other_row_counters_are_units_too(encounter_tool, agg):
+    r = encounter_tool.execute({"sql": (
+        f"SELECT {agg} FILTER (WHERE gender = 'female') AS a, "
+        f"{agg} FILTER (WHERE gender = 'female' AND class_code = 'EMER') AS b FROM gold_encounter")})
+    if not r.success:
+        return
+    nums = _numbers(r.output["rows"])
+    assert not (30 in nums and 12 in nums), (agg, r.output["rows"])
+
+
+@pytest.mark.parametrize("agg", ["count_star()", "regr_count(age_at_encounter, age_at_encounter)",
+                                 "var_pop(age_at_encounter)", "stddev_samp(age_at_encounter)",
+                                 "fsum(length_of_stay_days)"])
+def test_a_hidden_filter_beside_a_non_average_aggregate_is_refused(agg):
+    d = validate_query(
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), we AS (SELECT * "
+        "FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        f"SELECT (SELECT {agg} FROM w) AS a, (SELECT {agg} FROM we) AS b")
+    assert not d.allowed and "cannot be checked" in d.reason, (agg, d.reason)
+
+
+# fifth review (2026-11-11): several FILTERED averages plus one total count
+# solve for a small group's size and mean in one query. They are units then.
+@pytest.fixture
+def varying_age_tool(tmp_path):
+    """encounter_tool's people, with age_at_encounter = 20 + i (constant per person)."""
+    import duckdb
+    path = build(str(tmp_path / "age.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("""CREATE TABLE gold_encounter AS
+      SELECT 'e' || i || '_' || j AS encounter_id, 'p' || i AS patient_id,
+             CASE WHEN i < 15 THEN 'female' ELSE 'male' END AS gender, 'MA' AS state,
+             CASE WHEN j = 0 AND NOT (i BETWEEN 12 AND 14) THEN 'EMER' ELSE 'AMB' END AS class_code,
+             'x' AS encounter_type, '2020-01-01' AS start_date, '2020-01-02' AS end_date,
+             1 AS length_of_stay_days, 20 + i AS age_at_encounter
+      FROM range(30) a(i), range(2) b(j)""")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+AVERAGES_ATTACK = {
+    "WHERE scopes": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter) AS a_all, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female') AS a_w, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'male') AS a_m, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female' AND patient_id IN "
+        "(SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER')) AS a_a, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE NOT (gender = 'female' AND "
+        "patient_id IN (SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER'))) AS a_v"),
+    "two filtered averages and a total": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female') AS a_w, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female' AND "
+        "class_code = 'EMER') AS a_a"),
+    "filters in CTEs": (
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), "
+        "a AS (SELECT * FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM w) AS a_w, (SELECT avg(age_at_encounter) FROM a) AS a_a"),
+}
+
+
+@pytest.mark.parametrize("name", list(AVERAGES_ATTACK))
+def test_several_filtered_averages_cannot_solve_for_a_small_group(varying_age_tool, name):
+    r = varying_age_tool.execute({"sql": AVERAGES_ATTACK[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    row = r.output["rows"][0] if r.output["rows"] else {}
+    shown = [k for k, v in row.items() if k.startswith("a_") and v is not None]
+    # women (15) vs women with an ER visit (12): both averages shown = solvable
+    assert not ("a_w" in shown and "a_a" in shown), (name, row)
+
+
+# sixth review (2026-11-11): a grouping that is not constant per person, or a
+# renamed one, beside another scope
+PER_PERSON_GROUPING_LEAKS = {
+    "class_code groups beside a total": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS t, c.class_code, c.n "
+        "FROM (SELECT class_code, count(DISTINCT patient_id) AS n FROM gold_encounter "
+        "GROUP BY class_code) c"),
+    "class_code renamed to gender in a derived table": (
+        "SELECT gender, count(DISTINCT patient_id) AS n FROM gold_encounter GROUP BY gender "
+        "UNION ALL SELECT gender, count(DISTINCT patient_id) FROM (SELECT patient_id, "
+        "class_code AS gender FROM gold_encounter) d GROUP BY gender"),
+}
+
+
+@pytest.mark.parametrize("name", list(PER_PERSON_GROUPING_LEAKS))
+def test_a_per_person_varying_grouping_beside_another_scope_is_refused(encounter_tool, name):
+    r = encounter_tool.execute({"sql": PER_PERSON_GROUPING_LEAKS[name]})
+    if r.success:
+        nums = _numbers(r.output["rows"])
+        assert not (30 in nums and 27 in nums), (name, r.output["rows"])
+        assert not (15 in nums and 27 in nums), (name, r.output["rows"])
+    else:
+        assert "cannot be checked" in r.error, r.error
+
+
+def test_the_owner_s_per_gender_shape_still_runs_after_the_grouping_rule(encounter_tool):
+    r = encounter_tool.execute({"sql": PER_GENDER_RATE})
+    assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
 
 
 # Backlog item 70 (found by the seventh adversarial review of #83, 2026-11-11).
