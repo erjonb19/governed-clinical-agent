@@ -192,8 +192,8 @@ def test_every_free_text_attribute_is_a_reviewed_one():
                        "cached"}          # a boolean (item 6)
     unreviewed = keys - numeric_or_enum - FREE_TEXT_EXPORTED
     # keyword arguments that are not span attributes (python syntax in the calls)
-    # (`read=` is sqlglot's dialect argument inside a node .set(...) call in phi_guard)
-    unreviewed -= {"exporter", "name", "end", "this", "read"}
+    # (`read=`/`quoted=` are sqlglot arguments inside node .set(...) calls in phi_guard)
+    unreviewed -= {"exporter", "name", "end", "this", "read", "quoted"}
     assert not unreviewed, f"new trace attributes need a privacy review: {sorted(unreviewed)}"
 
 
