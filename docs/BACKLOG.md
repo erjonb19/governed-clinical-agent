@@ -368,9 +368,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **42. HTTP MCP uses one static shared key, falling back to API_KEY** (Medium; security audit finding 13, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: mcp_server.py:455-458, 539-543
   - Done when: OAuth 2.1 resource-server auth (on the roadmap); until then require a distinct MCP_API_KEY with no fallback, and rotate it.; a test or check shows it.
-- [ ] **43. The row cap is not enforced on UNION / set operations** (Medium; security audit finding 14, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **43. The row cap is not enforced on UNION / set operations** (Medium; security audit finding 14, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: sql_guard.py:293-295; analytics_query_tool.py:108 (fetchall), :323 (slice afterwards)
   - Done when: Wrap a non-SELECT top node as SELECT * FROM (...) LIMIT cap; fetchmany(cap+1).; a test or check shows it.
+  - Done 2026-11-11 (the fetch half, no guard change): the agent's DuckDB and Databricks fetches stop one row past the cap (`fetchmany(cap+1)`), the result is cut to the cap before the PHI output check and the ledger, and a longer result says `truncated: true`. The SQL is not rewritten: wrapping a set operation in `SELECT * FROM (...) LIMIT cap` is a `sql_guard.py` change, which would need the FHIR eval comparison; DuckDB may still compute the whole set operation, which the statement timeout (`QUERY_TIMEOUT_SEC`) bounds. The eval harness's reference backend is unchanged. `tests/security/test_row_cap.py`.
 - [ ] **44. main has no branch protection, and a workflow pushes straight to it** (Medium; security audit finding 15, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: repo settings (protection 404, rulesets []); data-refresh.yml:20-21, :117
   - Done when: A ruleset on main: required checks (pytest, pip-audit, container, CodeQL, ui-e2e, mcp-e2e), no force push or deletion; data-refresh opens a PR instead of pushing. (The owner said he is turning protection on; this records it.); a test or check shows it.
