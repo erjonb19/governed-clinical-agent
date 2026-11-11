@@ -2057,6 +2057,20 @@ ROW_JOIN_LEAKS = {
     "one person's diagnosis": (
         "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON c.patient_id = p.patient_id, "
         "range(1000) t(i) WHERE (p.age_years = 43 AND c.condition_name = 'Rare disease') OR t.i = 0"),
+    # the review of the widened fix: a per-patient aggregate as the multiplier
+    "a per-patient aggregate as a multiplier": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT patient_id, count(*) AS c FROM "
+        "gold_condition GROUP BY patient_id) t WHERE p.gender = 'male' OR t.patient_id = p.patient_id"),
+    "the same in a JOIN ON with OR": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN (SELECT patient_id, count(*) AS c FROM "
+        "gold_patient GROUP BY patient_id) t ON t.patient_id = p.patient_id OR p.gender = 'male'"),
+    "a diagnosis through a per-patient aggregate": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON c.patient_id = p.patient_id, "
+        "(SELECT patient_id, count(*) AS k FROM gold_patient GROUP BY patient_id) t "
+        "WHERE (p.age_years = 43 AND c.condition_name = 'Rare disease') OR t.patient_id = p.patient_id"),
+    "a grouped aggregate on another key beside patient rows": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT gender, count(*) AS c FROM gold_patient "
+        "GROUP BY gender) g WHERE p.gender = g.gender"),
     "one person's birth year": (
         "SELECT sum(year(CAST(birth_date AS DATE))) AS s FROM gold_patient p, range(1000000) t(i) "
         "WHERE p.age_years = 43 OR t.i = 0"),
@@ -2074,6 +2088,12 @@ def test_patient_rows_cannot_be_multiplied_by_a_join_or_a_union(tool, name):
     "ON c.patient_id = p.patient_id WHERE p.age_years >= 65 AND c.is_active",
     "SELECT count(*) AS n FROM gold_patient p, gold_condition c WHERE p.patient_id = c.patient_id",
     "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c USING (patient_id)",
+    # a per-patient aggregate joined on the key: one group row per person, no multiplier
+    "SELECT avg(t.c) AS a FROM gold_patient p JOIN (SELECT patient_id, count(*) AS c FROM "
+    "gold_condition GROUP BY patient_id) t ON t.patient_id = p.patient_id",
+    # a one-row aggregate beside patient rows
+    "SELECT count(*) AS n FROM gold_patient p, (SELECT avg(age_years) AS m FROM gold_patient) t "
+    "WHERE p.age_years > t.m",
     "SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient UNION ALL "
     "SELECT count(*) FROM gold_patient WHERE gender = 'female') x",
 ])

@@ -1843,7 +1843,8 @@ def _body_kind(body: exp.Expression, root: exp.Expression, depth: int) -> str:
 
 def _key_edges(sel: exp.Select, aliases: set) -> list:
     """Pairs of source aliases joined by `a.patient_id = b.patient_id` as a
-    top-level AND condition of an ON clause or the WHERE (or USING patient_id)."""
+    top-level AND condition of an ON clause or the WHERE (qualify() has already
+    rewritten USING into ON)."""
     conds = []
     for j in sel.args.get("joins") or []:
         if j.args.get("on") is not None:
@@ -1860,12 +1861,6 @@ def _key_edges(sel: exp.Select, aliases: set) -> list:
                         l.table.lower() in aliases and r.table.lower() in aliases and \
                         l.table.lower() != r.table.lower():
                     edges.append((l.table.lower(), r.table.lower()))
-    srcs = [s for s in _sources(sel)]
-    names = [(x.alias_or_name or "").lower() for x in srcs]
-    for i, j in enumerate(sel.args.get("joins") or [], start=1):
-        using = j.args.get("using") or []
-        if any((u.name if hasattr(u, "name") else str(u)).lower() == PERSON_KEY for u in using):
-            edges += [(names[i], names[k]) for k in range(i)]
     return edges
 
 
@@ -1882,6 +1877,22 @@ def _key_set(setop: exp.SetOperation) -> bool:
                   and branch.expressions[0].unalias().name.lower() == PERSON_KEY):
             return False
     return True
+
+
+def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
+    """For an aggregated source: None if it yields one row (no GROUP BY),
+    else its GROUP BY column names, ['?'] when not plain columns (fail closed)."""
+    body = src.this if isinstance(src, exp.Subquery) else (
+        _cte_body(src.name, root) if isinstance(src, exp.Table) else None)
+    if not isinstance(body, exp.Select):
+        return ["?"]
+    group = body.args.get("group")
+    if group is None:
+        return None
+    if group.args.get("all") or not group.expressions or \
+            not all(isinstance(g, exp.Column) for g in group.expressions):
+        return ["?"]
+    return sorted({g.name.lower() for g in group.expressions})
 
 
 def _row_multiplication(q: exp.Expression) -> Optional[str]:
@@ -1915,6 +1926,23 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
             continue
         if any(k == "other" for k in kinds.values()):
             return "patient rows joined with a table function, VALUES or another non-patient source"
+        # review of the widened fix (2026-11-11): a GROUPED aggregate source
+        # has one row per group, so beside patient rows it multiplies them
+        # exactly like range() (`gold_patient p, (SELECT patient_id, count(*)
+        # ... GROUP BY patient_id) t WHERE p.gender = 'male' OR t.patient_id =
+        # p.patient_id`). It may stand there only grouped by patient_id and
+        # key-joined like a row source; a one-row aggregate stays free.
+        for x in srcs:
+            n = (x.alias_or_name or "").lower()
+            if kinds[n] != "agg":
+                continue
+            grouping = _group_keys(x, q)
+            if grouping is None:
+                continue                                   # one row: no multiplier
+            if grouping != [PERSON_KEY]:
+                return ("a grouped aggregate beside patient rows (only one grouped by "
+                        "patient_id and joined on it may stand there)")
+            rows.add(n)
         if len(rows) > 1:
             parent = {n: n for n in rows}
 
