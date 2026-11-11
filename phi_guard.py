@@ -1356,12 +1356,33 @@ def _enclosing_select(node: exp.Expression) -> Optional[exp.Select]:
     return node
 
 
+def _counting_agg(node: exp.Expression) -> bool:
+    """COUNT or SUM: an aggregate whose value counts people or rows (SUM of 1s
+    is a row count). AVG, MEDIAN, MIN/MAX, STDDEV... summarise values and are
+    not differencing partners on their own (owner, 2026-11-11)."""
+    return isinstance(node, (exp.Count, exp.Sum)) or (
+        isinstance(node, exp.Anonymous) and (node.name or "").lower() in ("count", "sum"))
+
+
+def _counts(sel: exp.Select) -> bool:
+    """Does this scope (outside FILTERed aggregates) count people or rows?"""
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window) and _counting_agg(node):
+            return True
+    return False
+
+
 def _filtered_units(rewrites: list, filters: list) -> list:
+    # only aggregates that COUNT people or rows can be subtracted to a group
+    # size; a scope of averages is not a unit (owner, 2026-11-11; its residual
+    # risk -- an average beside counts from another query -- is the accepted
+    # cross-query risk, PLAN_v2 0.4)
     units = [_Unit(sel, keys, None, _scope_counts_rows(sel, keys))
-             for sel, keys in rewrites if sel.args.get("where") is not None]
+             for sel, keys in rewrites
+             if sel.args.get("where") is not None and _counts(sel)]
     for flt, keys in filters:
         sel = _enclosing_select(flt)
-        if sel is not None:
+        if sel is not None and _counting_agg(flt.this):
             units.append(_Unit(sel, keys, flt, not _people_count(flt.this, keys)))
     return units
 
@@ -1553,8 +1574,12 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
             # several groupings in one scope: a subtotal beside its parts is a
             # difference the check cannot see (women 15 beside women-with-ER 12)
             raise _CannotCorrelate("ROLLUP / CUBE / GROUPING SETS over patient rows")
-    if len(rewrites) >= 2 and any(_hidden_filter(sel, root) for sel, _ in rewrites):
-        raise _CannotCorrelate("a row filter outside WHERE / FILTER beside another scope")
+    counting = [sel for sel, _ in rewrites if _counts(sel)]
+    if len(counting) >= 2 and any(_hidden_filter(sel, root) for sel in counting):
+        # a JOIN / filtered CTE or derived table narrows a COUNT no unit sees;
+        # refused only beside another count (owner, 2026-11-11): an AVG next
+        # to it cannot be subtracted to a group size within the query
+        raise _CannotCorrelate("a row filter outside WHERE / FILTER beside another count")
     if len(rewrites) >= 2:
         # A GROUP BY is a filter per group. Two grouped scopes at different
         # grain (by gender vs by gender and class) can be subtracted group by

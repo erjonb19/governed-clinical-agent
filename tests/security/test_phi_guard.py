@@ -1594,3 +1594,25 @@ def test_an_outer_join_filter_cannot_recover_the_3_women(encounter_tool, name):
     nums = _numbers(r.output["rows"])
     assert not (15 in nums and 12 in nums), (name, r.output["rows"])
 
+
+# owner, 2026-11-11: a JOIN / CTE / derived-table scope is refused only beside
+# another scope that COUNTS people or rows. An average beside it is not a
+# differencing partner within the query (FHIR eval f5_above_avg_bmi_patients:
+# the model joins patients to observations beside the BMI average).
+F5_SHAPE = (
+    "SELECT COUNT(DISTINCT p.patient_id) AS patient_count FROM gold_observation AS o "
+    "JOIN gold_patient AS p ON o.patient_id = p.patient_id WHERE o.measure_name = "
+    "'Body Mass Index' AND o.value_num IS NOT NULL AND o.value_num > (SELECT AVG(value_num) "
+    "FROM gold_observation WHERE measure_name = 'Body Mass Index' AND value_num IS NOT NULL)")
+
+
+def test_a_join_count_beside_an_average_is_answered():
+    d = validate_query(F5_SHAPE)
+    assert d.allowed, d.reason
+    assert "count(distinct" in d.safe_sql.lower() and ">= 11" in d.safe_sql, d.safe_sql
+
+
+def test_a_join_count_beside_another_count_is_still_refused():
+    d = validate_query(F5_SHAPE.replace("SELECT AVG(value_num)", "SELECT COUNT(DISTINCT patient_id)"))
+    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+
