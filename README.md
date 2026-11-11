@@ -722,7 +722,19 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `slo-miss` issue. `/metrics` reports p50/p95/p99 of model calls.
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
+  it lists are **not** fixed yet, except those ticked below.
+- [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
+  characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
   it lists are **not** fixed yet.
+- [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
+  frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
+  only runs its own script (by hash), so injected script could not read the stored key.
+- [x] **CI actions pinned to commit SHAs** (audit item 31): no workflow runs a movable
+  action tag; `tests/unit/test_workflow_pins.py` fails on one that does.
+- [x] **The agent's database connection is locked down** (audit item 30): no file or network
+  access and no extension loading, with the configuration locked so generated SQL cannot
+  undo it. This layer sits under the guard: even SQL that slipped past the guard could not
+  read the server's environment or call out (`tests/security/test_duckdb_lockdown.py`).
 
 ## Service level objectives
 
