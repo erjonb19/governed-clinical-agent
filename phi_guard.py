@@ -1377,17 +1377,29 @@ def _counts(sel: exp.Select) -> bool:
     return False
 
 
-def _filtered_units(rewrites: list, filters: list) -> list:
-    # only aggregates that COUNT people or rows can be subtracted to a group
-    # size; a scope of averages is not a unit (owner, 2026-11-11; its residual
-    # risk -- an average beside counts from another query -- is the accepted
-    # cross-query risk, PLAN_v2 0.4)
+def _filtered_averages(rewrites: list, filters: list, root: exp.Expression) -> int:
+    """How many FILTERED averages the query holds: scopes whose aggregates are
+    only averages, narrowed by a WHERE or a hidden filter, plus averages with a
+    FILTER clause."""
+    n = sum(1 for sel, _ in rewrites
+            if not _counts(sel) and (sel.args.get("where") is not None
+                                     or _hidden_filter(sel, root)))
+    return n + sum(1 for flt, _ in filters if not _counting_agg(flt.this))
+
+
+def _filtered_units(rewrites: list, filters: list, averages_count: bool = False) -> list:
+    # Only aggregates that can be turned into a group size are units. A single
+    # average beside counts is not (owner, 2026-11-11: a JOIN count beside the
+    # BMI average; its residual risk is the accepted cross-query one, PLAN_v2
+    # 0.4). Two or more FILTERED averages are: with one total count, their
+    # means solve for a small group's size and mean in one query (fifth
+    # review, 2026-11-11) -- so then averages count too (averages_count).
     units = [_Unit(sel, keys, None, _scope_counts_rows(sel, keys))
              for sel, keys in rewrites
-             if sel.args.get("where") is not None and _counts(sel)]
+             if sel.args.get("where") is not None and (averages_count or _counts(sel))]
     for flt, keys in filters:
         sel = _enclosing_select(flt)
-        if sel is not None and _counting_agg(flt.this):
+        if sel is not None and (averages_count or _counting_agg(flt.this)):
             units.append(_Unit(sel, keys, flt, not _people_count(flt.this, keys)))
     return units
 
@@ -1579,7 +1591,8 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
             # several groupings in one scope: a subtotal beside its parts is a
             # difference the check cannot see (women 15 beside women-with-ER 12)
             raise _CannotCorrelate("ROLLUP / CUBE / GROUPING SETS over patient rows")
-    counting = [sel for sel, _ in rewrites if _counts(sel)]
+    averages_count = _filtered_averages(rewrites, filters, root) >= 2
+    counting = [sel for sel, _ in rewrites if averages_count or _counts(sel)]
     if len(counting) >= 2 and any(_hidden_filter(sel, root) for sel in counting):
         # a JOIN / filtered CTE or derived table narrows a COUNT no unit sees;
         # refused only beside another count (owner, 2026-11-11): an AVG next
@@ -1603,7 +1616,7 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
                                 or any(f.find_ancestor(exp.Select) is sel for f, _ in filters))
                            for sel, _ in rewrites):
             raise _CannotCorrelate("a grouped scope beside a filtered ungrouped one")
-    units = _filtered_units(rewrites, filters)
+    units = _filtered_units(rewrites, filters, averages_count)
     by_sel: dict = {}
     for u in units:
         by_sel.setdefault(id(u.sel), []).append(u)

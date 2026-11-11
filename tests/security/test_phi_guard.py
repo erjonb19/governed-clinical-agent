@@ -1641,3 +1641,57 @@ def test_a_hidden_filter_beside_a_non_average_aggregate_is_refused(agg):
         f"SELECT (SELECT {agg} FROM w) AS a, (SELECT {agg} FROM we) AS b")
     assert not d.allowed and "cannot be checked" in d.reason, (agg, d.reason)
 
+
+# fifth review (2026-11-11): several FILTERED averages plus one total count
+# solve for a small group's size and mean in one query. They are units then.
+@pytest.fixture
+def varying_age_tool(tmp_path):
+    """encounter_tool's people, with age_at_encounter = 20 + i (constant per person)."""
+    import duckdb
+    path = build(str(tmp_path / "age.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("""CREATE TABLE gold_encounter AS
+      SELECT 'e' || i || '_' || j AS encounter_id, 'p' || i AS patient_id,
+             CASE WHEN i < 15 THEN 'female' ELSE 'male' END AS gender, 'MA' AS state,
+             CASE WHEN j = 0 AND NOT (i BETWEEN 12 AND 14) THEN 'EMER' ELSE 'AMB' END AS class_code,
+             'x' AS encounter_type, '2020-01-01' AS start_date, '2020-01-02' AS end_date,
+             1 AS length_of_stay_days, 20 + i AS age_at_encounter
+      FROM range(30) a(i), range(2) b(j)""")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+AVERAGES_ATTACK = {
+    "WHERE scopes": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter) AS a_all, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female') AS a_w, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'male') AS a_m, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female' AND patient_id IN "
+        "(SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER')) AS a_a, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE NOT (gender = 'female' AND "
+        "patient_id IN (SELECT patient_id FROM gold_encounter WHERE class_code = 'EMER'))) AS a_v"),
+    "two filtered averages and a total": (
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female') AS a_w, "
+        "(SELECT avg(age_at_encounter) FROM gold_encounter WHERE gender = 'female' AND "
+        "class_code = 'EMER') AS a_a"),
+    "filters in CTEs": (
+        "WITH w AS (SELECT * FROM gold_encounter WHERE gender = 'female'), "
+        "a AS (SELECT * FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER') "
+        "SELECT (SELECT count(DISTINCT patient_id) FROM gold_encounter) AS n, "
+        "(SELECT avg(age_at_encounter) FROM w) AS a_w, (SELECT avg(age_at_encounter) FROM a) AS a_a"),
+}
+
+
+@pytest.mark.parametrize("name", list(AVERAGES_ATTACK))
+def test_several_filtered_averages_cannot_solve_for_a_small_group(varying_age_tool, name):
+    r = varying_age_tool.execute({"sql": AVERAGES_ATTACK[name]})
+    if not r.success:
+        assert "cannot be checked" in r.error, r.error
+        return
+    row = r.output["rows"][0] if r.output["rows"] else {}
+    shown = [k for k, v in row.items() if k.startswith("a_") and v is not None]
+    # women (15) vs women with an ER visit (12): both averages shown = solvable
+    assert not ("a_w" in shown and "a_a" in shown), (name, row)
+

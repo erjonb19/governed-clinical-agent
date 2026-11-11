@@ -394,7 +394,12 @@ trade-off is that two averages over nested sets, combined with the two set sizes
 sum of the values the inner set leaves out, and with one person left out, that person's
 value. The sizes are not available inside one such query, because counting both sets is
 refused. So this needs counts from separate queries: it is the same accepted cross-query
-risk as below, not a new single-query leak. `test_a_join_count_beside_an_average_is_answered`
+risk as below, not a new single-query leak. **One limit (fifth review, same day):** with two or more FILTERED
+averages and one total count, the means alone solve for a small group's size and mean inside
+one query: total, the average of everyone, of women, of men, of women with an ER visit and of
+everyone else gave the 3 women without one and their mean age. So when a query holds two or
+more filtered averages (narrowed by a WHERE, a FILTER or a hidden filter), the averages are
+units too and the region check covers them. A single average beside counts stays answered. `test_a_join_count_beside_an_average_is_answered`
 and `test_a_join_count_beside_another_count_is_still_refused` pin both sides.
 
 **Cross-query differencing: options for the owner (decision open).** One query
