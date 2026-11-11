@@ -722,7 +722,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `slo-miss` issue. `/metrics` reports p50/p95/p99 of model calls.
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
-  it lists are **not** fixed yet.
+  it lists are **not** fixed yet, except those ticked below.
+- [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
+  characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
 
 ## Service level objectives
 
