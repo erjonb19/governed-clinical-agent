@@ -12,7 +12,9 @@ services:
     # rather than rebuilt: rebuilding means a few hundred MB of Synthea source
     # expanding to ~1.4 GB on every deploy. If FHIR_GOLD_URL is unset the fetch
     # is skipped cleanly and the service serves the hospital dataset only.
-    buildCommand: pip install -r requirements-api.txt && python scripts/fetch_fhir_gold.py
+    # Hash-locked install (backlog item 45): every package in the tree pinned to an
+    # exact version and the hashes of its files; scripts/lock.sh regenerates the lock.
+    buildCommand: pip install --require-hashes -r requirements-api.lock && python scripts/fetch_fhir_gold.py
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION

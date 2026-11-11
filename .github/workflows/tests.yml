@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt -r requirements.txt pytest pytest-cov==7.1.0
+          pip install --require-hashes -r requirements-ci.lock
 
       # Code quality gates (backlog item 15), each at today's level and only
       # ratcheting up; config in pyproject.toml. Pinned so a new tool release
@@ -106,6 +106,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-audit==2.10.1
           pip-audit --progress-spinner off -r requirements-api.txt -r requirements.txt
+          # and the frozen trees that are actually installed (item 45): the locks
+          # pin every transitive package, so a fresh resolve no longer covers them
+          pip-audit --progress-spinner off --disable-pip --no-deps \
+            -r requirements-api.lock -r requirements-ci.lock -r requirements-e2e.lock -r requirements.lock
 
   # The same suite against Postgres (backlog item 19): STATE_DB_URL points the
   # approval store and both graphs' checkpointers at a Postgres 16 service
@@ -141,7 +145,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt -r requirements.txt pytest
+          pip install --require-hashes -r requirements-ci.lock
 
       - name: Run tests on Postgres state
         run: pytest -q -m "not network"

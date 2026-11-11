@@ -20,8 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # dependencies first, so a code change does not reinstall them
-COPY requirements-api.txt /app/requirements-api.txt
-RUN pip install -r /app/requirements-api.txt
+COPY requirements-api.lock /app/requirements-api.lock
+RUN pip install --require-hashes -r /app/requirements-api.lock
 
 # a non-root user owns only what it must write: logs (traces, audit,
 # checkpoints, approvals live under logs/ by default)
