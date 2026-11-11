@@ -336,10 +336,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423 (question, sql, decided_by, reason, edited_proposal: no max_length)
   - Done when: Field(max_length=...) (question 2,000, sql 20,000, names 200) and a 64 KB body cap.; a test or check shows it.
+- [x] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `Field(max_length=...)` on every request model (question 2,000, sql and free text 20,000, names 200) gives 422; `_BodySizeLimit` refuses a body over 64 KB with 413 before it is parsed, by Content-Length or by counting a chunked body. `tests/integration/test_request_limits.py`.
 - [ ] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:171-178 (dependency runs before the slowapi decorator); mcp_server.py:542, :549
   - Done when: Count and audit 401s per client IP in middleware (or move auth after the limiter); same for the MCP branches.; a test or check shows it.
+  - Done 2026-11-11: `auth_failures.py`. Every refused key on the API and on MCP over HTTP is counted per client address and audited (`auth_failure` event: client, path, count in the window, whether over the limit; never the key). By default that is all: on Render every caller shares the proxy's address until item 38, so a lockout would let one scanner lock everyone out, and a 429 for wrong keys alone would not slow guessing (review, 2026-11-11). `AUTH_FAILURE_LOCKOUT=1` gives a client past `AUTH_FAILURES_PER_WINDOW` (10) in `AUTH_FAILURE_WINDOW_SEC` (300) a 429 on every request until its window ends. Turn it on with item 38. `tests/integration/test_auth_failures.py`.
 - [ ] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:601-638
   - Done when: require_api_key + RATE_LIMIT_READ, or cache the counts per data vintage as /findings does.; a test or check shows it.

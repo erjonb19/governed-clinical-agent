@@ -60,6 +60,7 @@ from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import (NLToSQLPlanner, SCHEMA_DOC,
                                SCHEMA_DOC_HOSPITAL, SCHEMA_DOC_FHIR)
+import auth_failures
 import cost_tracker
 import schema_check
 import tracing
@@ -169,14 +170,36 @@ def _rate_limit_key(request: Request) -> str:
 limiter = Limiter(key_func=_rate_limit_key, storage_uri=RATE_LIMIT_STORAGE)
 
 
-def require_api_key(provided: Optional[str] = Security(_api_key_header)) -> None:
+def _client_address(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def require_api_key(
+    request: Request, provided: Optional[str] = Security(_api_key_header)
+) -> None:
     if not API_KEY:
         return  # dev mode: no key configured, allow (see /health auth_enabled)
-    if provided is None or not hmac.compare_digest(provided, API_KEY):
+    client = _client_address(request)
+    ok = provided is not None and hmac.compare_digest(provided, API_KEY)
+    # Backlog item 35: every refused key is counted and audited per client.
+    # With AUTH_FAILURE_LOCKOUT on, a client over the limit gets 429 for every
+    # request until its window ends; off (the default, see auth_failures.py)
+    # it is audit and counting only.
+    if auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client):
+        if not ok:
+            auth_failures.FAILURES.record(client, request.url.path, "api")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or missing API key (send header X-API-Key)",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed API key attempts; try again later",
+            headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
         )
+    if ok:
+        return
+    auth_failures.FAILURES.record(client, request.url.path, "api")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="invalid or missing API key (send header X-API-Key)",
+    )
 
 # Built once at startup, shared across requests. FastAPI runs sync endpoints in
 # a threadpool. Queries no longer share one lock (backlog item 20): the query
@@ -250,6 +273,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"WARNING: audit log disabled ({e})")
     runtime = AgentRuntime(audit_logger=audit)
+    auth_failures.FAILURES.audit = audit    # refused keys go to the same audit log
     runtime.load_policy(POLICY_PATH)
     _analytics = AnalyticsQueryTool(
         db_path=GOLD_DB, seed_demo=False,
@@ -313,6 +337,7 @@ async def lifespan(app: FastAPI):
         yield
     if "mcp_server" in sys.modules:
         sys.modules["mcp_server"].attach_host()     # detach: no logger or lock outlives the app
+    auth_failures.FAILURES.audit = None
     _STATE.clear()
 
 
