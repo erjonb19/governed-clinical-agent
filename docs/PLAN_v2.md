@@ -434,12 +434,19 @@ more filtered averages (narrowed by a WHERE, a FILTER or a hidden filter), the a
 units too and the region check covers them. A single average beside counts stays answered. `test_a_join_count_beside_an_average_is_answered`
 and `test_a_join_count_beside_another_count_is_still_refused` pin both sides.
 
-**Single-query complementary suppression is still open (backlog item 70, 2026-11-11).**
+**Single-query complementary suppression (backlog item 70, 2026-11-11).**
 The seventh adversarial review of #83 found that `count(all) - sum(visible groups)`
 also works INSIDE one query: a grouped scope beside an unfiltered total, and two
 unfiltered scopes over different person tables (the table acts as the filter).
-Both leak on `main`; neither is caused by #83. Pinned as strict xfails; options
-for the owner are under item 70.
+**Owner's decision (2026-11-11): refuse the shape, fail closed.** With two or more
+counting scopes (any aggregate but a lone average, as above), a grouped count beside
+an ungrouped one is refused, and so are counts whose base tables differ (resolved
+through CTEs and derived tables). Same-key grouped scopes (the per-gender rate) still
+run, and a single average beside counts still runs (the accepted trade-off above).
+Shapes that only look harmless go too (one SUM over a UNION of two tables' counts,
+two maxima from different tables): the rule is on the shape, not on what is shown.
+`test_item_70_shapes_are_refused`, `test_what_item_70_leaves_answerable`; all 28
+FHIR eval references still pass the guard.
 
 **Cross-query differencing: options for the owner (decision open).** One query
 cannot see another, so `count(all) - sum(visible groups)` over two calls gives a
@@ -709,6 +716,7 @@ decisions taken inside one piece of work.
 
 | Date | Decision |
 |---|---|
+| 2026-11-11 | **Item 70: refuse the shape.** With 2+ counting scopes in one query, a grouped count beside an ungrouped one, and counts over different base tables, are refused (fail closed). Merge under rule 0 once the full FHIR comparison passes after a Gemini reset. |
 | 2026-11-11 | **Rule 0, merging.** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs also need the `eval-fhir-manual.yml` comparison to pass (branch at least as accurate as main). Still asked first, in chat: anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (PR opened, then stop). Also in `CLAUDE.md`'s ground rules. |
 | 2026-11-11 | Security audit (#91) approved and its proposed placement adopted: items 30 and 31 (the two Highs) first, then the Mediums that close exposure, all before item 22. `uv` approved where the audit proposes it (item 45: lockfile and release-age cooldown). |
 

@@ -1678,6 +1678,32 @@ def _person_constant_grouping(sel: exp.Select, root: exp.Expression) -> bool:
     return True
 
 
+def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> set:
+    """The base tables a scope's rows come from: its FROM / JOIN sources,
+    through derived tables and CTEs (item 70). Not the tables of a WHERE
+    semi-join, which is a filter the units already see."""
+    out: set = set()
+    if depth > 20:
+        return {"<too deep>"}                  # fail closed: compares unequal
+    if isinstance(node, exp.Select):
+        srcs = _sources(node)
+    elif isinstance(node, exp.SetOperation):
+        return (_base_tables(node.this, root, depth + 1)
+                | _base_tables(node.expression, root, depth + 1))
+    else:
+        return {f"<{type(node).__name__}>"}
+    for src in srcs:
+        if isinstance(src, exp.Subquery):
+            out |= _base_tables(src.this, root, depth + 1)
+        elif isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier):
+            body = _cte_body(src.name, root)
+            out |= (_base_tables(body, root, depth + 1) if body is not None
+                    else {(src.name or "").lower()})
+        else:
+            out.add(f"<{type(src).__name__}>")  # a table function, a lateral, ...
+    return out
+
+
 def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
     """{id(select or FILTER node): [SQL conditions]} so that no combination of
     the filtered aggregates in one query isolates fewer than 11 people: every
@@ -1698,6 +1724,17 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
             raise _CannotCorrelate("ROLLUP / CUBE / GROUPING SETS over patient rows")
     averages_count = _filtered_averages(rewrites, filters, root) >= 2
     counting = [sel for sel, _ in rewrites if averages_count or _counts(sel)]
+    if len(counting) >= 2:
+        # Complementary suppression (item 70, owner's decision 2026-11-11:
+        # refuse the shape, fail closed). (1) A grouped count beside an
+        # ungrouped one: the total minus the groups shown is the group the
+        # HAVING hid. (2) Counts over different person tables: the table works
+        # as a filter (everyone minus the people with an encounter).
+        if any(sel.args.get("group") is not None for sel in counting) and \
+                any(sel.args.get("group") is None for sel in counting):
+            raise _CannotCorrelate("a grouped count beside an ungrouped one")
+        if len({frozenset(_base_tables(sel, root)) for sel in counting}) > 1:
+            raise _CannotCorrelate("counts over different tables")
     if len(counting) >= 2 and any(_hidden_filter(sel, root) for sel in counting):
         # a JOIN / filtered CTE or derived table narrows a COUNT no unit sees;
         # refused only beside another count (owner, 2026-11-11): an AVG next
@@ -1708,9 +1745,10 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
         # grain (by gender vs by gender and class) can be subtracted group by
         # group, and a column that varies within a person makes the groups
         # overlap; a grouped scope beside a FILTERED ungrouped one (women 15
-        # beside "women with an ER visit" 12) likewise. Still allowed (owner,
-        # 2026-11-07): grouped scopes on the same keys, each WHERE checked per
-        # group, beside unfiltered totals.
+        # beside "women with an ER visit" 12) likewise. Still allowed: grouped
+        # scopes on the same keys, each WHERE checked per group (the per-gender
+        # rate). A grouped COUNT beside an ungrouped count is refused above
+        # (item 70, 2026-11-11); beside an average it stays.
         keysets = {frozenset(g.sql(dialect=DIALECT).split(".")[-1].lower()
                              for g in sel.args["group"].expressions)
                    for sel, _ in rewrites if sel.args.get("group") is not None}
@@ -1844,8 +1882,9 @@ def check(tree: exp.Expression) -> PhiDecision:
             a.findings.append(
                 "several filtered aggregates over patient rows in one query, in a form whose "
                 "overlap cannot be checked (a JOIN or a filtered derived table beside another "
-                f"aggregate, a grouped one beside another query's, more than {_MAX_UNITS}, or "
-                "different tables): subtracting one from another could recover a group of "
+                f"aggregate, a grouped one beside another query's, more than {_MAX_UNITS}, "
+                "different tables, or a grouped count beside a total): subtracting one from "
+                "another could recover a group of "
                 f"fewer than {MIN_CELL} people; ask for each count in its own query")
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
