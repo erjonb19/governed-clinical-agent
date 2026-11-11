@@ -544,7 +544,7 @@ class MCPAuth:
         peer = str((scope.get("client") or ("?",))[0])
         if self.key is not None:
             # backlog item 35: refused keys are counted and audited per client
-            # (auth_failures.py); past the limit, wrong keys get 429
+            # (auth_failures.py); with AUTH_FAILURE_LOCKOUT, a client past the limit gets 429
             from auth_failures import FAILURES
             ok = given is not None and hmac.compare_digest(given.encode(), self.key.encode())
             throttled = FAILURES.lockout and FAILURES.throttled(peer)
