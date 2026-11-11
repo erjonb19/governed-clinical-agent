@@ -598,7 +598,7 @@ class _SecurityHeaders:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
-app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
+app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
 app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
 

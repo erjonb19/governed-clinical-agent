@@ -1,5 +1,5 @@
-# Dependabot (backlog item 16): weekly, grouped, so updates arrive as two PRs a
-# week at most -- one for Python packages, one for GitHub Actions. Each runs the
+# Dependabot (backlog item 16): weekly, grouped, so updates arrive as three PRs a
+# week at most -- Python packages, GitHub Actions and Docker images. Each runs the
 # full CI like any PR; merging stays a person's decision.
 version: 2
 updates:

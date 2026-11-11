@@ -28,7 +28,7 @@ upstream repo at Medtia/. The local folder still uses the old name.)
 
 ## Ground rules for the production-readiness work (owner, 2026-11-06)
 `docs/BACKLOG.md` is the source of truth for this work: always take the FIRST unchecked item in its "Order of work" (owner, 2026-11-08; item numbers never change, the order is set there). `docs/PROGRESS.md` gets one line per finished item.
-- **Rule 0, merging (owner, 2026-11-11).** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs (`sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`, or what the guard allows or refuses) also need the `eval-fhir-manual.yml` comparison to pass: the branch at least as accurate as `main`. Still ask the owner first, in chat, for anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (open those PRs and stop).
+- **Rule 0, merging (owner, 2026-11-11).** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs (`sql_guard.py`, `phi_guard.py`, `phi_columns.yaml`, or what the guard allows or refuses) also need the `eval-fhir-manual.yml` comparison to pass: the branch at least as accurate as `main`. Still ask the owner first, in chat, for anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (open those PRs and stop). **Two clarifications (owner, 2026-11-11):** (a) a NEW dependency still needs the owner's OK before it is added; once approved, rule 0 covers merging its PR, and Dependabot updates of existing dependencies stay under the standing OK. (b) An ordinary merge that Render then auto-deploys is NOT a Render change; a change to `render.yaml` or to the Render dashboard IS, and needs the owner's OK.
 - One backlog item per branch and PR. Keep each change small. Tests and evals must stay green.
 - Pull `main` from the `myfork` remote and push to `myfork`, never `origin`. (On the web, just work on this repo.)
 - Cost stays at $0: Render free plan, free tiers and self-hosted open-source tools only. Ask before adding anything that could bill.
@@ -143,9 +143,10 @@ the stricter rule wins.
 
 1. **Dependencies (directive 11).** Updates to existing dependencies (Dependabot) fall under
    the standing merge OK when CI is green and a review finds nothing blocking; existing pins
-   and Dependabot ignore rules stay. A new dependency still needs the owner's OK. In an
+   and Dependabot ignore rules stay. A new dependency still needs the owner's OK; once it is
+   approved, rule 0 covers merging its PR. In an
    unattended run, write it under its backlog item and move on instead of waiting.
-2. **Destructive and deploy commands (directive 13).** It covers real environments: the Render deploy and its settings, Databricks, any hosted database or tracing account, and published releases and images. Local runs, CI runners and test containers are normal work.
+2. **Destructive and deploy commands (directive 13).** It covers real environments: the Render deploy and its settings, Databricks, any hosted database or tracing account, and published releases and images. Local runs, CI runners and test containers are normal work. A merge that Render auto-deploys is not a Render change; editing `render.yaml` or the Render dashboard is (owner, 2026-11-11).
 3. **`.claude/settings.json` (Section 17.2).** Not added yet. The security audit proposes one
    tailored so unattended runs don't stall, keeping the deny list; the owner reviews it.
 4. **Vulnerability reporting.** No `SECURITY.md` with a personal email address on this public

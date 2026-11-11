@@ -689,6 +689,7 @@ decisions taken inside one piece of work.
 
 | Date | Decision |
 |---|---|
+| 2026-11-11 | **Rule 0, two clarifications.** (a) A new dependency still needs the owner's OK first; once approved, rule 0 covers merging its PR. Dependabot updates of existing dependencies stay under the standing OK. (b) An ordinary merge that Render auto-deploys is not a Render change; changes to `render.yaml` or the Render dashboard are, and need the owner's OK. |
 | 2026-11-11 | **Rule 0, merging.** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs also need the `eval-fhir-manual.yml` comparison to pass (branch at least as accurate as main). Still asked first, in chat: anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (PR opened, then stop). Also in `CLAUDE.md`'s ground rules. |
 | 2026-11-11 | Security audit (#91) approved and its proposed placement adopted: items 30 and 31 (the two Highs) first, then the Mediums that close exposure, all before item 22. `uv` approved where the audit proposes it (item 45: lockfile and release-age cooldown). |
 
