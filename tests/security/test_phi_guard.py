@@ -1593,7 +1593,7 @@ def test_a_grouping_the_check_cannot_correlate_is_refused():
     d = validate_query(
         "SELECT (SELECT count(*) FROM gold_encounter) AS t, x.n FROM (SELECT gender, count(*) AS n "
         "FROM gold_encounter WHERE class_code = 'EMER' GROUP BY ROLLUP (gender)) x")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 def test_nested_filters_in_two_scopes_cannot_recover_a_small_group(encounter_tool):
@@ -1722,7 +1722,7 @@ def test_row_counts_over_different_tables_are_refused():
     d = validate_query(
         "SELECT (SELECT count(*) FROM gold_encounter WHERE gender = 'female') - "
         "(SELECT count(*) FROM gold_condition WHERE gender = 'female') AS n")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
@@ -1731,7 +1731,7 @@ def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
         "WHERE gender = 'female' GROUP BY state), b AS (SELECT state, count(DISTINCT patient_id) "
         "AS n FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER' GROUP BY state) "
         "SELECT a.state, a.n - b.n AS n FROM a JOIN b ON a.state = b.state")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 # second adversarial review (2026-11-09): a GROUP BY is a filter per group
@@ -1762,7 +1762,7 @@ GROUPED_LEAKS = {
 def test_groupings_at_different_grain_cannot_recover_the_3_women(encounter_tool, name):
     r = encounter_tool.execute({"sql": GROUPED_LEAKS[name]})
     if not r.success:
-        assert "cannot be checked" in r.error, r.error
+        assert "cannot be checked" in r.error or "GROUPING SETS" in r.error, r.error
         return
     nums = _numbers(r.output["rows"])
     assert not (15 in nums and 12 in nums), (name, r.output["rows"])
@@ -1824,7 +1824,7 @@ def test_a_join_count_beside_an_average_is_answered():
 
 def test_a_join_count_beside_another_count_is_still_refused():
     d = validate_query(F5_SHAPE.replace("SELECT AVG(value_num)", "SELECT COUNT(DISTINCT patient_id)"))
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 # fourth review (2026-11-11): row counters other than COUNT/SUM, and the
@@ -2071,6 +2071,24 @@ ROW_JOIN_LEAKS = {
     "a grouped aggregate on another key beside patient rows": (
         "SELECT count(*) AS n FROM gold_patient p, (SELECT gender, count(*) AS c FROM gold_patient "
         "GROUP BY gender) g WHERE p.gender = g.gender"),
+    # the fourth review: parentheses hid the joins; GROUPING SETS faked a per-patient source
+    "a parenthesized cross join": (
+        "SELECT count(*) AS n FROM (gold_patient p CROSS JOIN range(1000) t(i)) "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a parenthesized condition join keyed to one diagnosis": (
+        "SELECT sum(p.age_years) AS s FROM (gold_patient p JOIN gold_condition c ON "
+        "p.patient_id = c.patient_id CROSS JOIN range(1000000) t(i)) "
+        "WHERE c.condition_name = 'Other' OR t.i = 0"),
+    "a parenthesized unkeyed self-join": (
+        "SELECT count(*) AS n FROM (gold_patient p JOIN gold_patient q ON true) "
+        "WHERE p.gender = 'male' OR q.age_years = 40"),
+    "GROUPING SETS faking a per-patient source": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN (SELECT patient_id FROM gold_condition "
+        "GROUP BY patient_id, GROUPING SETS ((patient_id = 'p3' AND condition_name = 'Hypertension'))) t "
+        "ON p.patient_id = t.patient_id"),
+    "ROLLUP in a per-patient source": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN (SELECT patient_id FROM gold_condition "
+        "GROUP BY patient_id, ROLLUP (condition_name)) t ON p.patient_id = t.patient_id"),
     "one person's birth year": (
         "SELECT sum(year(CAST(birth_date AS DATE))) AS s FROM gold_patient p, range(1000000) t(i) "
         "WHERE p.age_years = 43 OR t.i = 0"),

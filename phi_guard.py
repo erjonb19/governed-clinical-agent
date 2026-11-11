@@ -1890,6 +1890,7 @@ def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
     if group is None:
         return None
     if group.args.get("all") or not group.expressions or \
+            any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets")) or \
             not all(isinstance(g, exp.Column) for g in group.expressions):
         return ["?"]
     return sorted({g.name.lower() for g in group.expressions})
@@ -1904,6 +1905,18 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
     hides, or one person's value, into an aggregate over 11+ people. Fail
     closed: patient rows sit only beside other patient rows, joined on the
     patient key."""
+    for sub in q.find_all(exp.Subquery):
+        if not isinstance(sub.this, (exp.Select, exp.SetOperation)):
+            # `FROM (gold_patient p CROSS JOIN range(1000) t)`: a parenthesized
+            # join is a Subquery whose body is a Table carrying joins, which
+            # every source check below would skip (fourth review)
+            return "a parenthesized join; write the joins without parentheses"
+    for grp in q.find_all(exp.Group):
+        if any(grp.args.get(k) for k in ("rollup", "cube", "grouping_sets")):
+            # GROUPING SETS / ROLLUP / CUBE add rows the query chooses: as a
+            # "per-patient" source they multiplied one named person's rows
+            # (fourth review). Refused on patient data everywhere.
+            return "GROUPING SETS / ROLLUP / CUBE on patient data"
     for setop in q.find_all(exp.SetOperation):
         if setop is q:
             continue                                       # the result itself
