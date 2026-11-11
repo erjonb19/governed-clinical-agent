@@ -22,17 +22,21 @@ on:
   push:
     tags: ["v*.*.*"]
 
+# Read-only by default (audit item 49): only the job that creates the release
+# gets contents:write, and it runs no repository code. The checks and the test
+# suite run under a read-only token with no stored git credentials.
 permissions:
-  contents: write     # create the GitHub release
+  contents: read
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0        # to check the tagged commit is on main
+          persist-credentials: false
 
       - name: The tagged commit must be on main
         run: |
@@ -60,13 +64,20 @@ jobs:
       - name: Tests on the tagged commit
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt -r requirements.txt pytest
+          pip install -r requirements-api.txt -r requirements.txt pytest==9.2.0
           pytest -q -m "not network"          # as tests.yml
 
+  release:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write   # create the GitHub release; no checkout, no repository code
+    steps:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
 
   image:
     needs: release
@@ -79,6 +90,8 @@ jobs:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Log in to GHCR
         env:
