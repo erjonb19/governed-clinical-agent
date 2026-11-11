@@ -104,3 +104,18 @@ def _no_answer_cache_by_default(tmp_path, monkeypatch):
         llm_cache.set_cache(None)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _fresh_auth_failures():
+    """Failed-key counts are process-wide (item 35); every test starts from none,
+    so one test's deliberate wrong keys never throttle the next one's."""
+    import auth_failures
+
+    f = auth_failures.FAILURES
+    saved = (f.per_window, f.window_sec, f.lockout, f.clock, f.audit)
+    f.reset()
+    f.lockout = False
+    yield
+    f.per_window, f.window_sec, f.lockout, f.clock, f.audit = saved
+    f.reset()
