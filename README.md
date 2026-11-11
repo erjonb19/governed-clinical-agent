@@ -564,7 +564,7 @@ Thirteen GitHub Actions workflows:
   - **Model accuracy** is measured by the nightly (`eval-nightly.yml`) and the manual FHIR eval, both live on Gemini, the default provider. A Gemini-only regression shows up there, up to a day after the push.
 - **Releases** (`release.yml`, backlog item 5): pushing a tag `vX.Y.Z` that matches `VERSION` runs pytest on the tagged commit and creates a GitHub release with generated notes. Pushing the tag is the owner's step (or an agent's, when the owner says so); nothing in CI creates tags. A second job then pushes the API image to **GHCR** as `ghcr.io/erjonb19/governed-clinical-agent:X.Y.Z` and `:latest`, pulls it back, starts it, and writes its idle memory to the job summary.
 - **Tests on Postgres state** (`pytest-postgres`, a job in `tests.yml`, backlog item 19): the whole suite runs again with `TEST_STATE_DB_URL` pointing at a Postgres 16 service container (`state_test`). That covers every approval, escalation, resume and "no rows in the checkpoint" test, plus a redeploy check (`tests/integration/test_state_postgres.py`).
-- **Supply chain** (backlog item 16): **`pip-audit`** (a job in `tests.yml`) checks both requirements files against the PyPA advisory database on every push, and a pin with a known advisory turns the push red. Two `oauthlib` advisories are ignored by name, waiting on a decision: their fix needs a Databricks connector upgrade that can't be checked against a real workspace yet. **CodeQL** (`codeql.yml`) scans the Python and the workflows on pushes and PRs to main, and weekly. **Dependabot** (`.github/dependabot.yml`) opens at most one grouped PR a week for Python packages and one for GitHub Actions.
+- **Supply chain** (backlog item 16): **`pip-audit`** (a job in `tests.yml`) checks both requirements files against the PyPA advisory database on every push, and a pin with a known advisory turns the push red. No advisory is ignored: the two `oauthlib` advisories once ignored by name were fixed by the Databricks connector upgrade (4.9.0, #90). **CodeQL** (`codeql.yml`) scans the Python and the workflows on pushes and PRs to main, and weekly. **Dependabot** (`.github/dependabot.yml`) opens at most one grouped PR a week for Python packages and one for GitHub Actions.
 - **Container** (`container.yml`, backlog item 17), on every push. It builds the image, starts it, waits for the `HEALTHCHECK`, and checks the non-root user. A smoke test hits `/v1/health` (with the commit), checks that `/v1/traces` needs the key, and checks that the guard allows a count and refuses a `DROP`. Then it records memory and runs a **Trivy** scan that fails on fixable CRITICAL findings. Nothing is pushed to a registry from here; a release pushes the image (see Releases).
 - **Load test** (`load-test.yml`, weekly on Tuesdays and on dispatch, backlog items 20 and 7): `scripts/load_test.py` runs `/query` at 1, 5 and 20 concurrent users on **recorded** answers, so it costs $0 and makes no model calls. It reports p50, p95, p99 and throughput. Results are in [`docs/benchmarks.md`](docs/benchmarks.md). The same run checks the **SLOs** below (`slo.py`). A miss opens one `slo-miss` issue, a later run comments on it, and the first run that meets every target closes it.
 - **Full eval nightly** (`eval-nightly.yml`) — two jobs: all 42 hospital cases, then all 28 FHIR cases (building its Gold from Synthea, cached), 3 runs each. Accuracy below the gate fails the build. An inconclusive run (the provider unavailable, a case never answered, or an attempt over its time limit) is **retried once after 5 minutes, then fails** (`scripts/eval_gate.sh`), so a nightly cannot quietly end grey or green without a result. The FHIR job runs even when the hospital job is red.
@@ -727,6 +727,26 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   worst case against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` ($1.00, estimated) per UTC day;
   past either it gets 429 until midnight UTC. In memory, so a restart resets the count;
   provider-side spend caps are the backstop. `/metrics` shows `llm_budget`.
+- [x] **`/datasets` cached and rate-limited** (audit item 36): open as before, but its row
+  counts run once per data vintage and the endpoint is limited by `RATE_LIMIT_READ`.
+- [x] **Failed API keys counted and audited** (audit item 35): every refused key on the API
+  and MCP is an `auth_failure` audit event with the client's count in a 5-minute window
+  (never the key). **By default this does not slow guessing**: on Render every caller
+  shares the proxy's address until item 38, so a lockout would let one scanner lock
+  everyone out. `AUTH_FAILURE_LOCKOUT=1` gives a client over `AUTH_FAILURES_PER_WINDOW`
+  (10) a 429 on every request until its window ends; turn it on where addresses are real.
+- [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
+  characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
+  it lists are **not** fixed yet.
+- [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
+  frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
+  only runs its own script (by hash), so injected script could not read the stored key.
+- [x] **CI actions pinned to commit SHAs** (audit item 31): no workflow runs a movable
+  action tag; `tests/unit/test_workflow_pins.py` fails on one that does.
+- [x] **The agent's database connection is locked down** (audit item 30): no file or network
+  access and no extension loading, with the configuration locked so generated SQL cannot
+  undo it. This layer sits under the guard: even SQL that slipped past the guard could not
+  read the server's environment or call out (`tests/security/test_duckdb_lockdown.py`).
 
 ## Service level objectives
 

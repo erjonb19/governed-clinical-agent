@@ -60,6 +60,7 @@ from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import (NLToSQLPlanner, SCHEMA_DOC,
                                SCHEMA_DOC_HOSPITAL, SCHEMA_DOC_FHIR)
+import auth_failures
 import cost_tracker
 import llm_budget
 import schema_check
@@ -170,14 +171,36 @@ def _rate_limit_key(request: Request) -> str:
 limiter = Limiter(key_func=_rate_limit_key, storage_uri=RATE_LIMIT_STORAGE)
 
 
-def require_api_key(provided: Optional[str] = Security(_api_key_header)) -> None:
+def _client_address(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def require_api_key(
+    request: Request, provided: Optional[str] = Security(_api_key_header)
+) -> None:
     if not API_KEY:
         return  # dev mode: no key configured, allow (see /health auth_enabled)
-    if provided is None or not hmac.compare_digest(provided, API_KEY):
+    client = _client_address(request)
+    ok = provided is not None and hmac.compare_digest(provided, API_KEY)
+    # Backlog item 35: every refused key is counted and audited per client.
+    # With AUTH_FAILURE_LOCKOUT on, a client over the limit gets 429 for every
+    # request until its window ends; off (the default, see auth_failures.py)
+    # it is audit and counting only.
+    if auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client):
+        if not ok:
+            auth_failures.FAILURES.record(client, request.url.path, "api")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or missing API key (send header X-API-Key)",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed API key attempts; try again later",
+            headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
         )
+    if ok:
+        return
+    auth_failures.FAILURES.record(client, request.url.path, "api")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="invalid or missing API key (send header X-API-Key)",
+    )
 
 # Built once at startup, shared across requests. FastAPI runs sync endpoints in
 # a threadpool. Queries no longer share one lock (backlog item 20): the query
@@ -275,6 +298,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"WARNING: audit log disabled ({e})")
     runtime = AgentRuntime(audit_logger=audit)
+    auth_failures.FAILURES.audit = audit    # refused keys go to the same audit log
     runtime.load_policy(POLICY_PATH)
     _analytics = AnalyticsQueryTool(
         db_path=GOLD_DB, seed_demo=False,
@@ -338,6 +362,7 @@ async def lifespan(app: FastAPI):
         yield
     if "mcp_server" in sys.modules:
         sys.modules["mcp_server"].attach_host()     # detach: no logger or lock outlives the app
+    auth_failures.FAILURES.audit = None
     _STATE.clear()
 
 
@@ -390,11 +415,178 @@ class _APIVersionPrefix:
             await send(message)
         await self.app(scope, receive, send_with_version)
 
+# Request size limits (security audit item 34, SECURITY_STANDARDS 7.1 / 8):
+# a question goes straight into a model prompt, so an unbounded one spends
+# quota (or money); reviewer text is stored. Over a field limit is a 422 from
+# validation; over the body limit is a 413 before anything is parsed.
+MAX_QUESTION_CHARS = 2_000
+MAX_SQL_CHARS = 20_000
+MAX_TEXT_CHARS = 20_000      # an approval reason or an edited proposal
+MAX_NAME_CHARS = 200         # names, decisions, datasets, backends
+MAX_BODY_BYTES = 64 * 1024
+
+
+class _BodySizeLimit:
+    """Refuse a request body over MAX_BODY_BYTES with 413 (item 34), by its
+    Content-Length or, for a chunked body without one, by counting the bytes
+    as they arrive. Runs before routing, so nothing parses an oversized body."""
+
+    def __init__(self, app, limit: int = MAX_BODY_BYTES):
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        for k, v in scope.get("headers") or []:
+            if k.lower() == b"content-length":
+                try:
+                    too_big = int(v) > self.limit
+                except ValueError:
+                    too_big = True
+                if too_big:
+                    return await self._refuse(send)
+        seen = 0
+        tripped = False
+        started = False
+
+        class _TooBig(Exception):
+            pass
+
+        async def counting_receive():
+            nonlocal seen, tripped
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > self.limit:
+                    tripped = True
+                    raise _TooBig()
+            return message
+
+        async def guarded_send(message):
+            # once the body is too big, whatever the app answers (FastAPI turns a
+            # failed body read into a 400) is dropped: the 413 below is the answer
+            nonlocal started
+            if tripped:
+                return
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            # _TooBig may arrive bare, wrapped in an ExceptionGroup (anyio task
+            # groups), or not at all (caught by the framework); the flag is the
+            # truth. Anything else, unrelated to the size, propagates.
+            if not tripped:
+                raise
+        if tripped and not started:
+            await self._refuse(send)
+
+    async def _refuse(self, send):
+        body = (b'{"detail":"request body too large (limit ' + str(self.limit).encode()
+                + b' bytes)"}')
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+def inline_scripts(html: str) -> list[str]:
+    """The text of each inline <script> (no src) in a page, exactly as the browser
+    hashes it for a CSP. An HTML parser, not a regex: a regex over HTML misses
+    forms such as `</script >` (CodeQL py/bad-tag-filter)."""
+    from html.parser import HTMLParser
+
+    class _Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._inline = False
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._inline = not any(k == "src" for k, _ in attrs)
+                self._buf = []
+
+        def handle_data(self, data):
+            if self._inline:
+                self._buf.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._inline:
+                self.bodies.append("".join(self._buf))
+                self._inline = False
+
+    p = _Scripts()
+    p.feed(html)
+    p.close()
+    return p.bodies
+
+
+class _SecurityHeaders:
+    """Security headers on every response (security audit item 33, SECURITY_
+    STANDARDS 9): no MIME sniffing, no referrer beyond the origin, no camera /
+    microphone / location, HSTS, and no framing. The UI page also gets a Content
+    Security Policy: scripts only from this origin plus the page's one inline
+    script, by its SHA-256 (computed from the file served, so they cannot
+    drift); no inline event handlers; no frames, objects or base-URI changes.
+    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
+    behind a flag is its own item (53)."""
+
+    COMMON = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),
+        (b"x-frame-options", b"DENY"),
+    ]
+    CSP_PATHS = ("/ui", "/v1/ui")
+
+    def __init__(self, app):
+        self.app = app
+        self.csp = self.build_csp().encode()
+
+    @staticmethod
+    def build_csp() -> str:
+        import base64
+        import hashlib
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
+                  encoding="utf-8") as f:
+            html = f.read()
+        hashes = " ".join(
+            "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+            + "'" for body in inline_scripts(html))
+        return ("default-src 'self'; script-src 'self' " + hashes + "; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+                "frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {k.lower() for k, _ in headers}
+                headers += [(k, v) for k, v in self.COMMON if k not in present]
+                if path in self.CSP_PATHS:
+                    headers.append((b"content-security-policy", self.csp))
+                message = {**message, "headers": headers}
+            await send(message)
+        await self.app(scope, receive, send_with_headers)
+
+
 # wire the limiter: state, the 429 handler, and the middleware that enforces it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # added last = runs first, before routing
+app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
+app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
 
 
 class _MCPEndpoint:
@@ -456,32 +648,40 @@ def _ui():
 # Request / response models -- the contract.
 # ---------------------------------------------------------------------------
 class QueryRequest(BaseModel):
-    question: str = Field(..., examples=["Which hospitals give the best value, high quality and low cost?"])
-    backend: Optional[str] = Field(None, description="data backend: local (default) | databricks")
-    dataset: Optional[str] = Field(None, description="dataset: hospital | fhir")
+    question: str = Field(..., max_length=MAX_QUESTION_CHARS,
+                          examples=["Which hospitals give the best value, high quality and low cost?"])
+    backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="data backend: local (default) | databricks")
+    dataset: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="dataset: hospital | fhir")
 
 
 class SqlRequest(BaseModel):
-    sql: str = Field(..., examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
-    backend: Optional[str] = Field(None, description="data backend: local (default) | databricks")
-    dataset: Optional[str] = Field(None, description="dataset: hospital | fhir")
+    sql: str = Field(..., max_length=MAX_SQL_CHARS,
+                     examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
+    backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="data backend: local (default) | databricks")
+    dataset: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
+                                   description="dataset: hospital | fhir")
 
 
 class ProposeRequest(BaseModel):
-    question: str = Field(..., examples=["Which hospitals have the worst heart failure readmission rates?"])
-    capability: str = Field("brief.commit", examples=["brief.commit"])
+    question: str = Field(..., max_length=MAX_QUESTION_CHARS,
+                          examples=["Which hospitals have the worst heart failure readmission rates?"])
+    capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
 
 
 class DecisionRequest(BaseModel):
     """A reviewer's verdict on a pending proposal."""
-    decision: str = Field(..., examples=["approve"],
+    decision: str = Field(..., max_length=MAX_NAME_CHARS, examples=["approve"],
                           description="approve | reject | escalate | approve_with_edits")
-    decided_by: str = Field(..., examples=["e.brucaj"])
-    reason: Optional[str] = None
+    decided_by: str = Field(..., max_length=MAX_NAME_CHARS, examples=["e.brucaj"])
+    reason: Optional[str] = Field(None, max_length=MAX_TEXT_CHARS)
     edited_proposal: Optional[str] = Field(
-        None, description="required when decision is approve_with_edits")
+        None, max_length=MAX_TEXT_CHARS,
+        description="required when decision is approve_with_edits")
     escalated_to: Optional[str] = Field(
-        None, description="required when decision is escalate")
+        None, max_length=MAX_NAME_CHARS, description="required when decision is escalate")
 
 
 class GovernedResponse(BaseModel):
@@ -659,14 +859,45 @@ def schema(dataset: Optional[str] = None) -> dict:
     return {"capability": CAPABILITY, "dataset": ds, "schema": DATASETS[ds]["schema_doc"]}
 
 
+_DATASET_COUNTS: dict[tuple[str, float], list[dict]] = {}
+_DATASET_COUNTS_LOCK = threading.Lock()
+
+
+def _table_counts(active: str, db: str) -> list[dict]:
+    """Row counts per table, through the guard, computed once per data vintage
+    (the Gold file's mtime) and dataset (item 36): an unauthenticated caller
+    can no longer make the server run one query per table on every request."""
+    mtime = os.path.getmtime(db) if os.path.exists(db) else 0.0
+    key = (active, mtime)
+    with _DATASET_COUNTS_LOCK:
+        hit = _DATASET_COUNTS.get(key)
+    if hit is not None:
+        return [dict(t) for t in hit]
+    tables = []
+    for t in sorted(schema_check.tables_in_schema_doc(DATASETS[active]["schema_doc"])):
+        res = run_governed_sql(f"SELECT count(*) AS n FROM {t}", dataset=active)
+        rows = res.get("rows") or []
+        tables.append({"table": t, "rows": rows[0].get("n") if rows else None})
+    if all(t["rows"] is not None for t in tables):   # a failed count is retried next time
+        with _DATASET_COUNTS_LOCK:
+            for k in [k for k in _DATASET_COUNTS if k[0] == active]:
+                del _DATASET_COUNTS[k]
+            _DATASET_COUNTS[key] = [dict(t) for t in tables]
+    return tables
+
+
 @app.get("/datasets")
-def datasets(dataset: Optional[str] = None) -> dict:
+@limiter.limit(RATE_LIMIT_READ)
+def datasets(request: Request, dataset: Optional[str] = None) -> dict:
     """What the agent is pulling from: the active Gold dataset, its tables + row
     counts, when it was last built/refreshed, and monthly-refresh status. Powers
-    the 'What's inside' view. Read-only, no auth (like /health).
+    the 'What's inside' view. Read-only, no auth (like /health): the UI's Data
+    view and the nightly live check load it without a key.
 
     Table names come from the schema doc (the guard blocks information_schema);
     row counts run THROUGH the guard (run_governed_sql), so nothing bypasses it.
+    Item 36: rate-limited (RATE_LIMIT_READ, per client address without a key)
+    and the counts are cached per data vintage.
     """
     active = _dataset(dataset)
     db = DATASETS[active]["db"]
@@ -686,10 +917,7 @@ def datasets(dataset: Optional[str] = None) -> dict:
     if os.path.exists(db):
         ts = os.path.getmtime(db)
         info["last_built"] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    for t in sorted(schema_check.tables_in_schema_doc(DATASETS[active]["schema_doc"])):
-        res = run_governed_sql(f"SELECT count(*) AS n FROM {t}", dataset=active)
-        rows = res.get("rows") or []
-        info["tables"].append({"table": t, "rows": rows[0].get("n") if rows else None})
+    info["tables"] = _table_counts(active, db)
     if os.path.exists(_REFRESH_PATH):
         try:
             with open(_REFRESH_PATH) as f:
