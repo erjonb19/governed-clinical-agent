@@ -10,8 +10,9 @@ WORKFLOWS = os.path.join(os.path.dirname(__file__), "..", "..", ".github", "work
 
 
 def test_every_workflow_sets_top_level_permissions():
-    files = sorted(glob.glob(os.path.join(WORKFLOWS, "*.yml"))
-                   + glob.glob(os.path.join(WORKFLOWS, "*.yaml")))
+    files = sorted(
+        glob.glob(os.path.join(WORKFLOWS, "*.yml")) + glob.glob(os.path.join(WORKFLOWS, "*.yaml"))
+    )
     assert files
     missing = []
     for path in files:
