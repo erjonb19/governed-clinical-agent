@@ -27,9 +27,9 @@ jobs:
     # capped at 32 min by the gate so an overrun is red, not "cancelled"
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload eval report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: eval-report-nightly
           path: eval_runs/
@@ -102,9 +102,9 @@ jobs:
     # two attempts (~15 min each when healthy) + 5 min wait, each capped at 25
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -128,7 +128,7 @@ jobs:
       # fetch/build logic changes.
       - name: Cache FHIR Gold
         id: fhir-cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             data/synthea
@@ -167,7 +167,7 @@ jobs:
 
       - name: Upload FHIR eval report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: eval-report-fhir-nightly
           path: eval_runs/

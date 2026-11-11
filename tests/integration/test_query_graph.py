@@ -304,3 +304,40 @@ def test_a_guard_refusal_evicts_the_cached_plan(make_client, monkeypatch):
     agent_graph._forget_failed_plan({"plan_cache_key": "k1"})
     agent_graph._forget_failed_plan({"plan_cache_key": None})
     assert evicted == ["k1"]
+
+
+# Item 40: a client sees the exception's type and a trace id, never its text;
+# the text is in the trace (authenticated) and the server log.
+SECRETISH = "/srv/app/.cache/provider said: key sk-test-not-real at /home/x/secret.yaml"
+
+
+@pytest.mark.parametrize("mode", ["graph", "single"])
+def test_planner_error_text_stays_out_of_the_response(make_client, mode):
+    c, _ = make_client({"down": [("raise", RuntimeError(SECRETISH))]}, mode=mode)
+    body = c.post("/query", json={"question": "down?"}, headers=H).json()
+    assert body["decided_by"] == "planner_error"
+    assert "RuntimeError" in body["reason"] and body["trace_id"] in body["reason"]
+    assert "secret" not in json.dumps(body) and "/srv" not in json.dumps(body)
+    t = c.get(f"/traces/{body['trace_id']}", headers=H).json()
+    assert "secret.yaml" in json.dumps(t), "the detail belongs in the trace"
+
+
+def test_health_reports_startup_errors_by_type_only(make_client):
+    c, _ = make_client({})
+    import app as app_module
+
+    for name in ("planner_error", "graph_error", "approval_error"):
+        app_module._STATE[name] = app_module._public_error(ValueError(SECRETISH))
+    app_module._STATE["planner_error"] = app_module._public_error(SystemExit(SECRETISH))
+    h = c.get("/health").json()
+    blob = json.dumps(h)
+    assert "secret" not in blob and "/srv" not in blob, h
+    assert h["planner_error"].startswith("SystemExit") and h["approval_error"] == "ValueError"
+    assert "/" not in h["gold_db"], "a file name, never a server path"
+    tool = app_module._STATE["analytics_tool"]
+    tool._primary_error = f"IOException: {SECRETISH}"
+    tool._databricks_error = f"SystemExit: {SECRETISH}"
+    b = c.get("/health").json()["backends"]
+    assert b["local_db_error"] == "IOException" and b["databricks_error"] == "SystemExit"
+    assert "/" not in (b["local_db"] or ""), b
+    assert "secret" not in json.dumps(b)

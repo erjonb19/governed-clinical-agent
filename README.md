@@ -722,7 +722,42 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `slo-miss` issue. `/metrics` reports p50/p95/p99 of model calls.
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
+  it lists are **not** fixed yet, except those ticked below.
+- [x] **Images pinned by digest** (audit item 50): base, Phoenix and CI Postgres images.
+- [x] **Least-privilege release workflow** (audit item 49): tests run read-only; only a job
+  that runs no repository code may create the release.
+- [x] **Read-only workflow tokens** (audit item 48): every workflow declares top-level
+  permissions; the test, eval and MCP workflows run with `contents: read`.
+- [x] **Dependabot cooldown** (audit item 46): new versions wait 7 days before Dependabot
+  proposes them; security updates are not delayed.
+- [x] **Row cap on set operations** (audit item 43): a UNION returns at most the row cap and
+  says `truncated: true`; the fetch stops one row past the cap.
+- [x] **No exception text to clients** (audit item 40): errors answer with their type and
+  the trace id; the details are in the trace and the server log; `/health` shows types only.
+- [x] **Daily model budget** (audit item 37): every run that calls the model reserves its
+  worst case against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` ($1.00, estimated) per UTC day;
+  past either it gets 429 until midnight UTC. In memory, so a restart resets the count;
+  provider-side spend caps are the backstop. `/metrics` shows `llm_budget`.
+- [x] **`/datasets` cached and rate-limited** (audit item 36): open as before, but its row
+  counts run once per data vintage and the endpoint is limited by `RATE_LIMIT_READ`.
+- [x] **Failed API keys counted and audited** (audit item 35): every refused key on the API
+  and MCP is an `auth_failure` audit event with the client's count in a 5-minute window
+  (never the key). **By default this does not slow guessing**: on Render every caller
+  shares the proxy's address until item 38, so a lockout would let one scanner lock
+  everyone out. `AUTH_FAILURE_LOCKOUT=1` gives a client over `AUTH_FAILURES_PER_WINDOW`
+  (10) a 429 on every request until its window ends; turn it on where addresses are real.
+- [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
+  characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
   it lists are **not** fixed yet.
+- [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
+  frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
+  only runs its own script (by hash), so injected script could not read the stored key.
+- [x] **CI actions pinned to commit SHAs** (audit item 31): no workflow runs a movable
+  action tag; `tests/unit/test_workflow_pins.py` fails on one that does.
+- [x] **The agent's database connection is locked down** (audit item 30): no file or network
+  access and no extension loading, with the configuration locked so generated SQL cannot
+  undo it. This layer sits under the guard: even SQL that slipped past the guard could not
+  read the server's environment or call out (`tests/security/test_duckdb_lockdown.py`).
 
 ## Service level objectives
 

@@ -33,6 +33,6 @@ services:
       - phoenix
 
   phoenix:
-    image: arizephoenix/phoenix:version-21.0.0   # = arize-phoenix 21.0.0, as measured in the README
+    image: arizephoenix/phoenix:version-21.0.0@sha256:1f9a144a5357b4973e93a15718f050247cb7a4ee7b7c6c06ecb91b5eed3fbaad   # = arize-phoenix 21.0.0, as measured in the README
     ports:
       - "6006:6006"
