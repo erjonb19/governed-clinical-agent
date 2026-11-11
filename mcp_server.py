@@ -539,13 +539,23 @@ class MCPAuth:
         if not origin_allowed(headers.get("origin"), self.origins):
             return await _json(send, 403, {"detail": "origin not allowed"})
         given = presented_key(headers)
-        if self.key is not None:
-            if given is None or not hmac.compare_digest(given.encode(), self.key.encode()):
-                return await _json(send, 401, {"detail": "missing or invalid API key"},
-                                   [(b"www-authenticate", b"Bearer")])
         # keyed: one bucket per (valid) key. Open access: the peer address, since
         # an unchecked header would let a caller mint a fresh bucket per request.
         peer = str((scope.get("client") or ("?",))[0])
+        if self.key is not None:
+            # backlog item 35: refused keys are counted and audited per client
+            # (auth_failures.py); with AUTH_FAILURE_LOCKOUT, a client past the limit gets 429
+            from auth_failures import FAILURES
+            ok = given is not None and hmac.compare_digest(given.encode(), self.key.encode())
+            throttled = FAILURES.lockout and FAILURES.throttled(peer)
+            if not ok:
+                FAILURES.record(peer, scope.get("path", ""), "mcp")
+            if throttled:
+                return await _json(send, 429, {"detail": "too many failed API key attempts"},
+                                   [(b"retry-after", str(FAILURES.retry_after(peer)).encode())])
+            if not ok:
+                return await _json(send, 401, {"detail": "missing or invalid API key"},
+                                   [(b"www-authenticate", b"Bearer")])
         client = given if self.key is not None else peer
         if not self.limit.allow(client):
             return await _json(send, 429, {"detail": "rate limit exceeded"},

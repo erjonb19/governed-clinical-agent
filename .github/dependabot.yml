@@ -9,6 +9,11 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # a version must be a week old before Dependabot proposes it (audit item 46):
+    # most malicious releases are caught and yanked within days. Security
+    # updates are not delayed by a cooldown.
+    cooldown:
+      default-days: 7
     # The guard's own pins (setup.py GUARD_PINS = requirements-api.txt): a new
     # sqlglot once made the PHI check refuse every FHIR query (30.29.0), so
     # bumping them is a deliberate guard change the owner merges, never a
@@ -24,6 +29,21 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       actions:
+        patterns: ["*"]
+  # base images, pinned by digest (audit item 50): Dependabot proposes the new
+  # digest when the tag moves. The Postgres service image in tests.yml and the
+  # Phoenix image in docker-compose.yml are bumped by hand.
+  - package-ecosystem: docker
+    directories: ["/", "/docker"]
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      images:
         patterns: ["*"]
