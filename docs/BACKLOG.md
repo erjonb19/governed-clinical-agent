@@ -10,9 +10,14 @@ depend on it.
 Each item has **Done when** (how we will know) and **Today** (what already
 exists, checked against the code on 2026-11-06, so nothing is built twice).
 
-## Order of work (owner, 2026-11-08)
+## Order of work (owner, 2026-11-08; updated 2026-11-11)
 
-**First (owner, 2026-11-09): item 28, the security audit** (plan only), after any PR already in progress. The items it adds are placed by the owner when he merges it.
+**First (owner, 2026-11-11): the security audit's items, in the audit's proposed placement** (item 28 is done; `docs/SECURITY_AUDIT_2026-11-10.md`), after the open PRs #40 and #83:
+1. **30, 31**: the two Highs (DuckDB external access; Actions pinned to SHAs).
+2. **The Mediums that close exposure:** 33, 34, 35, 36, 37, 40, 43, then 44-51 (branch protection, `uv` lockfile and cooldown — `uv` approved, owner 2026-11-11 — Dependabot cooldown, secret scanning, workflow permissions, release permissions, image digests, checksums).
+3. **Then item 22** (which closes or unblocks 32, 38, 42 and 56), then 39, 41 (with item 23), 52 and the Lows 53-69, as the audit placed them; the original order's remaining steps (8 and 9) are below, with 27 last.
+
+The original order (2026-11-08), kept for its remaining steps:
 
 1. **Open PRs first.** #40 (age cap): bring it up to date with `main` (which now has #50),
    run its full FHIR eval on a GitHub runner, and **ask the owner before merging**. #46
@@ -297,10 +302,16 @@ What real AI, data and software engineering teams would add, checked against the
 
 ### Security audit items (item 28, 2026-11-10; the owner places them in the Order of work)
 
-- [ ] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: analytics_query_tool.py:155, :171, :204; data_backends.py:37
   - Done when: open every agent connection with enable_external_access, autoinstall and autoload off and lock_configuration on (lock last); a test that a cursor cannot SET it back or read a file with the guard bypassed; a test or check shows it.
 - [x] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
+  - **Done 2026-11-11, in the PR "Item 30".**
+    - **The change:** every agent DuckDB connection now goes through `connect_agent_db` / `lock_down` in `analytics_query_tool.py`. That covers the tool's primary connection, its dataset connections and its seeded `:memory:` demo, plus the eval harness's `LocalDuckDBBackend`. Each one gets `enable_external_access`, `autoinstall_known_extensions` and `autoload_known_extensions` off, then `lock_configuration` on.
+    - **Why runtime SET:** DuckDB refuses a second connection to one file with a different connect-time config. Connections to one file share one instance, so the settings cover all of them.
+    - **Tests:** `tests/security/test_duckdb_lockdown.py`, 26 of them, run directly on the connections with the guard bypassed. They check that the settings are off and locked, that generated `SET`s cannot undo them, and that `read_text('/proc/self/environ')`, `read_csv` of a file or URL, and `ATTACH` are all refused. Queries through the guard still answer.
+
+- [ ] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: every .github/workflows/*.yml, ~52 `uses:` lines (e.g. tests.yml:22 actions/checkout@v7, codeql.yml:29 github/codeql-action/init@v4)
   - Done when: Pin each to `@<40-char sha> # vX.Y.Z`; Dependabot's github-actions updates (already on) keep SHAs current.; a test or check shows it.
   - **Done 2026-11-11, in the PR "Item 31".**

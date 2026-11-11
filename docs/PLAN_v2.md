@@ -643,6 +643,16 @@ release first would break FHIR on Render in between.
    Building starts only after the owner OKs the plain-words explanation of
    PR A and of the floor.
 
+### 0.7 Owner's standing decisions log
+
+Newest first. Each entry is a standing rule; the dated sections above hold the reasoning for
+decisions taken inside one piece of work.
+
+| Date | Decision |
+|---|---|
+| 2026-11-11 | **Rule 0, merging.** The agent merges PRs itself, including ones marked "owner merges", when CI is green on the final commit and a fresh review by a separate agent that did not write the change finds nothing blocking. Guard and PHI PRs also need the `eval-fhir-manual.yml` comparison to pass (branch at least as accurate as main). Still asked first, in chat: anything that spends money, release tags, Render or Databricks changes, deleting data, and any change to `.claude/settings.json` or other permission settings (PR opened, then stop). Also in `CLAUDE.md`'s ground rules. |
+| 2026-11-11 | Security audit (#91) approved and its proposed placement adopted: items 30 and 31 (the two Highs) first, then the Mediums that close exposure, all before item 22. `uv` approved where the audit proposes it (item 45: lockfile and release-age cooldown). |
+
 ## 1. Anthropic backend: configurable model, default `claude-haiku-5-5`
 
 **Change** (`nl_to_sql_planner.py`):
