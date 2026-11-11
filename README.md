@@ -723,9 +723,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
-- [x] **No row multipliers on patient data** (item 71): `unnest()` and other set-returning
-  functions are refused outside FROM in queries on patient data; in a projection they could carry
-  one person's exact age or zip out of a single query that still covered 11 people.
+- [x] **No row multipliers on patient data** (item 71): `unnest()` in a projection, a constant row
+  source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
+  each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
+  that still covered 11 people. Patient tables join on `patient_id`.
 - [x] **Images pinned by digest** (audit item 50): base, Phoenix and CI Postgres images.
 - [x] **Least-privilege release workflow** (audit item 49): tests run read-only; only a job
   that runs no repository code may create the release.

@@ -1812,6 +1812,123 @@ def _row_multiplier(tree: exp.Expression) -> Optional[str]:
     return None
 
 
+def _source_kind(src: exp.Expression, root: exp.Expression, depth: int = 0) -> str:
+    """'rows' (patient rows, one per record), 'agg' (patient data already
+    aggregated), or 'other' (no patient table: a table function, VALUES,
+    unnest, a public table)."""
+    if depth > 20:
+        return "rows"                                      # fail closed
+    if isinstance(src, exp.Subquery):
+        return _body_kind(src.this, root, depth + 1)
+    if isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier):
+        body = _cte_body(src.name, root)
+        if body is not None:
+            return _body_kind(body, root, depth + 1)
+        return "rows" if (src.name or "").lower() in PROTECTED else "other"
+    return "other"
+
+
+def _body_kind(body: exp.Expression, root: exp.Expression, depth: int) -> str:
+    if isinstance(body, exp.SetOperation):
+        kinds = {_body_kind(body.this, root, depth + 1),
+                 _body_kind(body.expression, root, depth + 1)}
+        return "rows" if "rows" in kinds else ("agg" if "agg" in kinds else "other")
+    if not isinstance(body, exp.Select):
+        return "rows"                                      # fail closed
+    kinds = {_source_kind(x, root, depth + 1) for x in _sources(body)}
+    if not (kinds - {"other"}):
+        return "other"
+    return "agg" if _is_aggregate(body) else "rows"
+
+
+def _key_edges(sel: exp.Select, aliases: set) -> list:
+    """Pairs of source aliases joined by `a.patient_id = b.patient_id` as a
+    top-level AND condition of an ON clause or the WHERE (or USING patient_id)."""
+    conds = []
+    for j in sel.args.get("joins") or []:
+        if j.args.get("on") is not None:
+            conds.append(j.args["on"])
+    if sel.args.get("where") is not None:
+        conds.append(sel.args["where"].this)
+    edges = []
+    for cond in conds:
+        for part in cond.flatten() if isinstance(cond, exp.And) else [cond]:
+            if isinstance(part, exp.EQ) and isinstance(part.this, exp.Column) \
+                    and isinstance(part.expression, exp.Column):
+                l, r = part.this, part.expression
+                if l.name.lower() == r.name.lower() == PERSON_KEY and \
+                        l.table.lower() in aliases and r.table.lower() in aliases and \
+                        l.table.lower() != r.table.lower():
+                    edges.append((l.table.lower(), r.table.lower()))
+    srcs = [s for s in _sources(sel)]
+    names = [(x.alias_or_name or "").lower() for x in srcs]
+    for i, j in enumerate(sel.args.get("joins") or [], start=1):
+        using = j.args.get("using") or []
+        if any((u.name if hasattr(u, "name") else str(u)).lower() == PERSON_KEY for u in using):
+            edges += [(names[i], names[k]) for k in range(i)]
+    return edges
+
+
+def _key_set(setop: exp.SetOperation) -> bool:
+    """A DISTINCT set operation whose every branch selects only patient_id."""
+    if not setop.args.get("distinct"):
+        return False
+    for branch in (setop.this, setop.expression):
+        if isinstance(branch, exp.SetOperation):
+            if not _key_set(branch):
+                return False
+        elif not (isinstance(branch, exp.Select) and len(branch.expressions) == 1
+                  and isinstance(branch.expressions[0].unalias(), exp.Column)
+                  and branch.expressions[0].unalias().name.lower() == PERSON_KEY):
+            return False
+    return True
+
+
+def _row_multiplication(q: exp.Expression) -> Optional[str]:
+    """Item 71 (2026-11-11, review of the first fix): one SELECT may not
+    multiply or duplicate patient rows. A cross join with a constant row source
+    (`gold_patient p, range(1000) t WHERE p.gender = 'male' OR t.i = 0`), a
+    self-join with no key (`gold_patient p, gold_patient q WHERE ... OR ...`), or
+    a UNION ALL of differently filtered branches turned a group the HAVING
+    hides, or one person's value, into an aggregate over 11+ people. Fail
+    closed: patient rows sit only beside other patient rows, joined on the
+    patient key."""
+    for setop in q.find_all(exp.SetOperation):
+        if setop is q:
+            continue                                       # the result itself
+        if _key_set(setop):
+            # UNION / INTERSECT / EXCEPT (distinct) of patient-key sets: no row
+            # can appear twice, so nothing is multiplied (the shape Groq wrote
+            # for f4_chemoradiation_and_cisplatin); its filtering is a hidden
+            # filter the differencing checks already see
+            continue
+        for branch in (setop.this, setop.expression):
+            if _body_kind(branch, q, 0) == "rows":
+                return "a UNION / EXCEPT / INTERSECT of patient rows used as a source"
+    for sel in q.find_all(exp.Select):
+        srcs = _sources(sel)
+        if len(srcs) < 2:
+            continue
+        kinds = {(x.alias_or_name or "").lower(): _source_kind(x, q) for x in srcs}
+        rows = {n for n, k in kinds.items() if k == "rows"}
+        if not rows:
+            continue
+        if any(k == "other" for k in kinds.values()):
+            return "patient rows joined with a table function, VALUES or another non-patient source"
+        if len(rows) > 1:
+            parent = {n: n for n in rows}
+
+            def find(n):
+                while parent[n] != n:
+                    n = parent[n]
+                return n
+            for a, b in _key_edges(sel, set(rows)):
+                parent[find(a)] = find(b)
+            if len({find(n) for n in rows}) > 1:
+                return "patient tables joined without a patient_id = patient_id condition"
+    return None
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1846,6 +1963,11 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
+    multiplied = _row_multiplication(q)
+    if multiplied:
+        return PhiDecision(False, f"PHI rule: {multiplied}. Rows of patient data may not be "
+                                  f"multiplied or duplicated inside a query (fail closed); join "
+                                  f"patient tables on patient_id", findings=[multiplied], protected=True)
     a = _Analysis(q)
     try:
         a.run()

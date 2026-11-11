@@ -566,7 +566,9 @@ def test_a_cross_join_cannot_pad_a_group_past_11(tool):
     r = tool.execute({"sql": "SELECT c.condition_name, count(DISTINCT c.patient_id) AS n "
                              "FROM gold_patient pad, gold_condition c "
                              "WHERE c.condition_name = 'Rare disease' GROUP BY 1"})
-    assert r.success and r.output["rows"] == []
+    # refused outright since item 71 (an unkeyed join multiplies rows); before
+    # that, answered with the group suppressed. Either way the 4 never show.
+    assert (not r.success) or r.output["rows"] == [], r.output
 
 
 def test_a_filtered_count_of_a_small_subgroup_is_nulled(tool):
@@ -1684,7 +1686,8 @@ def _numbers(rows):
 def test_no_pair_of_filtered_counts_recovers_the_3_women(encounter_tool, name):
     r = encounter_tool.execute({"sql": NESTED_PAIRS[name]})
     if not r.success:
-        assert "cannot be checked" in r.error, r.error
+        # item 71 refuses a join with a constant row source outright
+        assert "cannot be checked" in r.error or "non-patient source" in r.error, r.error
         return
     nums = _numbers(r.output["rows"])
     assert 3 not in nums, (name, r.output["rows"])
@@ -2019,8 +2022,61 @@ def test_a_row_multiplier_outside_from_is_refused(tool, name):
     assert "returns rows" in (r.error or ""), r.error
 
 
-def test_constant_set_returning_sources_in_from_still_run():
+def test_a_constant_row_source_beside_patient_rows_is_refused_too():
+    # allowed before item 71's review; a constant source is a multiplier once a
+    # join condition decides whose rows it repeats (see ROW_JOIN_LEAKS)
     for sql in ("SELECT count(*) AS n FROM gold_patient, range(3) r",
                 "SELECT count(*) AS n FROM gold_patient, unnest([1, 2])"):
-        d = validate_query(sql)
-        assert d.allowed, (sql, d.reason)
+        assert not validate_query(sql).allowed, sql
+    assert validate_query("SELECT count(*) AS n FROM range(3) r").allowed   # no patient data
+
+
+# The review of the first item-71 fix (2026-11-11): constant row sources, unkeyed
+# self-joins and UNION ALL duplicate rows with no set-returning function at all.
+# Each recovered a group under 11, or one person's diagnosis or birth year.
+ROW_JOIN_LEAKS = {
+    "a range cross join keyed to a group": (
+        "SELECT count(*) AS n FROM gold_patient p, range(1000) t(i) WHERE p.gender = 'male' OR t.i = 0"),
+    "the same as a JOIN ON": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN range(1000) t(i) ON p.gender = 'male' OR t.i = 0"),
+    "the same through a derived table": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT i FROM range(1000) r(i)) t "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a group's summed ages": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, range(1000000) t(i) "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a self-join with no key": (
+        "SELECT count(*) AS n FROM gold_patient p, gold_patient q WHERE p.gender = 'male' OR q.age_years = 40"),
+    "a key join weakened by OR": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c "
+        "ON c.patient_id = p.patient_id OR p.gender = 'male'"),
+    "UNION ALL of differently filtered branches": (
+        "SELECT count(*) AS n FROM (SELECT patient_id FROM gold_patient UNION ALL SELECT patient_id "
+        "FROM gold_patient WHERE gender = 'male' UNION ALL SELECT patient_id FROM gold_patient "
+        "WHERE gender = 'male') t"),
+    "one person's diagnosis": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON c.patient_id = p.patient_id, "
+        "range(1000) t(i) WHERE (p.age_years = 43 AND c.condition_name = 'Rare disease') OR t.i = 0"),
+    "one person's birth year": (
+        "SELECT sum(year(CAST(birth_date AS DATE))) AS s FROM gold_patient p, range(1000000) t(i) "
+        "WHERE p.age_years = 43 OR t.i = 0"),
+}
+
+
+@pytest.mark.parametrize("name", list(ROW_JOIN_LEAKS))
+def test_patient_rows_cannot_be_multiplied_by_a_join_or_a_union(tool, name):
+    r = tool.execute({"sql": ROW_JOIN_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_patient p "
+    "ON c.patient_id = p.patient_id WHERE p.age_years >= 65 AND c.is_active",
+    "SELECT count(*) AS n FROM gold_patient p, gold_condition c WHERE p.patient_id = c.patient_id",
+    "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c USING (patient_id)",
+    "SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient UNION ALL "
+    "SELECT count(*) FROM gold_patient WHERE gender = 'female') x",
+])
+def test_keyed_joins_and_unions_of_counts_still_run(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
