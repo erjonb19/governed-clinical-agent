@@ -5,6 +5,8 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"           # requirements-api.txt, requirements.txt, setup.py
+    # A bump here must be re-locked: run scripts/lock.sh on the Dependabot branch
+    # and push the .lock files, or tests/unit/test_lockfiles.py fails (item 45).
     schedule:
       interval: weekly
       day: monday

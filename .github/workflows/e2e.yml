@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt -r requirements.txt -r requirements-e2e.txt
+          pip install --require-hashes -r requirements-e2e.lock
           python -m playwright install --with-deps chromium
 
       - name: API + UI scenarios (replayed LLM)

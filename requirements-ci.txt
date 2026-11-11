@@ -1,0 +1,6 @@
+# Test and Gold-build tools the CI jobs install beside the app (backlog item 45).
+# Pinned here so they are hash-locked in requirements-ci.lock with everything else.
+pytest==9.2.0
+pytest-cov==7.1.0
+pytest-mock==3.17.0
+pyarrow==26.0.1      # build_fhir_gold._to_arrow

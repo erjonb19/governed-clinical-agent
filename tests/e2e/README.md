@@ -9,7 +9,7 @@ Real processes, real sockets, a real browser. Collected only with `RUN_E2E=1`
 | `test_ui_e2e.py` | the API and the UI in Chromium, on recorded LLM responses | `e2e.yml`, every push |
 
 ```bash
-pip install -r requirements-api.txt -r requirements.txt -r requirements-e2e.txt
+pip install --require-hashes -r requirements-e2e.lock
 python -m playwright install chromium
 RUN_E2E=1 pytest tests/e2e -q
 ```

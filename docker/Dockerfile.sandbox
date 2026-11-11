@@ -4,8 +4,8 @@ FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b5
 WORKDIR /app
 
 # Copy only what we need for tool execution
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY requirements.lock /app/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 
 COPY src /app/src
 
