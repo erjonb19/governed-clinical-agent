@@ -384,9 +384,10 @@ What real AI, data and software engineering teams would add, checked against the
   - Where: .github/dependabot.yml:6-29
   - Done when: `cooldown: { default-days: 7 }` on pip and github-actions (documented for both; security updates are never delayed by it).; a test or check shows it.
   - Done 2026-11-11: `cooldown: default-days: 7` on both ecosystems in `.github/dependabot.yml`; `tests/unit/test_dependabot_config.py` fails if an ecosystem lacks it. GitHub validates the file on the next Dependabot run (an invalid key shows on the repo's Dependency graph -> Dependabot tab).
-- [ ] **47. No secret scanning in pre-commit or CI** (Medium; security audit finding 18, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **47. No secret scanning in pre-commit or CI** (Medium; security audit finding 18, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: .pre-commit-config.yaml:6-24; no gitleaks/trufflehog job
   - Done when: gitleaks pre-commit hook and a CI job (`gitleaks detect --redact`), pinned.; a test or check shows it.
+  - Done 2026-11-11 (owner approved gitleaks): a `secret-scan` job in tests.yml runs gitleaks 8.30.1, downloaded by pinned version and checked against its published SHA-256, over the full history with `--redact`; the pre-commit hook is pinned to the v8.30.1 commit. The first full-history scan found 3 findings, all false positives checked by hand (a fake `ghp_` token in `tests/unit/test_redaction.py`, twice; an empty key plus a placeholder matched across a newline in the first `.env.example`), listed by fingerprint with the reason in `.gitleaksignore`. `tests/unit/test_secret_scan.py`.
 - [x] **48. Four workflows set no top-level permissions** (Medium; security audit finding 19, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: tests.yml, eval-on-push.yml, mcp-e2e.yml, eval-fhir-manual.yml
   - Done when: `permissions: contents: read` at the top of each.; a test or check shows it.

@@ -1,0 +1,10 @@
+# Known gitleaks false positives (backlog item 47), one fingerprint per line.
+# Add a line only after checking the finding by hand, and say why here.
+#
+# A fake GitHub token (ghp_ + 36 characters drawn from 10 digits) that the
+# redaction test feeds to src/utils/redaction.py to prove it gets masked.
+9c339ebccf6a00faf0ad844e986ba19b18ebc6aa:tests/unit/test_redaction.py:github-pat:62
+9c53aa26d64cce619bfa44fa7062efdf9923ff48:tests/unit/test_redaction.py:github-pat:62
+# .env.example as first committed (#3): an empty CEREBRAS_API_KEY= followed by a
+# placeholder on the next line; the generic rule matched across the newline.
+6ccdfff2a0b45c6eda26941700dd5b033a7619c2:.env.example:generic-api-key:19

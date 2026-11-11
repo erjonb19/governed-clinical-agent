@@ -723,6 +723,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **Secret scanning** (audit item 47): gitleaks (pinned version, checksum-verified) scans the
+  whole git history on every push and PR, and a pre-commit hook scans what is staged;
+  findings are redacted in the log. Checked false positives are listed in `.gitleaksignore`.
 - [x] **Images pinned by digest** (audit item 50): base, Phoenix and CI Postgres images.
 - [x] **Least-privilege release workflow** (audit item 49): tests run read-only; only a job
   that runs no repository code may create the release.
@@ -748,7 +751,6 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (10) a 429 on every request until its window ends; turn it on where addresses are real.
 - [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
   characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
-  it lists are **not** fixed yet.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
