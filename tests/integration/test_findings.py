@@ -200,3 +200,11 @@ def test_an_unexpected_failure_shows_its_type_not_its_text():
         raise OSError("/srv/app/medallion/hospital_gold.duckdb: permission denied")
     cards = findings.compute(boom, "2026-10-04")
     assert cards[0]["status"] == "unavailable" and cards[0]["reason"] == "OSError"
+
+
+def test_an_execution_error_shows_its_kind_not_its_text():
+    def locked(sql):
+        return {"allowed": False, "decided_by": "sql_error",
+                "reason": 'query execution failed: Could not set lock on file "/srv/x.duckdb"'}
+    cards = findings.compute(locked, "2026-10-04")
+    assert cards[0]["reason"] == "sql_error"
