@@ -73,7 +73,9 @@ def test_every_response_carries_the_security_headers(client, path, headers):
 def test_the_ui_csp_allows_exactly_the_page_s_own_inline_script(client):
     r = client.get("/ui")
     csp = r.headers["content-security-policy"]
-    scripts = re.findall(r"<script>(.*?)</script>", r.text, re.S)
+    import app as app_module
+
+    scripts = app_module.inline_scripts(r.text)
     assert scripts, "the page has its inline script"
     for body in scripts:
         h = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()

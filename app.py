@@ -365,6 +365,39 @@ class _APIVersionPrefix:
             await send(message)
         await self.app(scope, receive, send_with_version)
 
+def inline_scripts(html: str) -> list[str]:
+    """The text of each inline <script> (no src) in a page, exactly as the browser
+    hashes it for a CSP. An HTML parser, not a regex: a regex over HTML misses
+    forms such as `</script >` (CodeQL py/bad-tag-filter)."""
+    from html.parser import HTMLParser
+
+    class _Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._inline = False
+            self._buf: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._inline = not any(k == "src" for k, _ in attrs)
+                self._buf = []
+
+        def handle_data(self, data):
+            if self._inline:
+                self._buf.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._inline:
+                self.bodies.append("".join(self._buf))
+                self._inline = False
+
+    p = _Scripts()
+    p.feed(html)
+    p.close()
+    return p.bodies
+
+
 class _SecurityHeaders:
     """Security headers on every response (security audit item 33, SECURITY_
     STANDARDS 9): no MIME sniffing, no referrer beyond the origin, no camera /
@@ -392,13 +425,12 @@ class _SecurityHeaders:
     def build_csp() -> str:
         import base64
         import hashlib
-        import re
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
                   encoding="utf-8") as f:
             html = f.read()
         hashes = " ".join(
             "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
-            + "'" for body in re.findall(r"<script>(.*?)</script>", html, re.S))
+            + "'" for body in inline_scripts(html))
         return ("default-src 'self'; script-src 'self' " + hashes + "; "
                 "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
                 "frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'")
