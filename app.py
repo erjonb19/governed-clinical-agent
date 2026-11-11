@@ -61,6 +61,7 @@ from analytics_query_tool import AnalyticsQueryTool
 from nl_to_sql_planner import (NLToSQLPlanner, SCHEMA_DOC,
                                SCHEMA_DOC_HOSPITAL, SCHEMA_DOC_FHIR)
 import cost_tracker
+import llm_budget
 import schema_check
 import tracing
 import versioning
@@ -204,6 +205,30 @@ MAX_CONCURRENT_RUNS = int(_env_number("MAX_CONCURRENT_RUNS", 4, 1))
 RUN_QUEUE_WAIT_SEC = _env_number("RUN_QUEUE_WAIT_SEC", 15, 0)
 RUN_RETRY_AFTER_SEC = 5
 _RUN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
+
+
+@contextlib.contextmanager
+def _model_budget(planner: Any):
+    """Reserve this run's worst case against the daily model budget (item 37,
+    llm_budget.py), or 429 until the next UTC midnight. Yields a callable that
+    settles the reservation to the run's reported cost."""
+    from agent_graph import MAX_ATTEMPTS
+
+    try:
+        reserved = llm_budget.BUDGET.reserve(llm_budget.worst_case_usd(planner, MAX_ATTEMPTS))
+    except llm_budget.BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=f"{e.reason}; try again tomorrow (UTC)",
+                            headers={"Retry-After": str(e.retry_after)}) from None
+    settled = []
+    yield lambda actual: settled.append(actual)
+    if settled:
+        llm_budget.BUDGET.settle(reserved, settled[-1])
+
+
+def _reported_cost(out: Any) -> Optional[float]:
+    m = out.get("planner_metrics") if isinstance(out, dict) else None
+    v = m.get("est_cost_usd") if isinstance(m, dict) else None
+    return float(v) if isinstance(v, (int, float)) else None
 
 
 @contextlib.contextmanager
@@ -691,8 +716,10 @@ def raw_sql(request: Request, req: SqlRequest) -> dict:
 @app.post("/query", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_QUERY)
 def query(request: Request, req: QueryRequest) -> dict:
-    with _run_slot():
-        return _query(req)
+    with _run_slot(), _model_budget(_STATE.get("planner")) as settle:
+        out = _query(req)
+        settle(_reported_cost(out))
+        return out
 
 
 def _query(req: QueryRequest) -> dict:
@@ -894,6 +921,7 @@ def metrics() -> dict:
     import llm_cache
     out = cost_tracker.summarize()
     out["llm_cache"] = llm_cache.get_cache().stats()
+    out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
     return out
 
 
@@ -945,8 +973,9 @@ def propose(request: Request, req: ProposeRequest) -> dict:
     if agent is None:
         raise HTTPException(status_code=503,
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
-    with _run_slot(), _APPROVAL_LOCK:
-        return agent.start(req.question)
+    with _run_slot(), _model_budget(getattr(agent, "planner", None) or _STATE.get("planner")), \
+            _APPROVAL_LOCK:
+        return agent.start(req.question)   # its cost is not reported: it keeps the worst case
 
 
 @app.get("/approvals", dependencies=[Depends(require_api_key)])

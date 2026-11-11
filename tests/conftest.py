@@ -104,3 +104,18 @@ def _no_answer_cache_by_default(tmp_path, monkeypatch):
         llm_cache.set_cache(None)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _fresh_llm_budget():
+    """The daily model budget is process-wide (item 37): every test starts with
+    a fresh, generous day, so the suite's many /query calls never exhaust it."""
+    import llm_budget
+
+    b = llm_budget.BUDGET
+    saved = (b.max_runs, b.max_usd, b.now)
+    b.max_runs, b.max_usd = 1_000_000, 1_000_000.0
+    b._day = ""
+    yield
+    b.max_runs, b.max_usd, b.now = saved
+    b._day = ""

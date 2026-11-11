@@ -318,9 +318,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:601-638
   - Done when: require_api_key + RATE_LIMIT_READ, or cache the counts per data vintage as /findings does.; a test or check shows it.
-- [ ] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:145-168 (memory://, 20/min per key); agent_graph.py:87; nl_to_sql_planner.py:88
   - Done when: A global daily request and cost budget checked against the worst case before each call (the scheduled_runs.py pattern), max_length on questions (5), provider-side spend caps.; a test or check shows it.
+  - Done 2026-11-11 (code part): `llm_budget.py`. Every /query and /propose run reserves its worst case (every attempt, plan and critic, at full prompt and output, priced with `rate_for`) against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` (1.00, estimated) per UTC day before it starts; a /query run is then charged its reported cost, a run that raises or reports nothing keeps its worst case, so neither cap can be exceeded. Past a cap: 429 with Retry-After to the next UTC midnight. Today's count is in `/metrics` (`llm_budget`). In memory, per process: a restart starts a fresh count. The max_length half is item 34. **Owner:** provider-side spend caps (each provider's console) are not something the agent can set. `tests/unit/test_llm_budget.py`.
 - [ ] **38. Audit events do not say who asked or from where** (Medium; security audit finding 9, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: src/runtime/audit_logger.py:38-56; app.py:212 (agent_id="api"); render.yaml:16
   - Done when: request_id, principal (hash/prefix of the key) and source_ip on every AuditEvent via middleware; uvicorn --proxy-headers --forwarded-allow-ips.; a test or check shows it.
