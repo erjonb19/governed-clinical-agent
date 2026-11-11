@@ -95,6 +95,15 @@ jobs:
           python fetch_synthea.py
           python build_fhir_gold.py
 
+      # The two guard tests that need the real FHIR Gold, which pytest's own
+      # job does not have: every column labelled, and every one of the 28 FHIR
+      # eval answers still returned unsuppressed through the guard. No model.
+      - name: Guard tests on the real FHIR Gold
+        run: |
+          pip install -q pytest pytest-mock
+          python -m pytest -q -p no:cacheprovider tests/security/test_phi_guard.py \
+            -k "every_fhir_column_is_labelled or every_fhir_eval_answer_is_reachable"
+
       - name: Run FHIR quick eval (subset, replayed)
         env:
           PLANNER_PROVIDER: "replay"

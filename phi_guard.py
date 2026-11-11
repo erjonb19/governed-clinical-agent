@@ -1369,6 +1369,419 @@ def _group_complement(sel: exp.Select, keys: list) -> exp.Expression:
     return exp.and_(*conds)
 
 
+# --- combinations of filtered aggregates (owner's decision 2026-11-09) ----------
+# Each filtered aggregate is checked against its own whole above. Two of them in
+# one query can still be subtracted from each other: "women" minus "women with
+# an ER visit" is the 3 women without one, though each count alone is 11+ and
+# leaves 11+ people out of the whole table. The owner's rule compares each
+# pair (the people one holds and the other lacks: 0 or 11+). Pairs are not
+# enough -- total minus "women with a visit" minus "men" (disjoint, so every
+# pair passes) is the same 3 (adversarial review, 2026-11-09) -- so the check
+# is on every REGION of the units' Venn diagram, which implies every pair.
+# Filters the units cannot see (a JOIN, a filtered derived table or CTE) and
+# shapes the check cannot write are refused (fail closed).
+
+_STRIP = ("group", "having", "order", "limit", "offset", "qualify", "distinct", "windows")
+
+
+class _Unit:
+    """One filtered aggregate: its SELECT, person keys, predicates (SQL text,
+    ANDed), the FILTER node if it is one, and whether it counts rows (anything
+    but count(DISTINCT <person key>))."""
+
+    def __init__(self, sel, keys, flt, rows):
+        self.sel, self.keys, self.flt, self.rows = sel, list(keys), flt, rows
+
+    def preds(self, sel: Optional[exp.Select] = None) -> list:
+        sel = self.sel if sel is None else sel
+        out = []
+        where = sel.args.get("where")
+        if where is not None:
+            out.append(where.this.sql(dialect=DIALECT))
+        if self.flt is not None:
+            mine = list(_own_nodes(self.sel, exp.Filter))
+            theirs = list(_own_nodes(sel, exp.Filter))
+            f = theirs[next(i for i, x in enumerate(mine) if x is self.flt)]
+            out.append(f.args["expression"].this.sql(dialect=DIALECT))
+        return out
+
+    @property
+    def grouped(self) -> bool:
+        return self.sel.args.get("group") is not None
+
+
+def _people_count(agg: exp.Expression, keys: list) -> bool:
+    if not isinstance(agg, exp.Count) or not isinstance(agg.this, exp.Distinct):
+        return False
+    args = agg.this.expressions
+    return len(args) == 1 and args[0].sql(dialect=DIALECT).lower() in {k.lower() for k in keys}
+
+
+def _scope_counts_rows(sel: exp.Select, keys: list) -> bool:
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window) \
+                and not isinstance(node.parent, exp.Filter) and not _people_count(node, keys):
+            return True
+        if isinstance(node, exp.Filter) and not _people_count(node.this, keys):
+            return True
+    return False
+
+
+def _enclosing_select(node: exp.Expression) -> Optional[exp.Select]:
+    while node is not None and not isinstance(node, exp.Select):
+        node = node.parent
+    return node
+
+
+# The only aggregates that are NOT differencing units: averages (owner,
+# 2026-11-11). Everything else counts as counting, fail closed -- a list of
+# counting aggregates missed count_star(), regr_count(), fsum()/kahan_sum() of 1s,
+# and var_pop/var_samp give n within one query (fourth review, 2026-11-11).
+_AVERAGE_AGGS = {"avg", "mean", "favg"}
+
+
+def _counting_agg(node: exp.Expression) -> bool:
+    """Can this aggregate's value be turned into a count of people or rows?
+    True for every aggregate except an average."""
+    return _agg_name(node) not in _AVERAGE_AGGS
+
+
+def _counts(sel: exp.Select) -> bool:
+    """Does this scope (outside FILTERed aggregates) count people or rows?"""
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window) and _counting_agg(node):
+            return True
+    return False
+
+
+def _filtered_averages(rewrites: list, filters: list, root: exp.Expression) -> int:
+    """How many FILTERED averages the query holds: scopes whose aggregates are
+    only averages, narrowed by a WHERE or a hidden filter, plus averages with a
+    FILTER clause."""
+    n = sum(1 for sel, _ in rewrites
+            if not _counts(sel) and (sel.args.get("where") is not None
+                                     or _hidden_filter(sel, root)))
+    return n + sum(1 for flt, _ in filters if not _counting_agg(flt.this))
+
+
+def _filtered_units(rewrites: list, filters: list, averages_count: bool = False) -> list:
+    # Only aggregates that can be turned into a group size are units. A single
+    # average beside counts is not (owner, 2026-11-11: a JOIN count beside the
+    # BMI average; its residual risk is the accepted cross-query one, PLAN_v2
+    # 0.4). Two or more FILTERED averages are: with one total count, their
+    # means solve for a small group's size and mean in one query (fifth
+    # review, 2026-11-11) -- so then averages count too (averages_count).
+    units = [_Unit(sel, keys, None, _scope_counts_rows(sel, keys))
+             for sel, keys in rewrites
+             if sel.args.get("where") is not None and (averages_count or _counts(sel))]
+    for flt, keys in filters:
+        sel = _enclosing_select(flt)
+        if sel is not None and (averages_count or _counting_agg(flt.this)):
+            units.append(_Unit(sel, keys, flt, not _people_count(flt.this, keys)))
+    return units
+
+
+def _sources(sel: exp.Select) -> list:
+    nodes = [sel.args.get("from") or sel.args.get("from_"), *(sel.args.get("joins") or [])]
+    return [n.this if isinstance(n, (exp.From, exp.Join)) else n for n in nodes if n is not None]
+
+
+def _sources_sql(sel: exp.Select) -> str:
+    parts = [sel.args.get("from") or sel.args.get("from_"), *(sel.args.get("joins") or [])]
+    return " ".join(p.sql(dialect=DIALECT) for p in parts if p is not None)
+
+
+def _aligned(u: _Unit, v: _Unit) -> Optional[list]:
+    """V's predicates written over U's source aliases, when the two read the
+    same sources (same tables in the same order, same joins once renamed);
+    else None."""
+    us, vs = _sources(u.sel), _sources(v.sel)
+    if not us or len(us) != len(vs):
+        return None
+    rename = {}
+    for a, b in zip(us, vs):
+        if isinstance(a, exp.Table) and isinstance(b, exp.Table):
+            if a.sql(dialect=DIALECT).split(" AS ")[0].lower() != \
+                    b.sql(dialect=DIALECT).split(" AS ")[0].lower():
+                return None
+        elif isinstance(a, exp.Subquery) and isinstance(b, exp.Subquery):
+            if a.this.sql(dialect=DIALECT) != b.this.sql(dialect=DIALECT):
+                return None
+        else:
+            return None
+        rename[(b.alias_or_name or "").lower()] = a.alias_or_name
+    copy = v.sel.copy()
+    for src in _sources(copy):
+        new = rename.get((src.alias_or_name or "").lower())
+        if new:
+            src.set("alias", exp.TableAlias(this=exp.to_identifier(new)))
+    for col in list(copy.find_all(exp.Column)):
+        t = (col.table or "").lower()
+        if t not in rename:
+            continue
+        node, shadowed = col.parent, False
+        while node is not None and node is not copy:
+            if isinstance(node, exp.Select) and t in _own_sources(node):
+                shadowed = True
+                break
+            node = node.parent
+        if not shadowed:
+            col.set("table", exp.to_identifier(rename[t]))
+    if _sources_sql(copy) != _sources_sql(u.sel):
+        return None
+    # the copy's FILTER nodes are found by position, as in u.preds
+    probe = _Unit(v.sel, v.keys, v.flt, v.rows)
+    return probe.preds(copy)
+
+
+def _over(sel: exp.Select, select_sql: str, preds: list) -> str:
+    c = sel.copy()
+    for arg in _STRIP:
+        c.set(arg, None)
+    c.set("expressions", [sqlglot.parse_one(select_sql, read=DIALECT)])
+    c.set("where", exp.Where(this=sqlglot.parse_one(" AND ".join(f"({p})" for p in preds),
+                                                    read=DIALECT)) if preds else None)
+    return exp.Subquery(this=c).sql(dialect=DIALECT)
+
+
+_MAX_UNITS = 3        # 2^3 = 8 regions to check; more than that is refused
+
+
+def _cte_body(name: str, root: exp.Expression) -> Optional[exp.Expression]:
+    for cte in root.find_all(exp.CTE):
+        if (cte.alias_or_name or "").lower() == name.lower():
+            return cte.this
+    return None
+
+
+def _narrows(q: exp.Expression, root: exp.Expression, depth: int = 0) -> bool:
+    """Can this derived source drop people (rows) before the outer aggregate
+    sees them? Fail closed: anything but a plain pass-through counts."""
+    if depth > 20 or not isinstance(q, exp.Select):
+        return True                        # UNION / EXCEPT / INTERSECT, VALUES, ...
+    if any(q.args.get(a) for a in ("where", "having", "qualify", "limit", "offset", "distinct",
+                                   "joins")):
+        return True
+    return any(_source_narrows(src, root, depth + 1) for src in _sources(q))
+
+
+def _source_narrows(src: exp.Expression, root: exp.Expression, depth: int) -> bool:
+    if isinstance(src, exp.Subquery):
+        return _narrows(src.this, root, depth)
+    if isinstance(src, exp.Table):
+        body = _cte_body(src.name, root) if src.name else None
+        return body is not None and _narrows(body, root, depth)
+    return True                            # a table function, a lateral, ...
+
+
+def _hidden_filter(sel: exp.Select, root: exp.Expression) -> bool:
+    """Is this scope's set of rows narrowed by something other than its own
+    WHERE / FILTER -- a JOIN (even on the key, an inner join drops the people
+    with no match), or a filtered derived table or CTE?"""
+    if sel.args.get("joins"):
+        return True
+    return any(_source_narrows(src, root, 0) for src in _sources(sel))
+
+
+def _bare_aggregate(sel: exp.Select) -> bool:
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, (exp.Window, exp.Filter)):
+            return True
+    return False
+
+
+def _regions(f, whole: str, n: int) -> list:
+    """For n units, the number of people in each region of their Venn diagram
+    (in exactly the units of T, in none of the others), as SQL, from union
+    counts only: f(Y) = people in any unit of Y, whole = everyone.
+    people(all of T, none of R) = sum over S subset of T of (-1)^|S| g(R | S),
+    with g(Y) = whole - f(Y), people in none of Y."""
+    from itertools import combinations
+    units = list(range(n))
+
+    def g(ys):
+        return whole if not ys else f"({whole} - {f(tuple(sorted(ys)))})"
+
+    out = []
+    for size in range(0, n + 1):
+        for t in combinations(units, size):
+            r = [u for u in units if u not in t]
+            terms = []
+            for ssize in range(0, len(t) + 1):
+                for sub in combinations(t, ssize):
+                    sign = "-" if ssize % 2 else "+"
+                    terms.append(f"{sign} {g(set(r) | set(sub))}")
+            out.append("(0 " + " ".join(terms) + ")")
+    return out
+
+
+def _row_patterns(preds: list) -> list:
+    """Every in/out pattern of the units' predicates, as a row condition."""
+    from itertools import product
+    out = []
+    for signs in product((True, False), repeat=len(preds)):
+        out.append(" AND ".join(f"({p})" if on else f"({p}) IS NOT TRUE"
+                                for p, on in zip(preds, signs)))
+    return out
+
+
+def _region_ok(x: str) -> str:
+    return f"(({x}) = 0 OR ({x}) >= {MIN_CELL})"
+
+
+def _aggregates_null_side(sel: exp.Select) -> bool:
+    """Does an aggregate of this scope read a column of the null-supplying side
+    of an outer join? Such a side is a filter in the join's ON clause. A RIGHT
+    or FULL join makes every side optional: refused outright (fail closed)."""
+    optional = set()
+    for j in sel.args.get("joins") or []:
+        side = (j.args.get("side") or "").upper()
+        if side in ("RIGHT", "FULL"):
+            return True
+        if side == "LEFT":
+            optional.add((j.this.alias_or_name or "").lower())
+    if not optional:
+        return False
+    for node in _own_nodes(sel, exp.Expression):
+        if is_agg(node) and not isinstance(node.parent, exp.Window):
+            for col in node.find_all(exp.Column):
+                if (col.table or "").lower() in optional:
+                    return True
+    return False
+
+
+# Columns every person has exactly one value of, in every patient table: a
+# GROUP BY on them partitions people instead of overlapping them.
+_PERSON_CONSTANT = {"gender", "state"}
+
+
+def _person_constant_grouping(sel: exp.Select, root: exp.Expression) -> bool:
+    """With 2+ aggregate scopes, a grouped scope must read base tables
+    directly (no derived table or CTE that could rename a column) and group
+    only by columns constant per person: gender, state, or gold_patient's own
+    columns (sixth review, 2026-11-11). Fail closed otherwise."""
+    tables = {}
+    for src in _sources(sel):
+        if not isinstance(src, exp.Table) or _cte_body(src.name or "", root) is not None:
+            return False
+        tables[(src.alias_or_name or "").lower()] = (src.name or "").lower()
+    for g in sel.args["group"].expressions:
+        cols = list(g.find_all(exp.Column))
+        if not cols:
+            return False
+        for c in cols:
+            table = tables.get((c.table or "").lower())
+            if table is None and len(tables) == 1:
+                table = next(iter(tables.values()))
+            if not (c.name.lower() in _PERSON_CONSTANT or table == "gold_patient"):
+                return False
+    return True
+
+
+def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
+    """{id(select or FILTER node): [SQL conditions]} so that no combination of
+    the filtered aggregates in one query isolates fewer than 11 people: every
+    region of their Venn diagram (relative to the unfiltered rows) holds 0 or
+    11+ people, and, for row counts, so do the people with a row in each
+    in/out pattern. Raises _CannotCorrelate when that cannot be written."""
+    for sel, _ in rewrites:
+        if _aggregates_null_side(sel):
+            # count(DISTINCT x.patient_id) over `LEFT JOIN ... x ON ... AND
+            # x.class_code = 'EMER'` is a filtered count no WHERE/FILTER shows,
+            # beside the unfiltered count of the other side (third review)
+            raise _CannotCorrelate("an aggregate over the optional side of an outer join")
+        group = sel.args.get("group")
+        if group is not None and any(group.args.get(k) for k in ("rollup", "cube",
+                                                                  "grouping_sets")):
+            # several groupings in one scope: a subtotal beside its parts is a
+            # difference the check cannot see (women 15 beside women-with-ER 12)
+            raise _CannotCorrelate("ROLLUP / CUBE / GROUPING SETS over patient rows")
+    averages_count = _filtered_averages(rewrites, filters, root) >= 2
+    counting = [sel for sel, _ in rewrites if averages_count or _counts(sel)]
+    if len(counting) >= 2 and any(_hidden_filter(sel, root) for sel in counting):
+        # a JOIN / filtered CTE or derived table narrows a COUNT no unit sees;
+        # refused only beside another count (owner, 2026-11-11): an AVG next
+        # to it cannot be subtracted to a group size within the query
+        raise _CannotCorrelate("a row filter outside WHERE / FILTER beside another count")
+    if len(rewrites) >= 2:
+        # A GROUP BY is a filter per group. Two grouped scopes at different
+        # grain (by gender vs by gender and class) can be subtracted group by
+        # group, and a column that varies within a person makes the groups
+        # overlap; a grouped scope beside a FILTERED ungrouped one (women 15
+        # beside "women with an ER visit" 12) likewise. Still allowed (owner,
+        # 2026-11-07): grouped scopes on the same keys, each WHERE checked per
+        # group, beside unfiltered totals.
+        keysets = {frozenset(g.sql(dialect=DIALECT).split(".")[-1].lower()
+                             for g in sel.args["group"].expressions)
+                   for sel, _ in rewrites if sel.args.get("group") is not None}
+        if len(keysets) > 1:
+            raise _CannotCorrelate("aggregate scopes grouped differently")
+        if keysets and any(sel.args.get("group") is None
+                           and (sel.args.get("where") is not None
+                                or any(f.find_ancestor(exp.Select) is sel for f, _ in filters))
+                           for sel, _ in rewrites):
+            raise _CannotCorrelate("a grouped scope beside a filtered ungrouped one")
+        for sel, _ in rewrites:
+            if sel.args.get("group") is not None and not _person_constant_grouping(sel, root):
+                # sixth review (2026-11-11): grouping by a column that varies
+                # within a person (class_code) overlaps the groups, so a group
+                # beside the total is a filter (30 - 27 = the 3 women); and a
+                # derived table can rename such a column to look like gender
+                raise _CannotCorrelate("a grouping that is not constant per person beside "
+                                       "another scope")
+    units = _filtered_units(rewrites, filters, averages_count)
+    by_sel: dict = {}
+    for u in units:
+        by_sel.setdefault(id(u.sel), []).append(u)
+    single = len(by_sel) == 1
+    if single:
+        # one SELECT: its WHERE is the base the FILTERs are measured in
+        units = [u for u in units if u.flt is not None]
+    else:
+        # a WHERE unit whose scope only has FILTER aggregates shows nothing of
+        # its own rows; its FILTERs (WHERE AND filter) are the units
+        units = [u for u in units if u.flt is not None or _bare_aggregate(u.sel)]
+    if len(units) < 2:
+        return {}
+    if len(units) > _MAX_UNITS:
+        raise _CannotCorrelate("too many filtered aggregates")
+    rows = any(u.rows for u in units)
+    conds: list = []
+    if single:
+        preds = [u.preds()[-1] for u in units]
+        for k in units[0].keys:
+            def f(ys, k=k):
+                return (f"count(DISTINCT {k}) FILTER (WHERE "
+                        + " OR ".join(f"({preds[i]})" for i in ys) + ")")
+            conds += [_region_ok(x) for x in _regions(f, f"count(DISTINCT {k})", len(units))]
+            if rows:
+                conds += [_region_ok(f"count(DISTINCT {k}) FILTER (WHERE {pat})")
+                          for pat in _row_patterns(preds)]
+    else:
+        if any(u.grouped for u in units):
+            raise _CannotCorrelate("a grouped unit beside another scope's")
+        base = units[0]
+        preds = []
+        for u in units:
+            mapped = base.preds() if u is base else _aligned(base, u)
+            if mapped is None:
+                raise _CannotCorrelate("filtered aggregates over different sources")
+            preds.append(" AND ".join(f"({p})" for p in mapped) or "TRUE")
+        for k in base.keys:
+            def f(ys, k=k):
+                return _over(base.sel, f"count(DISTINCT {k})",
+                             [" OR ".join(f"({preds[i]})" for i in ys)])
+            whole = _over(base.sel, f"count(DISTINCT {k})", [])
+            conds += [_region_ok(x) for x in _regions(f, whole, len(units))]
+            if rows:
+                conds += [_region_ok(_over(base.sel, f"count(DISTINCT {k})", [pat]))
+                          for pat in _row_patterns(preds)]
+    out: dict = {}
+    for u in units:
+        out.setdefault(id(u.flt) if u.flt is not None else id(u.sel), []).extend(conds)
+    return out
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1423,6 +1836,17 @@ def check(tree: exp.Expression) -> PhiDecision:
                 f"checked: subtracting could recover a group of fewer than {MIN_CELL} people; "
                 "name the GROUP BY columns explicitly, or ask for each count in its own query")
             break
+    pair_conds: dict = {}
+    if not a.findings:
+        try:
+            pair_conds = _combination_checks(a.rewrites, a.filters, q)
+        except Exception:     # _CannotCorrelate, or any surprise: deny (fail closed)
+            a.findings.append(
+                "several filtered aggregates over patient rows in one query, in a form whose "
+                "overlap cannot be checked (a JOIN or a filtered derived table beside another "
+                f"aggregate, a grouped one beside another query's, more than {_MAX_UNITS}, or "
+                "different tables): subtracting one from another could recover a group of "
+                f"fewer than {MIN_CELL} people; ask for each count in its own query")
     if a.findings:
         uniq = list(dict.fromkeys(a.findings))
         return PhiDecision(False, f"PHI rule: {'; '.join(uniq)}. {_rule_hint(uniq)}",
@@ -1503,6 +1927,8 @@ def check(tree: exp.Expression) -> PhiDecision:
             + _complement_ok(f"(count(DISTINCT {k}) - count(DISTINCT {k}) FILTER ({where_sql}))",
                              f"count(DISTINCT {k})")
             for k in keys)
+        for extra in pair_conds.get(id(flt), []):
+            guard = f"{guard} AND {extra}"
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
@@ -1513,6 +1939,8 @@ def check(tree: exp.Expression) -> PhiDecision:
         cond = _enough(keys)
         if id(sel) in complements:
             cond = exp.and_(cond, complements[id(sel)])
+        for extra in pair_conds.get(id(sel), []):
+            cond = exp.and_(cond, sqlglot.parse_one(extra, read=DIALECT))
         having = target.args.get("having")
         target.set("having", exp.Having(this=exp.and_(having.this, cond) if having else cond))
     root_sel = q if isinstance(q, exp.Select) else None
