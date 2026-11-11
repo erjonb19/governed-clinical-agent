@@ -141,6 +141,12 @@ jobs:
           python fetch_synthea.py
           python build_fhir_gold.py
 
+      # PLAN_v2 0.6 PR A: build the de-identified file from the real Gold every
+      # night, so its schema and value scans run on real data (exit 1 on a
+      # finding). Not used by the eval yet (PR B moves the agent onto it).
+      - name: Build de-identified FHIR (scans must pass)
+        run: python build_fhir_deid.py
+
       # 3 runs: Gemini's free tier has the headroom Groq lacked. Verified locally
       # at 100% (28/28 cases) with 5s pacing.
       - name: Note the start time

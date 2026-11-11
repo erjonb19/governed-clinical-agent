@@ -243,6 +243,19 @@ In plain terms, for the clinical (FHIR) data:
   identifying data under any name. It also refuses values that look like full
   dates or zip codes. The audit log records the refusal, never the value.
 
+**Ages over 89, and people who have died.** In the de-identified copy being
+built (`build_fhir_deid.py`, `docs/PLAN_v2.md` §0.6), people aged 90 or over
+have no birth year and no age recorded at any of their visits, diagnoses or
+measurements: an event's year minus the age at it would give the birth year
+back. The same applies to anyone born 90 or more years ago who died younger.
+That is the conservative reading of a rule (HIPAA Safe Harbor's for ages over
+89) that is ambiguous for people who have died. It has a cost. On the current
+data it empties a third of the ages at encounters (33%), a fifth at diagnoses
+(19%) and two fifths at measurements (40%), because these 142 patients have
+long records. Their visits and diagnoses still count everywhere else. The
+narrower reading, age at death, is an open question for a real deployment,
+for a privacy officer to decide rather than an engineer.
+
 One limit, stated plainly: cell suppression can in principle be undone by
 subtraction, for example a total minus every visible group. It is recorded in
 `docs/PLAN_v2.md` §0.4, with the options for closing it.
@@ -689,6 +702,7 @@ python build_hospital_gold.py
 
 python fetch_synthea.py                          # ~85MB of FHIR bundles
 python build_fhir_gold.py                        # ~367k resources
+python build_fhir_deid.py                        # de-identified copy: medallion/fhir_deid.duckdb (PLAN_v2 0.6; not yet used by the agent)
 ```
 
 ## Production readiness

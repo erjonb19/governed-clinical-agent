@@ -509,11 +509,35 @@ cannot point into another file). The rules follow HIPAA Safe Harbor:
 | `given_name`, `family_name` | removed |
 | `city` | removed; `state` stays |
 | `postal_code` | `zip3`: the first 3 digits, and `000` where that 3-digit area holds 20,000 people or fewer (Safe Harbor, owner's decision 2026-10-31; current Census figures, checked against the 17 prefixes listed in HHS guidance) |
-| `birth_date` | `birth_year` only, and NULL when the person is 90 or older (Safe Harbor: a birth year implying 90+ is aggregated into 90+) |
+| `birth_date` | `birth_year` only, and NULL for the 90+ group (below): a birth year implying 90+ is aggregated into 90+ |
 | every other date (`start_date`, `onset_date`, `effective_date`, ...) | its **year** only |
 | intervals the analyses need | computed **in the build** from the full dates, then the dates are dropped: `length_of_stay_days`, `days_to_next_encounter` and `readmitted_30d` per encounter, `days_from_onset_to_abatement` per condition |
-| `age_years`, `age_at_*` | capped at 90 (stored as 90, labelled "90+") |
+| `age_years`, `age_at_*` | capped at 90 (stored as 90, labelled "90+"); `age_at_*` NULL at every event of the 90+ group (below) |
 | `measure_name`, `value_num`, `condition_name`, `medication_name`, ... | unchanged |
+
+**Who counts as 90+, and what it costs (owner's decision 2026-11-02).**
+- **The reading chosen.** The 90+ group is everyone aged 90 or over today,
+  **and everyone born 90 or more years ago who died younger.** For that
+  group, birth year is withheld, and so is age at every event, because an
+  event's year minus the age at it gives the birth year back. Their events
+  and event years are kept; they drop out only of breakdowns by age at an
+  event. Age at an event is left empty, not set to 90, which would be a false
+  age. A build scan refuses any event that carries both a year and an age for
+  someone whose birth year is withheld.
+- **Why.** Safe Harbor's age rule ("ages over 89 and all elements of dates,
+  including year, indicative of such age") is ambiguous for people who have
+  died: it is unclear whether "age" means age today or age at death. This is
+  the conservative reading: a birth year 90 or more years ago is treated as
+  indicating an age over 89 either way.
+- **The cost, on the current data.** 142 patients (53 aged 90+, 89 born 90+
+  years ago who died younger) have long records. Their emptied ages at events
+  are 15,365 of 46,868 encounter ages (33%), 1,681 of 8,766 condition ages
+  (19%) and 88,853 of 223,503 observation ages (40%). No FHIR eval case uses
+  an age at an event.
+- **Open question for a real deployment.** The narrower reading would treat
+  a deceased person by their age at death, which keeps most of those ages. It
+  is a legal and privacy judgement, **to be decided by a privacy officer, not
+  by the engineer**, before real patient data is loaded.
 
 **The key question, your decision.** You asked for no patient-level IDs.
 Two things need a way to tell patients apart:
