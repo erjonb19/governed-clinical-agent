@@ -129,7 +129,7 @@ def test_query_past_the_daily_cap_is_429_and_raw_sql_is_not_held_back(client):
 
 
 def test_the_fallback_is_priced_with_its_own_output_cap():
-    from nl_to_sql_planner import PROVIDERS
+    from nl_to_sql_planner import PROVIDERS, rate_for
 
     gemini = SimpleNamespace(
         provider="gemini",
@@ -137,8 +137,8 @@ def test_the_fallback_is_priced_with_its_own_output_cap():
         _max_tokens=800,
         fallback_provider="anthropic",
     )
-    out = PROVIDERS["anthropic"]["max_tokens"]
-    rate = (4000 * 0.10 + out * 0.50) / 1e6  # haiku, the default ANTHROPIC_MODEL
-    assert worst_case_usd(gemini, 3) == pytest.approx(
-        6 * max(rate, (4000 * 0.15 + 800 * 0.60) / 1e6)
-    )
+    fb, out = PROVIDERS["anthropic"]["model"], PROVIDERS["anthropic"]["max_tokens"]
+    r_fb, r_g = rate_for("anthropic", fb), rate_for("gemini", "gemini-flash-lite-latest")
+    per_fb = (4000 * r_fb["input"] + out * r_fb["output"]) / 1e6  # whatever ANTHROPIC_MODEL is
+    per_g = (4000 * r_g["input"] + 800 * r_g["output"]) / 1e6
+    assert worst_case_usd(gemini, 3) == pytest.approx(6 * max(per_fb, per_g))
