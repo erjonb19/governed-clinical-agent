@@ -1793,8 +1793,13 @@ def _row_multiplier(tree: exp.Expression) -> Optional[str]:
         if isinstance(node, exp.Explode):
             name = "unnest"
         elif isinstance(node, exp.Unnest):
-            if isinstance(node.parent, (exp.From, exp.Join, exp.Lateral)):
-                continue
+            if isinstance(node.parent, (exp.From, exp.Join, exp.Lateral)) and \
+                    not any(node.find_all(exp.Column)):
+                continue                 # a constant list in FROM: unnest([1, 2])
+            # review of item 71: `FROM gold_patient p, unnest(CASE WHEN
+            # p.patient_id = 'p3' THEN range(1000000) ELSE [1] END)` -- a FROM
+            # unnest is parsed as Unnest, not a table function, so the
+            # constant-arguments rule never saw its column arguments
             name = "unnest"
         else:
             name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()

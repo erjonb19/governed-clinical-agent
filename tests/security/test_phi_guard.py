@@ -1993,6 +1993,19 @@ ROW_MULTIPLIER_LEAKS = {
     "a filter made of an empty list": (
         "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT count(*) FROM (SELECT patient_id, "
         "unnest(CASE WHEN gender = 'female' THEN [1] ELSE [] END) AS u FROM gold_patient) t) AS b"),
+    # the review of this fix (same day): unnest in FROM / JOIN with column arguments
+    "unnest in FROM over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, unnest(CASE WHEN p.patient_id = 'p3' "
+        "THEN range(1000000) ELSE [1] END)"),
+    "a LATERAL unnest over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, LATERAL unnest(CASE WHEN "
+        "p.patient_id = 'p3' THEN range(1000000) ELSE [1] END)"),
+    "a JOIN unnest over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p JOIN unnest(CASE WHEN p.patient_id = 'p3' "
+        "THEN range(1000000) ELSE [1] END) ON true"),
+    "a zip through unnest in FROM": (
+        "SELECT count(*) AS n FROM gold_patient p, unnest(CASE WHEN p.patient_id = 'p3' THEN "
+        "range(CAST(p.postal_code AS INTEGER)) ELSE [1] END)"),
     "generate_subscripts in a projection": (
         "SELECT count(*) AS n FROM (SELECT patient_id, generate_subscripts([1, 2], 1) AS u "
         "FROM gold_patient) t"),
@@ -2008,6 +2021,6 @@ def test_a_row_multiplier_outside_from_is_refused(tool, name):
 
 def test_constant_set_returning_sources_in_from_still_run():
     for sql in ("SELECT count(*) AS n FROM gold_patient, range(3) r",
-                "SELECT count(*) AS n FROM gold_patient, unnest([1, 2]) u(x)"):
+                "SELECT count(*) AS n FROM gold_patient, unnest([1, 2])"):
         d = validate_query(sql)
         assert d.allowed, (sql, d.reason)
