@@ -357,9 +357,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: release.yml:25-26 (pip install … pytest unpinned, tests run under the write token); release.yml:33, data-refresh.yml:28 (checkout without persist-credentials: false)
   - Done when: contents:read at the workflow level, write only on the `gh release create` job; persist-credentials: false except where data-refresh pushes; pin pytest.; a test or check shows it.
-- [ ] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: Dockerfile:12, docker/Dockerfile.sandbox:1 (python:3.11-slim); docker-compose.yml:36; tests.yml postgres:16
   - Done when: Pin by @sha256 digest; Dependabot `docker` updates keep them current.; a test or check shows it.
+  - Done 2026-11-11: `python:3.11-slim` (Dockerfile, docker/Dockerfile.sandbox), the Phoenix image (docker-compose.yml) and the Postgres service (tests.yml) are pinned by the digest each tag pointed to on 2026-11-11 (read from the Docker Hub registry), so builds use the same image as before. Dependabot's new `docker` entry moves the two Dockerfiles; the compose and workflow images are bumped by hand. `tests/unit/test_image_digests.py` fails on any image without a digest.
 - [ ] **51. The downloaded FHIR Gold and the Synthea zip are not checksummed** (Medium; security audit finding 22, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: scripts/fetch_fhir_gold.py:93; fetch_synthea.py:56; render.yaml:15 (every deploy)
   - Done when: A committed expected SHA-256 per asset; fail on mismatch.; a test or check shows it.

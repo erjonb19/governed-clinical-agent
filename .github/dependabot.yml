@@ -27,3 +27,14 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # base images, pinned by digest (audit item 50): Dependabot proposes the new
+  # digest when the tag moves. The Postgres service image in tests.yml and the
+  # Phoenix image in docker-compose.yml are bumped by hand.
+  - package-ecosystem: docker
+    directories: ["/", "/docker"]
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      images:
+        patterns: ["*"]
