@@ -155,6 +155,8 @@ def describe_execution_error(e: Exception) -> str:
 # and every connection to one file shares one database instance -- so these
 # settings (global) cover every connection to it, the eval harness's reference
 # backend included.
+# Any setting these connections need (a future memory_limit, threads,
+# timezone...) must be added HERE: once lock_down runs, nothing can change it.
 AGENT_DB_SETTINGS = (
     ("autoinstall_known_extensions", "false"),
     ("autoload_known_extensions", "false"),
