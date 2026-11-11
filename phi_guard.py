@@ -1684,14 +1684,14 @@ def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> 
     semi-join, which is a filter the units already see."""
     out: set = set()
     if depth > 20:
-        return {"<too deep>"}                  # fail closed: compares unequal
+        raise _CannotCorrelate("sources nested too deep to compare")
     if isinstance(node, exp.Select):
         srcs = _sources(node)
     elif isinstance(node, exp.SetOperation):
         return (_base_tables(node.this, root, depth + 1)
                 | _base_tables(node.expression, root, depth + 1))
     else:
-        return {f"<{type(node).__name__}>"}
+        raise _CannotCorrelate(f"a source the check cannot resolve ({type(node).__name__})")
     for src in srcs:
         if isinstance(src, exp.Subquery):
             out |= _base_tables(src.this, root, depth + 1)
@@ -1699,8 +1699,8 @@ def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> 
             body = _cte_body(src.name, root)
             out |= (_base_tables(body, root, depth + 1) if body is not None
                     else {(src.name or "").lower()})
-        else:
-            out.add(f"<{type(src).__name__}>")  # a table function, a lateral, ...
+        else:                                   # a table function, a lateral, ...
+            raise _CannotCorrelate(f"a source the check cannot resolve ({type(src).__name__})")
     return out
 
 
@@ -1749,6 +1749,17 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
         # scopes on the same keys, each WHERE checked per group (the per-gender
         # rate). A grouped COUNT beside an ungrouped count is refused above
         # (item 70, 2026-11-11); beside an average it stays.
+        for sel, _ in rewrites:
+            group = sel.args.get("group")
+            if group is None:
+                continue
+            # item 70 review (2026-11-11): GROUP BY ALL has no expressions to
+            # compare, and an expression such as `TRUE OR 'x' = gender` puts
+            # everyone in ONE group (the total) while reading as `gender`
+            if group.args.get("all") or not group.expressions or \
+                    not all(isinstance(g, exp.Column) for g in group.expressions):
+                raise _CannotCorrelate("a grouping that is not a list of plain columns "
+                                       "beside another scope")
         keysets = {frozenset(g.sql(dialect=DIALECT).split(".")[-1].lower()
                              for g in sel.args["group"].expressions)
                    for sel, _ in rewrites if sel.args.get("group") is not None}
@@ -1834,6 +1845,15 @@ def check(tree: exp.Expression) -> PhiDecision:
                                findings=[fn], protected=True)
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
+    real = {t.lower() for t in TABLES} | _public_tables()
+    shadow = sorted({(c.alias_or_name or "").lower() for c in tree.find_all(exp.CTE)} & real)
+    if shadow:
+        # item 70 review (2026-11-11): a CTE named after a real table makes the
+        # same name mean two things in one query (main.gold_patient vs the CTE),
+        # which every check that resolves names could be fooled by. Fail closed.
+        return PhiDecision(False, f"PHI rule: a WITH clause may not reuse the name of a table "
+                                  f"({', '.join(shadow)}); give it another name",
+                           findings=shadow, protected=True)
     unknown = _unknown_columns_by_alias(tree)
     if unknown:
         return _no_such_column(unknown)
@@ -1880,7 +1900,7 @@ def check(tree: exp.Expression) -> PhiDecision:
             pair_conds = _combination_checks(a.rewrites, a.filters, q)
         except Exception:     # _CannotCorrelate, or any surprise: deny (fail closed)
             a.findings.append(
-                "several filtered aggregates over patient rows in one query, in a form whose "
+                "several aggregates over patient rows in one query, in a form whose "
                 "overlap cannot be checked (a JOIN or a filtered derived table beside another "
                 f"aggregate, a grouped one beside another query's, more than {_MAX_UNITS}, "
                 "different tables, or a grouped count beside a total): subtracting one from "

@@ -445,6 +445,10 @@ through CTEs and derived tables). Same-key grouped scopes (the per-gender rate) 
 run, and a single average beside counts still runs (the accepted trade-off above).
 Shapes that only look harmless go too (one SUM over a UNION of two tables' counts,
 two maxima from different tables): the rule is on the shape, not on what is shown.
+An adversarial review of the fix (same day) found four ways round it, now refused too: a CTE named
+after a real table (refused outright: one name may not mean two things in a query), GROUP BY ALL
+and any grouping key that is not a plain column beside another scope (`TRUE OR 'x' = gender` is
+one group, the total), and sources nested too deep to compare (refused, not compared as equal).
 `test_item_70_shapes_are_refused`, `test_what_item_70_leaves_answerable`; all 28
 FHIR eval references still pass the guard.
 

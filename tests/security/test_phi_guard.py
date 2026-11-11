@@ -1179,6 +1179,12 @@ def test_a_suppressed_group_cannot_be_recovered_by_differencing_in_one_query(too
 # ungrouped one, and counts over different tables, are the two complementary-
 # suppression shapes. Shapes that only LOOKED harmless (one sum over a union,
 # two maxima) go too: the rule is on the shape, not on what is projected.
+def _nest(sql, depth):
+    for k in range(depth):
+        sql = f"SELECT * FROM ({sql}) d{k}"
+    return sql
+
+
 ITEM_70_REFUSED = {
     "a grouped WHERE count beside a total": (
         "SELECT (SELECT count(*) FROM gold_patient) AS total, g.n FROM (SELECT gender, count(*) AS n "
@@ -1203,6 +1209,26 @@ ITEM_70_REFUSED = {
         "UNION ALL SELECT count(*) FROM gold_condition) x"),
     "maxima over two tables": (
         "SELECT max(age_years) AS m FROM gold_patient UNION ALL SELECT max(age_at_onset) FROM gold_condition"),
+    # found by the adversarial review of the item-70 fix (2026-11-11)
+    "a CTE named after a real table, nested": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM "
+        "(WITH gold_patient AS (SELECT * FROM gold_encounter) SELECT * FROM gold_patient) z) AS b"),
+    "a CTE named after a real table, schema-qualified real one": (
+        "WITH gold_patient AS (SELECT * FROM gold_encounter) SELECT (SELECT count(*) FROM "
+        "main.gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM gold_patient) AS b"),
+    "a CTE named after a real table, quoted": (
+        'WITH "GOLD_PATIENT" AS (SELECT * FROM gold_encounter) SELECT (SELECT count(*) FROM '
+        'main.gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM "GOLD_PATIENT") AS b'),
+    "GROUP BY ALL on both scopes": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY ALL) AS t "
+        "FROM gold_patient GROUP BY ALL"),
+    "a one-group expression that reads as gender": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY TRUE OR 'x' = gender) "
+        "AS t FROM gold_patient GROUP BY gender"),
+    **{f"two tables {k} derived tables deep": (
+        "SELECT (SELECT count(*) FROM (" + _nest("SELECT patient_id FROM gold_patient", k) + ") x) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM (" + _nest("SELECT patient_id FROM gold_encounter", k)
+        + ") y) AS b") for k in (19, 20, 21)},
 }
 
 
@@ -1222,6 +1248,7 @@ def test_item_70_shapes_are_refused(name):
     "SELECT (SELECT count(*) FROM gold_patient) AS a, "
     "(SELECT count(*) FROM gold_patient WHERE gender = 'female') AS b",
     "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT avg(value_num) FROM gold_observation) AS b",
+    "SELECT gender, count(*) AS n FROM gold_patient GROUP BY ALL",   # one scope: no total to subtract
 ])
 def test_what_item_70_leaves_answerable(sql):
     d = validate_query(sql)
