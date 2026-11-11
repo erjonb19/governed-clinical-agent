@@ -147,8 +147,10 @@ the stricter rule wins.
    approved, rule 0 covers merging its PR. In an
    unattended run, write it under its backlog item and move on instead of waiting.
 2. **Destructive and deploy commands (directive 13).** It covers real environments: the Render deploy and its settings, Databricks, any hosted database or tracing account, and published releases and images. Local runs, CI runners and test containers are normal work. A merge that Render auto-deploys is not a Render change; editing `render.yaml` or the Render dashboard is (owner, 2026-11-11).
-3. **`.claude/settings.json` (Section 17.2).** Not added yet. The security audit proposes one
-   tailored so unattended runs don't stall, keeping the deny list; the owner reviews it.
+3. **`.claude/settings.json` (Section 17.2).** In place since #93 (owner-approved 2026-11-11):
+   a deny list (secrets, force pushes, pushes to `main`, tags, releases, Render), installs and
+   deploy tools on ask, and the routine commands, `gh pr merge` included (rule 0), on allow.
+   Any change to it is the owner's call.
 4. **Vulnerability reporting.** No `SECURITY.md` with a personal email address on this public
    repo. Use GitHub's private vulnerability reporting, which the owner turns on in the repo's
    settings; a `SECURITY.md` may point to it.
