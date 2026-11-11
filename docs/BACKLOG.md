@@ -325,6 +325,7 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **33. No security headers on any response** (Medium; security audit finding 4, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-335 (middleware), app.py:381-391 (/ui sets only Cache-Control)
   - Done when: A header middleware: CSP `default-src 'self'; script-src 'sha256-<inline>'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`, nosniff, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy, HSTS; a test on /ui.; a test or check shows it.
+- [x] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - **Done 2026-11-11, in the PR "Item 33".**
     - **Every response** gets `_SecurityHeaders` in `app.py`: nosniff, a strict-origin-when-cross-origin Referrer-Policy, a Permissions-Policy with camera, microphone and location off, HSTS, and `X-Frame-Options: DENY`.
     - **The `/ui` page** also gets a Content Security Policy. Scripts may come only from this origin plus the page's one inline script, allowed by its SHA-256, which is computed from the file actually served. Inline styles are allowed. No frames, objects or base-URI changes.
@@ -335,6 +336,7 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423 (question, sql, decided_by, reason, edited_proposal: no max_length)
   - Done when: Field(max_length=...) (question 2,000, sql 20,000, names 200) and a 64 KB body cap.; a test or check shows it.
+  - Done 2026-11-11: `Field(max_length=...)` on every request model (question 2,000, sql and free text 20,000, names 200) gives 422; `_BodySizeLimit` refuses a body over 64 KB with 413 before it is parsed, by Content-Length or by counting a chunked body. `tests/integration/test_request_limits.py`.
 - [ ] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:171-178 (dependency runs before the slowapi decorator); mcp_server.py:542, :549
   - Done when: Count and audit 401s per client IP in middleware (or move auth after the limiter); same for the MCP branches.; a test or check shows it.
