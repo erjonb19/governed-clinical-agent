@@ -1219,6 +1219,23 @@ ITEM_70_REFUSED = {
     "a CTE named after a real table, quoted": (
         'WITH "GOLD_PATIENT" AS (SELECT * FROM gold_encounter) SELECT (SELECT count(*) FROM '
         'main.gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM "GOLD_PATIENT") AS b'),
+    # the second review (same day): one CTE name used twice, inner read as outer
+    "a CTE name reused in a nested WITH, two tables": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT (SELECT count(DISTINCT patient_id) "
+        "FROM t) AS a, (WITH t AS (SELECT patient_id FROM gold_encounter) SELECT "
+        "count(DISTINCT patient_id) FROM t) AS b"),
+    "a CTE name reused in a nested WITH, in a UNION": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT 'all' AS g, count(*) AS n FROM t "
+        "UNION ALL SELECT 'enc', n FROM (WITH t AS (SELECT patient_id FROM gold_encounter) "
+        "SELECT count(DISTINCT patient_id) AS n FROM t) z"),
+    "a CTE name reused in a nested WITH, hidden filter": (
+        "WITH t AS (SELECT gender, patient_id FROM gold_patient) SELECT (SELECT count(*) FROM t) AS a, "
+        "(WITH t AS (SELECT gender, patient_id FROM gold_patient WHERE gender = 'female') "
+        "SELECT count(*) FROM t) AS b"),
+    "a CTE name reused, differing only in case": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT (SELECT count(*) FROM t) AS a, "
+        "(WITH T AS (SELECT patient_id FROM gold_encounter) SELECT count(DISTINCT patient_id) "
+        "FROM T) AS b"),
     "GROUP BY ALL on both scopes": (
         "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY ALL) AS t "
         "FROM gold_patient GROUP BY ALL"),

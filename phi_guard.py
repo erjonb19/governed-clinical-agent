@@ -1846,7 +1846,16 @@ def check(tree: exp.Expression) -> PhiDecision:
     if not touches_protected(tree):
         return PhiDecision(True, tree=tree)
     real = {t.lower() for t in TABLES} | _public_tables()
-    shadow = sorted({(c.alias_or_name or "").lower() for c in tree.find_all(exp.CTE)} & real)
+    cte_names = [(c.alias_or_name or "").lower() for c in tree.find_all(exp.CTE)]
+    reused = sorted({n for n in cte_names if cte_names.count(n) > 1})
+    if reused:
+        # second item-70 review (2026-11-11): the checks resolve a CTE by name
+        # across the whole query, so an inner WITH t (gold_encounter) read as the
+        # outer t (gold_patient) and two tables looked like one. Fail closed.
+        return PhiDecision(False, f"PHI rule: two WITH clauses use the same name "
+                                  f"({', '.join(reused)}); give each its own name",
+                           findings=reused, protected=True)
+    shadow = sorted(set(cte_names) & real)
     if shadow:
         # item 70 review (2026-11-11): a CTE named after a real table makes the
         # same name mean two things in one query (main.gold_patient vs the CTE),
