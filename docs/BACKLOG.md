@@ -15,7 +15,7 @@ exists, checked against the code on 2026-11-06, so nothing is built twice).
 **First (owner, 2026-11-11): the security audit's items, in the audit's proposed placement** (item 28 is done; `docs/SECURITY_AUDIT_2026-11-10.md`), after the open PRs #40 and #83:
 1. **30, 31**: the two Highs (DuckDB external access; Actions pinned to SHAs).
 2. **The Mediums that close exposure:** 33, 34, 35, 36, 37, 40, 43, then 44-51 (branch protection, `uv` lockfile and cooldown — `uv` approved, owner 2026-11-11 — Dependabot cooldown, secret scanning, workflow permissions, release permissions, image digests, checksums).
-3. **Then item 22** (which closes or unblocks 32, 38, 42 and 56), then the remaining steps of the order below (steps 1-7 are done or in progress), and after those 39, 41, 52 and the Lows 53-69.
+3. **Then item 22** (which closes or unblocks 32, 38, 42 and 56), then 39, 41 (with item 23), 52 and the Lows 53-69, as the audit placed them; the original order's remaining steps (8 and 9) are below, with 27 last.
 
 The original order (2026-11-08), kept for its remaining steps:
 
