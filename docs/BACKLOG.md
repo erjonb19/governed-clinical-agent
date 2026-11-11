@@ -341,10 +341,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:171-178 (dependency runs before the slowapi decorator); mcp_server.py:542, :549
   - Done when: Count and audit 401s per client IP in middleware (or move auth after the limiter); same for the MCP branches.; a test or check shows it.
+- [x] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `auth_failures.py`. Every refused key on the API and on MCP over HTTP is counted per client address and audited (`auth_failure` event: client, path, count in the window, whether over the limit; never the key). By default that is all: on Render every caller shares the proxy's address until item 38, so a lockout would let one scanner lock everyone out, and a 429 for wrong keys alone would not slow guessing (review, 2026-11-11). `AUTH_FAILURE_LOCKOUT=1` gives a client past `AUTH_FAILURES_PER_WINDOW` (10) in `AUTH_FAILURE_WINDOW_SEC` (300) a 429 on every request until its window ends. Turn it on with item 38. `tests/integration/test_auth_failures.py`.
 - [ ] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:601-638
   - Done when: require_api_key + RATE_LIMIT_READ, or cache the counts per data vintage as /findings does.; a test or check shows it.
+  - Done 2026-11-11: both halves that keep the UI working. `/datasets` stays open (the Data view and the nightly live check load it with no key) but is limited by `RATE_LIMIT_READ` (per client address without a key), and the per-table counts are computed once per data vintage (the Gold file's mtime) and dataset; a failed count is not cached. `tests/integration/test_datasets_endpoint.py`.
 - [ ] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:145-168 (memory://, 20/min per key); agent_graph.py:87; nl_to_sql_planner.py:88
   - Done when: A global daily request and cost budget checked against the worst case before each call (the scheduled_runs.py pattern), max_length on questions (5), provider-side spend caps.; a test or check shows it.

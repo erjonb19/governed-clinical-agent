@@ -834,14 +834,45 @@ def schema(dataset: Optional[str] = None) -> dict:
     return {"capability": CAPABILITY, "dataset": ds, "schema": DATASETS[ds]["schema_doc"]}
 
 
+_DATASET_COUNTS: dict[tuple[str, float], list[dict]] = {}
+_DATASET_COUNTS_LOCK = threading.Lock()
+
+
+def _table_counts(active: str, db: str) -> list[dict]:
+    """Row counts per table, through the guard, computed once per data vintage
+    (the Gold file's mtime) and dataset (item 36): an unauthenticated caller
+    can no longer make the server run one query per table on every request."""
+    mtime = os.path.getmtime(db) if os.path.exists(db) else 0.0
+    key = (active, mtime)
+    with _DATASET_COUNTS_LOCK:
+        hit = _DATASET_COUNTS.get(key)
+    if hit is not None:
+        return [dict(t) for t in hit]
+    tables = []
+    for t in sorted(schema_check.tables_in_schema_doc(DATASETS[active]["schema_doc"])):
+        res = run_governed_sql(f"SELECT count(*) AS n FROM {t}", dataset=active)
+        rows = res.get("rows") or []
+        tables.append({"table": t, "rows": rows[0].get("n") if rows else None})
+    if all(t["rows"] is not None for t in tables):   # a failed count is retried next time
+        with _DATASET_COUNTS_LOCK:
+            for k in [k for k in _DATASET_COUNTS if k[0] == active]:
+                del _DATASET_COUNTS[k]
+            _DATASET_COUNTS[key] = [dict(t) for t in tables]
+    return tables
+
+
 @app.get("/datasets")
-def datasets(dataset: Optional[str] = None) -> dict:
+@limiter.limit(RATE_LIMIT_READ)
+def datasets(request: Request, dataset: Optional[str] = None) -> dict:
     """What the agent is pulling from: the active Gold dataset, its tables + row
     counts, when it was last built/refreshed, and monthly-refresh status. Powers
-    the 'What's inside' view. Read-only, no auth (like /health).
+    the 'What's inside' view. Read-only, no auth (like /health): the UI's Data
+    view and the nightly live check load it without a key.
 
     Table names come from the schema doc (the guard blocks information_schema);
     row counts run THROUGH the guard (run_governed_sql), so nothing bypasses it.
+    Item 36: rate-limited (RATE_LIMIT_READ, per client address without a key)
+    and the counts are cached per data vintage.
     """
     active = _dataset(dataset)
     db = DATASETS[active]["db"]
@@ -861,10 +892,7 @@ def datasets(dataset: Optional[str] = None) -> dict:
     if os.path.exists(db):
         ts = os.path.getmtime(db)
         info["last_built"] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    for t in sorted(schema_check.tables_in_schema_doc(DATASETS[active]["schema_doc"])):
-        res = run_governed_sql(f"SELECT count(*) AS n FROM {t}", dataset=active)
-        rows = res.get("rows") or []
-        info["tables"].append({"table": t, "rows": rows[0].get("n") if rows else None})
+    info["tables"] = _table_counts(active, db)
     if os.path.exists(_REFRESH_PATH):
         try:
             with open(_REFRESH_PATH) as f:
