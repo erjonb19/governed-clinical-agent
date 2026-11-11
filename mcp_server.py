@@ -547,10 +547,10 @@ class MCPAuth:
             # (auth_failures.py); past the limit, wrong keys get 429
             from auth_failures import FAILURES
             ok = given is not None and hmac.compare_digest(given.encode(), self.key.encode())
-            throttled = FAILURES.throttled(peer)
+            throttled = FAILURES.lockout and FAILURES.throttled(peer)
             if not ok:
                 FAILURES.record(peer, scope.get("path", ""), "mcp")
-            if throttled and (not ok or FAILURES.lockout):
+            if throttled:
                 return await _json(send, 429, {"detail": "too many failed API key attempts"},
                                    [(b"retry-after", str(FAILURES.retry_after(peer)).encode())])
             if not ok:

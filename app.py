@@ -181,20 +181,21 @@ def require_api_key(
         return  # dev mode: no key configured, allow (see /health auth_enabled)
     client = _client_address(request)
     ok = provided is not None and hmac.compare_digest(provided, API_KEY)
-    # Backlog item 35: a refused key is counted and audited per client; past the
-    # limit the client's wrong keys get 429. A valid key passes unless
-    # AUTH_FAILURE_LOCKOUT is on (auth_failures.py explains why).
-    if ok and not (auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client)):
-        return
-    throttled = auth_failures.FAILURES.throttled(client)
-    if not ok:
-        auth_failures.FAILURES.record(client, request.url.path, "api")
-    if throttled:
+    # Backlog item 35: every refused key is counted and audited per client.
+    # With AUTH_FAILURE_LOCKOUT on, a client over the limit gets 429 for every
+    # request until its window ends; off (the default, see auth_failures.py)
+    # it is audit and counting only.
+    if auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client):
+        if not ok:
+            auth_failures.FAILURES.record(client, request.url.path, "api")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="too many failed API key attempts; try again later",
             headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
         )
+    if ok:
+        return
+    auth_failures.FAILURES.record(client, request.url.path, "api")
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="invalid or missing API key (send header X-API-Key)",

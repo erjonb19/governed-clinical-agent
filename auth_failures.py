@@ -8,16 +8,17 @@ recorded here:
   how many failures that client has in the window. Never the key, not even a
   prefix: a near-miss key is still a secret.
 * COUNTED -- per client address, over `AUTH_FAILURE_WINDOW_SEC` (default 300).
-* THROTTLED -- past `AUTH_FAILURES_PER_WINDOW` (default 10) failures in the
-  window, that client's further WRONG keys get 429 + Retry-After instead of
-  401.
+* THROTTLED, only with `AUTH_FAILURE_LOCKOUT=1` -- past
+  `AUTH_FAILURES_PER_WINDOW` (default 10) failures in the window, every request
+  from that client gets 429 + Retry-After until the window ends.
 
-A valid key is never refused here, by default. On Render the server sees the
-platform proxy's address, not the caller's, until uvicorn trusts the forwarded
-header (backlog item 38), so every caller shares one address: refusing valid
-keys from a throttled address would let one bad client lock everyone out.
-`AUTH_FAILURE_LOCKOUT=1` refuses every request from a throttled address, the
-stricter policy; turn it on only where the client address is real.
+Lockout is OFF by default. On Render the server sees the platform proxy's
+address, not the caller's, until uvicorn trusts the forwarded header (backlog
+item 38), so every caller shares one address: a lockout would let one scanner
+lock everyone out, and a 429 for wrong keys only would not slow guessing (a
+correct key still answers 200). So by default this is audit and counting:
+`failures_in_window` and `throttled` in each audit event show a brute-force
+attempt. Turn the lockout on where the client address is real.
 """
 
 from __future__ import annotations

@@ -723,11 +723,12 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
-- [x] **Failed API keys counted, audited and throttled** (audit item 35): every refused key
-  on the API and MCP is an `auth_failure` audit event (never the key); after
-  `AUTH_FAILURES_PER_WINDOW` (10) in `AUTH_FAILURE_WINDOW_SEC` (300 s) that client's wrong
-  keys get 429. A valid key still passes unless `AUTH_FAILURE_LOCKOUT=1`, because on Render
-  all callers share the proxy's address until item 38.
+- [x] **Failed API keys counted and audited** (audit item 35): every refused key on the API
+  and MCP is an `auth_failure` audit event with the client's count in a 5-minute window
+  (never the key). **By default this does not slow guessing**: on Render every caller
+  shares the proxy's address until item 38, so a lockout would let one scanner lock
+  everyone out. `AUTH_FAILURE_LOCKOUT=1` gives a client over `AUTH_FAILURES_PER_WINDOW`
+  (10) a 429 on every request until its window ends; turn it on where addresses are real.
 
 ## Service level objectives
 

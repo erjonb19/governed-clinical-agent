@@ -77,27 +77,29 @@ def test_each_refused_key_is_audited_without_the_key(client, tmp_path):
     assert "SECRETISH" not in text and "wrong-key" not in text
 
 
-def test_past_the_limit_wrong_keys_get_429_and_a_valid_key_still_works(client):
+def test_by_default_it_is_audit_only_and_the_ui_still_sees_401(client, tmp_path):
     c, failures = client
     codes = [c.post("/raw-sql", json=SQL, headers=BAD).status_code for _ in range(5)]
-    assert codes == [401, 401, 401, 429, 429], codes
-    r = c.post("/raw-sql", json=SQL, headers=BAD)
-    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
-    # default policy: one bad client must not lock everyone out behind a shared proxy
+    assert codes == [401] * 5, codes  # no 429: one scanner must not confuse everyone
+    assert c.post("/raw-sql", json=SQL).status_code == 401
     ok = c.post("/raw-sql", json=SQL, headers=GOOD)
     assert ok.status_code == 200 and ok.json()["allowed"] is True
+    events = [e for e in _audit(tmp_path) if e["event_type"] == "auth_failure"]
+    assert [e["context"]["throttled"] for e in events] == [False] * 3 + [True] * 3
 
 
-def test_lockout_mode_refuses_even_a_valid_key(client):
+def test_lockout_mode_throttles_every_request_from_the_client(client):
     c, failures = client
     failures.lockout = True
-    for _ in range(3):
-        c.post("/raw-sql", json=SQL, headers=BAD)
-    assert c.post("/raw-sql", json=SQL, headers=GOOD).status_code == 429
+    codes = [c.post("/raw-sql", json=SQL, headers=BAD).status_code for _ in range(5)]
+    assert codes == [401, 401, 401, 429, 429], codes
+    r = c.post("/raw-sql", json=SQL, headers=GOOD)
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
 
 
 def test_the_window_expires(client):
     c, failures = client
+    failures.lockout = True
     now = [1000.0]
     failures.clock = lambda: now[0]
     for _ in range(3):
@@ -107,18 +109,25 @@ def test_the_window_expires(client):
     assert c.post("/raw-sql", json=SQL, headers=BAD).status_code == 401
 
 
-def test_mcp_refused_keys_are_counted_and_throttled(client, tmp_path):
+def test_mcp_refused_keys_are_counted_and_throttled_under_lockout(client, tmp_path):
     c, failures = client
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     h = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
-    codes = [
-        c.post("/mcp/", json=body, headers={**h, "X-API-Key": "nope"}).status_code for _ in range(4)
-    ]
-    if codes[0] == 503 or codes[0] == 404:
-        pytest.skip(f"MCP mount not available here ({codes[0]})")
-    assert codes == [401, 401, 401, 429], codes
+
+    def codes(n):
+        return [
+            c.post("/mcp/", json=body, headers={**h, "X-API-Key": "nope"}).status_code
+            for _ in range(n)
+        ]
+
+    first = codes(4)
+    if first[0] in (404, 503):
+        pytest.skip(f"MCP mount not available here ({first[0]})")
+    assert first == [401] * 4, first  # default: audit only
     events = [e for e in _audit(tmp_path) if e["event_type"] == "auth_failure"]
-    assert events and all(e["context"]["surface"] == "mcp" for e in events)
+    assert len(events) == 4 and all(e["context"]["surface"] == "mcp" for e in events)
+    failures.lockout = True
+    assert codes(1) == [429]
 
 
 def test_a_valid_key_is_never_counted(client):
