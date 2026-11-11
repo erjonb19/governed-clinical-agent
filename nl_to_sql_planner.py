@@ -320,7 +320,8 @@ Columns:
   is_deceased      BOOLEAN
   marital_status   TEXT
   city, state, postal_code  TEXT
-  age_years        INTEGER  age today (or at death)
+  age_years        INTEGER  age today (or at death); over 90 counts as 90 and shows as "90+",
+                            so add no age cap of your own
 
 Table: gold_encounter  (one row per encounter/visit)
 Columns:
@@ -400,9 +401,6 @@ Notes:
     places or full dates (joining on patient_id / encounter_id is fine); per-patient
     figures go in a subquery grouped by patient_id that the outer query
     COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
-    Ages over 90 are counted as 90 automatically (averages too) and shown as
-    "90+". Add no age filter or cap of your own unless the question asks for
-    one (an age filter above 90 returns no rows).
     Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV of a plain
     column, never LIST, ARRAY_AGG, STRING_AGG or ARG_MAX, and never a CASE,
     NULLIF or other expression inside the aggregate: for a share or a
