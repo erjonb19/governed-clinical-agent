@@ -1604,3 +1604,46 @@ def test_nested_filters_in_two_scopes_cannot_recover_a_small_group(encounter_too
         "(SELECT count(DISTINCT patient_id) FROM gold_encounter WHERE gender = 'female' "
         "AND class_code = 'EMER') AS n")})
     assert r.output["rows"] in ([], [{"n": None}]), r.output["rows"]
+
+
+# Backlog item 70 (found by the seventh adversarial review of #83, 2026-11-11).
+# Both leak on main and on #83's branch; strict xfail until the owner decides.
+@pytest.mark.xfail(strict=True, reason="known gap (item 70): a grouped scope beside an "
+                                       "unfiltered total gives back the suppressed group")
+def test_a_total_beside_grouped_counts_cannot_recover_the_suppressed_group(tool):
+    # 12 women, 3 men: the men's group is dropped by the HAVING, but 15 - 12 = 3
+    r = tool.execute({"sql": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient) AS t "
+        "FROM gold_patient GROUP BY gender")})
+    rows = r.output["rows"] if r.success else []
+    shown = sum(row["n"] for row in rows if row.get("n") is not None)
+    totals = {row.get("t") for row in rows} - {None}
+    assert all(t - shown == 0 or t - shown >= 11 for t in totals), rows
+
+
+@pytest.fixture
+def partial_encounter_tool(tmp_path):
+    """15 patients (12 women, 3 men); only the 12 women have encounters."""
+    import duckdb
+    path = build(str(tmp_path / "partial.duckdb"))
+    con = duckdb.connect(path)
+    con.execute("""CREATE TABLE gold_encounter AS
+      SELECT 'e' || i AS encounter_id, 'p' || i AS patient_id, 'female' AS gender, 'MA' AS state,
+             'AMB' AS class_code, 'x' AS encounter_type, '2020-01-01' AS start_date,
+             '2020-01-02' AS end_date, 1 AS length_of_stay_days, 50 AS age_at_encounter
+      FROM range(12) a(i)""")
+    con.close()
+    return AnalyticsQueryTool(db_path=path, seed_demo=False)
+
+
+@pytest.mark.xfail(strict=True, reason="known gap (item 70): two unfiltered scopes over "
+                                       "different tables; the table acts as the filter")
+def test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group(partial_encounter_tool):
+    # 15 patients, 12 with an encounter: 15 - 12 = the 3 with none
+    r = partial_encounter_tool.execute({"sql": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter) AS b")})
+    rows = r.output["rows"] if r.success else []
+    for row in rows:
+        a, b = row.get("a"), row.get("b")
+        assert a is None or b is None or a - b == 0 or a - b >= 11, row

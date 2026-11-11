@@ -414,6 +414,13 @@ still rules on every query the client sends, so injected text can change what
 is asked, never what is allowed. Treat result rows as untrusted data on the
 client side.
 
+**Single-query complementary suppression is still open (backlog item 70, 2026-11-11).**
+The seventh adversarial review of #83 found that `count(all) - sum(visible groups)`
+also works INSIDE one query: a grouped scope beside an unfiltered total, and two
+unfiltered scopes over different person tables (the table acts as the filter).
+Both leak on `main`; neither is caused by #83. Pinned as strict xfails; options
+for the owner are under item 70.
+
 **Cross-query differencing: options for the owner (decision open).** One query
 cannot see another, so `count(all) - sum(visible groups)` over two calls gives a
 suppressed cell back. Fixture: 15 patients, 12 female shown, 3 male hidden;
