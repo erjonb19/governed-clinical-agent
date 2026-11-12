@@ -324,8 +324,6 @@ ALLOWED = {
     "share of total from a grouped CTE": (
         "WITH g AS (SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender) "
         "SELECT gender, n * 1.0 / SUM(n) OVER () AS share FROM g"),
-    "sum over a union of counts": ("SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient "
-                                   "UNION ALL SELECT count(*) FROM gold_condition) x"),
     # filters that decision 3 allows
     "WHERE on the year": "SELECT count(*) AS n FROM gold_patient WHERE YEAR(CAST(birth_date AS DATE)) < 1960",
     "WHERE on age in whole years": "SELECT count(*) AS n FROM gold_patient WHERE age_years >= 65",
@@ -584,7 +582,7 @@ def test_an_aggregate_sqlglot_does_not_model_is_still_suppressed(tool):
 
 
 @pytest.mark.parametrize("name", ["percentage from two scalar counts", "share of total over groups",
-                                  "share of total from a grouped CTE", "sum over a union of counts"])
+                                  "share of total from a grouped CTE"])
 def test_plausible_ratio_queries_run(tool, name):
     r = tool.execute({"sql": ALLOWED[name]})
     assert r.success, (name, r.error)
@@ -1176,23 +1174,111 @@ def test_a_suppressed_group_cannot_be_recovered_by_differencing_in_one_query(too
     assert disclosed != SUPPRESSED_MALE_COUNT, f"{name}: recovered the suppressed group"
 
 
-GROUPED_DIFFERENCING = {
+# Allowed with a per-group check from 2026-11-07; refused again by item 70
+# (owner's decision 2026-11-11, fail closed): a grouped count beside an
+# ungrouped one, and counts over different tables, are the two complementary-
+# suppression shapes. Shapes that only LOOKED harmless (one sum over a union,
+# two maxima) go too: the rule is on the shape, not on what is projected.
+def _nest(sql, depth):
+    for k in range(depth):
+        sql = f"SELECT * FROM ({sql}) d{k}"
+    return sql
+
+
+ITEM_70_REFUSED = {
     "a grouped WHERE count beside a total": (
         "SELECT (SELECT count(*) FROM gold_patient) AS total, g.n FROM (SELECT gender, count(*) AS n "
         "FROM gold_patient WHERE age_years > 45 GROUP BY gender) g"),
     "a grouped WHERE count in a UNION with an ungrouped one": (
         "SELECT count(*) AS n FROM gold_condition UNION ALL SELECT count(*) FROM gold_condition "
         "WHERE condition_name = 'Hypertension' GROUP BY gender"),
+    "a grouped count beside a total, unfiltered": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient) AS t "
+        "FROM gold_patient GROUP BY gender"),
+    "a grouped count beside a total through a CTE": (
+        "WITH g AS (SELECT gender, count(DISTINCT patient_id) AS n FROM gold_patient GROUP BY gender) "
+        "SELECT sum(n) AS shown, (SELECT count(*) FROM gold_patient) AS t FROM g"),
+    "counts over two tables": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM gold_encounter) AS b"),
+    "counts over two tables through a CTE": (
+        "WITH e AS (SELECT patient_id FROM gold_encounter) SELECT (SELECT count(*) FROM gold_patient) "
+        "AS a, (SELECT count(DISTINCT patient_id) FROM e) AS b"),
+    "sum over a union of counts from two tables": (
+        "SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient "
+        "UNION ALL SELECT count(*) FROM gold_condition) x"),
+    "maxima over two tables": (
+        "SELECT max(age_years) AS m FROM gold_patient UNION ALL SELECT max(age_at_onset) FROM gold_condition"),
+    # found by the adversarial review of the item-70 fix (2026-11-11)
+    "a CTE named after a real table, nested": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM "
+        "(WITH gold_patient AS (SELECT * FROM gold_encounter) SELECT * FROM gold_patient) z) AS b"),
+    "a CTE named after a real table, schema-qualified real one": (
+        "WITH gold_patient AS (SELECT * FROM gold_encounter) SELECT (SELECT count(*) FROM "
+        "main.gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM gold_patient) AS b"),
+    "a CTE named after a real table, quoted": (
+        'WITH "GOLD_PATIENT" AS (SELECT * FROM gold_encounter) SELECT (SELECT count(*) FROM '
+        'main.gold_patient) AS a, (SELECT count(DISTINCT patient_id) FROM "GOLD_PATIENT") AS b'),
+    # the second review (same day): one CTE name used twice, inner read as outer
+    "a CTE name reused in a nested WITH, two tables": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT (SELECT count(DISTINCT patient_id) "
+        "FROM t) AS a, (WITH t AS (SELECT patient_id FROM gold_encounter) SELECT "
+        "count(DISTINCT patient_id) FROM t) AS b"),
+    "a CTE name reused in a nested WITH, in a UNION": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT 'all' AS g, count(*) AS n FROM t "
+        "UNION ALL SELECT 'enc', n FROM (WITH t AS (SELECT patient_id FROM gold_encounter) "
+        "SELECT count(DISTINCT patient_id) AS n FROM t) z"),
+    "a CTE name reused in a nested WITH, hidden filter": (
+        "WITH t AS (SELECT gender, patient_id FROM gold_patient) SELECT (SELECT count(*) FROM t) AS a, "
+        "(WITH t AS (SELECT gender, patient_id FROM gold_patient WHERE gender = 'female') "
+        "SELECT count(*) FROM t) AS b"),
+    "a CTE name reused, differing only in case": (
+        "WITH t AS (SELECT patient_id FROM gold_patient) SELECT (SELECT count(*) FROM t) AS a, "
+        "(WITH T AS (SELECT patient_id FROM gold_encounter) SELECT count(DISTINCT patient_id) "
+        "FROM T) AS b"),
+    # the third review (same day): a column-list alias relabels a column
+    "a column-list alias that renames city to gender": (
+        "SELECT gender, count(*) AS n FROM gold_patient GROUP BY gender UNION ALL "
+        "SELECT gender, count(*) AS n FROM gold_patient AS p(patient_id, given_name, family_name, x, "
+        "birth_date, is_deceased, marital_status, gender, state, postal_code, age_years) GROUP BY gender"),
+    "a column-list alias on a derived table": (
+        "SELECT g, count(*) AS n FROM (SELECT gender, city FROM gold_patient) AS d(x, g) GROUP BY g"),
+    "a column-list alias on a CTE": (
+        "WITH c(g) AS (SELECT city FROM gold_patient) SELECT g, count(*) AS n FROM c GROUP BY g"),
+    "GROUP BY ALL on both scopes": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY ALL) AS t "
+        "FROM gold_patient GROUP BY ALL"),
+    "a one-group expression that reads as gender": (
+        "SELECT gender, count(*) AS n, (SELECT count(*) FROM gold_patient GROUP BY TRUE OR 'x' = gender) "
+        "AS t FROM gold_patient GROUP BY gender"),
+    **{f"two tables {k} derived tables deep": (
+        "SELECT (SELECT count(*) FROM (" + _nest("SELECT patient_id FROM gold_patient", k) + ") x) AS a, "
+        "(SELECT count(DISTINCT patient_id) FROM (" + _nest("SELECT patient_id FROM gold_encounter", k)
+        + ") y) AS b") for k in (19, 20, 21)},
 }
 
 
-@pytest.mark.parametrize("name", list(GROUPED_DIFFERENCING))
-def test_a_grouped_filtered_count_beside_another_aggregate_gets_a_per_group_check(name):
-    # refused outright until 2026-11-07; now each group's left-out people must
-    # be 0 or 11+ (a correlated check over a renamed copy of the scope)
-    d = validate_query(GROUPED_DIFFERENCING[name])
+@pytest.mark.parametrize("name", list(ITEM_70_REFUSED))
+def test_item_70_shapes_are_refused(name):
+    d = validate_query(ITEM_70_REFUSED[name])
+    assert not d.allowed, (name, d.safe_sql)
+    assert "PHI rule" in d.reason, d.reason
+
+
+@pytest.mark.parametrize("sql", [
+    # what stays: grouped scopes on the same keys (the per-gender rate), counts
+    # over one table, and a single average beside counts (PLAN_v2 0.4)
+    "WITH e AS (SELECT gender, count(*) AS n FROM gold_encounter WHERE class_code = 'EMER' "
+    "GROUP BY gender), t AS (SELECT gender, count(*) AS n FROM gold_encounter GROUP BY gender) "
+    "SELECT e.gender, round(100.0 * e.n / t.n, 2) AS v FROM e JOIN t ON e.gender = t.gender",
+    "SELECT (SELECT count(*) FROM gold_patient) AS a, "
+    "(SELECT count(*) FROM gold_patient WHERE gender = 'female') AS b",
+    "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT avg(value_num) FROM gold_observation) AS b",
+    "SELECT gender, count(*) AS n FROM gold_patient GROUP BY ALL",   # one scope: no total to subtract
+])
+def test_what_item_70_leaves_answerable(sql):
+    d = validate_query(sql)
     assert d.allowed, d.reason
-    assert "__c" in d.safe_sql and "IS NOT DISTINCT FROM" in d.safe_sql, d.safe_sql
 
 
 @pytest.fixture
@@ -1411,7 +1497,7 @@ def test_one_query_cannot_difference_an_exact_age_out(old_tool):
     "SELECT age_years, count(*) AS n FROM gold_patient GROUP BY 1",
     "SELECT age_years // 10 AS dec, count(*) AS n FROM gold_patient GROUP BY dec",
     "WITH t AS (SELECT * FROM gold_patient) SELECT gender, max(age_years) AS m FROM t GROUP BY gender",
-    "SELECT max(age_years) AS m FROM gold_patient UNION ALL SELECT max(age_at_onset) FROM gold_condition",
+    "SELECT max(age_years) AS m FROM gold_patient UNION ALL SELECT min(age_years) FROM gold_patient",
 ])
 def test_ordinary_shapes_around_ages_still_run(old_tool, sql):
     r = old_tool.execute({"sql": sql})
@@ -1933,10 +2019,8 @@ def test_the_owner_s_per_gender_shape_still_runs_after_the_grouping_rule(encount
     assert r.success and r.output["rows"] == [{"gender": "male", "v": 50.0}], r.output
 
 
-# Backlog item 70 (found by the seventh adversarial review of #83, 2026-11-11).
-# Both leak on main and on #83's branch; strict xfail until the owner decides.
-@pytest.mark.xfail(strict=True, reason="known gap (item 70): a grouped scope beside an "
-                                       "unfiltered total gives back the suppressed group")
+# Backlog item 70 (found by the seventh adversarial review of #83, 2026-11-11);
+# closed by refusing the shape (owner's decision 2026-11-11, fail closed).
 def test_a_total_beside_grouped_counts_cannot_recover_the_suppressed_group(tool):
     # 12 women, 3 men: the men's group is dropped by the HAVING, but 15 - 12 = 3
     r = tool.execute({"sql": (
@@ -1963,8 +2047,6 @@ def partial_encounter_tool(tmp_path):
     return AnalyticsQueryTool(db_path=path, seed_demo=False)
 
 
-@pytest.mark.xfail(strict=True, reason="known gap (item 70): two unfiltered scopes over "
-                                       "different tables; the table acts as the filter")
 def test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group(partial_encounter_tool):
     # 15 patients, 12 with an encounter: 15 - 12 = the 3 with none
     r = partial_encounter_tool.execute({"sql": (

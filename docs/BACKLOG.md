@@ -476,6 +476,7 @@ What real AI, data and software engineering teams would add, checked against the
   - Leak 2: `(SELECT count(*) FROM gold_patient)` beside `(SELECT count(DISTINCT patient_id) FROM gold_encounter)` -- the second table works as a filter (people with no encounter). The "units over different sources" refusal covers only filtered units. Likely on real data with gold_medication, gold_procedure or gold_condition.
   - Options: (a) refuse any grouped scope beside another aggregate scope, and any two aggregate scopes over different person tables (simple, fail closed; may refuse rate questions); (b) a runtime complement check: total minus the groups shown, and the difference between scopes over different tables, must be 0 or 11+ (keeps more questions, more code to attack).
   - Done when: the two strict xfails in `tests/security/test_phi_guard.py` (`test_a_total_beside_grouped_counts_cannot_recover_the_suppressed_group`, `test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group`) pass, every eval reference is still answered, and the FHIR eval comparison passes.
+  - 2026-11-11, owner chose (a), refuse the shape. Code done on `claude/jolly-hopper-8ly9iq-item70`: with 2+ counting scopes, a grouped count beside an ungrouped one and counts over different base tables are refused; both xfails now pass; all 28 FHIR eval references still pass the guard. Waits on the full FHIR comparison after the next Gemini reset; ticked when it passes.
 
 ## Later (keep, don't start)
 
