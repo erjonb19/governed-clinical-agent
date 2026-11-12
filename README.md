@@ -590,7 +590,7 @@ Fast feedback on every change, complete coverage every night. Reports are upload
 ## Run it
 
 ```bash
-pip install -r requirements-api.txt
+pip install --require-hashes -r requirements-api.lock   # the exact, hash-checked tree Render runs
 
 $env:PLANNER_PROVIDER="gemini"  # what CI and both eval suites run on
 $env:GEMINI_API_KEY="..."       # the planner's model (free key at aistudio.google.com)
@@ -727,6 +727,13 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
   each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
   that still covered 11 people. Patient tables join on `patient_id`.
+- [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
+  Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
+  dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the
+  locks with nothing newer than 7 days except the packages pinned by name.
+- [x] **Secret scanning** (audit item 47): gitleaks (pinned version, checksum-verified) scans the
+  whole git history on every push and PR, and a pre-commit hook scans what is staged;
+  findings are redacted in the log. Checked false positives are listed in `.gitleaksignore`.
 - [x] **Images pinned by digest** (audit item 50): base, Phoenix and CI Postgres images.
 - [x] **Least-privilege release workflow** (audit item 49): tests run read-only; only a job
   that runs no repository code may create the release.
@@ -752,7 +759,6 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (10) a 429 on every request until its window ends; turn it on where addresses are real.
 - [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
   characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
-  it lists are **not** fixed yet.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

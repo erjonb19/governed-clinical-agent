@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-api.txt
+          pip install --require-hashes -r requirements-api.lock
 
       # The newest completed run that left a history artifact, whatever its
       # conclusion: a week that failed still recorded the hashes before it.

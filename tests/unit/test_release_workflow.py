@@ -35,4 +35,5 @@ def test_no_checkout_persists_credentials_and_pytest_is_pinned():
             if str(step.get("uses", "")).startswith("actions/checkout"):
                 assert (step.get("with") or {}).get("persist-credentials") is False, name
     runs = "\n".join(s.get("run", "") for j in wf["jobs"].values() for s in j["steps"])
-    assert "pytest==" in runs
+    # pytest pinned: by name, or (item 45) by version and hash through the CI lock
+    assert "pytest==" in runs or "--require-hashes -r requirements-ci.lock" in runs
