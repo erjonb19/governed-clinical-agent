@@ -46,6 +46,10 @@ A disallowed query — even one that is perfectly valid SQL — is refused at th
 
 ## Architecture
 
+One-page overview with a diagram, how it scales and where it breaks, and the
+main trade-offs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). A three-minute
+walkthrough script: [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+
 Two layers: a reusable security runtime, and applications built on top of it.
 
 ### The security runtime
@@ -700,6 +704,14 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   FHIR eval gate on every push, the full evals nightly; a failing test, an eval
   below the gate, or an inconclusive nightly (after one retry) turns the build red
   (see [CI](#ci)).
+- [x] **Architecture page and walkthrough**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+  (diagram, measured limits, trade-offs) and a three-minute script,
+  [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+- [x] **Alerts on a red nightly**: one GitHub issue per kind (`eval-regression`,
+  `provider-outage`) and dataset, closed by the next healthy night; proved by a
+  deliberate drill on 2026-11-13: the regression path, on the 6-case replayed
+  hospital subset; the outage and repeat-comment paths are unit-tested only
+  (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 - [x] **Repeat questions skip the model** (`llm_cache.py`): the model's answer
@@ -792,7 +804,7 @@ The targets leave about 3-4x headroom over the worse of these, so a miss means a
 
 A working reference implementation, described plainly:
 
-- Single-instance; queries serialized under a lock. Horizontal scaling is future work.
+- Single instance. The global query lock is gone (backlog item 20), but one process caps throughput at about 55 req/s on recorded answers ([`docs/benchmarks.md`](docs/benchmarks.md)); horizontal scaling is future work (items 19 and 21).
 - The service **refuses to start without `API_KEY`** unless `ALLOW_OPEN_ACCESS=true` is set explicitly for local dev (then flagged loudly at startup and in `/health`). Rate limits are per API key (slowapi).
 - The data is public CMS data and **synthetic** Synthea patients. There is no real PHI here, and the system is not hardened for PHI or production load. The PHI-protection design is real and tested; the deployment posture is not production-grade.
 - The **hospital** Gold refreshes monthly in CI; the FHIR Gold is a fixed Sep-2019
