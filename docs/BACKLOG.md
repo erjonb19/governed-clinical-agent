@@ -108,6 +108,7 @@ Langfuse), **26** (the data intake platform's Stage 22).
 - [ ] **9. Demo UI rebuilt for fast insight.** Leadership found the current demo clunky. The first screen should get a non-technical person to a useful answer in one or two clicks, with plain language and a short definitions section. Write the UI plan and show me before building. Add a note on the page that the first load can take a moment (Render free-plan cold start).
   - Done when: the owner has approved a written UI plan; then a first-time visitor reaches a useful answer in at most two clicks (checked by an E2E test), the first screen has a definitions section, and a cold-start note shows while the service wakes.
   - Today: the UI lands on an Overview of four fixed findings; Ask, Review, Data, Guide, Trust, Usage and Traces sit beside it as separate views.
+  - **Status 2026-11-13: plan written (`docs/UI_PLAN.md`), waiting for the owner's OK and decisions D1-D3.** Nothing built.
 
 - [ ] **10. Databricks refresh and parity check** (owner approved 2026-11-06). After `data-refresh.yml` rebuilds the hospital Gold each month, publish it to Databricks Delta and re-run the 6-case parity subset with `DATA_BACKEND=databricks`; the workflow fails on a mismatch.
   - Done when: one monthly (or dispatched) run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
