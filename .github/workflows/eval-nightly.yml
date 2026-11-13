@@ -9,6 +9,11 @@ on:
   schedule:
     - cron: "0 7 * * *"         # 07:00 UTC daily (~2-3am ET)
   workflow_dispatch:            # allows manual full runs any time
+    inputs:
+      drill_break:
+        description: "ALERT DRILL (item 3, throwaway branch): corrupt the replayed answers"
+        type: boolean
+        default: true
 
 # one nightly at a time: a manual run overlapping the scheduled one could open
 # the same alert issue twice
@@ -55,20 +60,37 @@ jobs:
         id: start
         run: echo "t=$(date +%s)" >> "$GITHUB_OUTPUT"
 
+      # ALERT DRILL (backlog item 3, owner 2026-11-13): this branch is never
+      # merged. The live eval is replaced by the replayed push gate (no model
+      # call, no quota); with drill_break the recorded hospital answers are
+      # corrupted, so the gate fails and nightly_alerts.py must open the issue;
+      # without it the gate passes and the alert must close it.
+      - name: Prepare the drill recordings
+        run: |
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("tests/evals/recordings/push_gate.json"))
+          if os.environ["DRILL_BREAK"] == "true":
+              for v in d.values():
+                  if v.get("dataset") == "hospital" and v.get("role") == "plan":
+                      v["text"] = "SELECT 0 AS drill_wrong_answer"
+          json.dump(d, open("drill_recordings.json", "w"))
+          print("drill_break =", os.environ["DRILL_BREAK"])
+          PY
+        env:
+          DRILL_BREAK: ${{ inputs.drill_break }}
+
       - name: Run full eval (all cases, 3 runs each)
         id: gate
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PLANNER_PROVIDER: "gemini"      # gemini free tier has headroom for the full suite
-          PLANNER_MIN_INTERVAL_SEC: "5"  # ~12 RPM: stays under the Gemini free-tier per-minute cap
-          EVAL_RUNS: "3"
-          EVAL_ATTEMPT_TIMEOUT_MIN: "32"
-        # Exit 1 (below the gate) is red. Exit 2 (provider unavailable or cases
-        # unanswered) is retried once after 5 minutes, then red: owner's
-        # decision 2026-11-06, backlog item 1 (scripts/eval_gate.sh).
+          PLANNER_PROVIDER: "replay"
+          ALLOW_REPLAY: "1"
+          REPLAY_STORE: "drill_recordings.json"
+          EVAL_SUBSET: "1"
+          EVAL_RUNS: "1"
         run: |
           set +e
-          scripts/eval_gate.sh retry-then-fail --runs 3
+          python -u eval_harness.py
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit $rc
@@ -97,7 +119,7 @@ jobs:
   fhir-eval:
     needs: full-eval
     # still runs when the hospital job is red: each dataset gets its own verdict
-    if: ${{ !cancelled() }}
+    if: false   # ALERT DRILL: no live FHIR eval on this branch
     runs-on: ubuntu-latest
     # two attempts (~15 min each when healthy) + 5 min wait, each capped at 25
     timeout-minutes: 60
