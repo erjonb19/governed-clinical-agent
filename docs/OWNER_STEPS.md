@@ -43,7 +43,7 @@ gh api repos/erjonb19/governed-clinical-agent/code-scanning/alerts/10 --jq .stat
 
 **Why:** the monthly data refresh now opens a PR instead of pushing to `main`.
 Without this setting its `gh pr create` is refused and the job fails (loudly, by
-design). The token stays read-only by default; this only allows PRs.
+design). The token stays read-only by default; the setting lets Actions create and approve PRs (GitHub has one switch for both), and `main`'s ruleset still decides what can merge.
 
 ```powershell
 gh api -X PUT repos/erjonb19/governed-clinical-agent/actions/permissions/workflow `
@@ -72,14 +72,14 @@ gh api repos/erjonb19/governed-clinical-agent/rules/branches/main --jq ".[].type
 ```
 
 It should include `required_status_checks`, `non_fast_forward` (no force push)
-and `deletion`. To see the required check names:
+and `deletion`. To see the required check names (works in PowerShell 5.1 and 7):
 
 ```powershell
-gh api repos/erjonb19/governed-clinical-agent/rules/branches/main --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+gh api repos/erjonb19/governed-clinical-agent/rules/branches/main | ConvertFrom-Json | Where-Object type -eq 'required_status_checks' | ForEach-Object { $_.parameters.required_status_checks.context }
 ```
 
 They should include `pytest`, `pip-audit`, `image` (container), `analyze (python)`
-(CodeQL), `ui-e2e` and `mcp-e2e`. If anything is missing, add it under
+and `analyze (actions)` (CodeQL), `ui-e2e` and `mcp-e2e`. If anything is missing, add it under
 Settings -> Rules -> Rulesets -> (the ruleset for `main`), then tell the agent
 "step 3 done".
 
