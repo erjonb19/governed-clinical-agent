@@ -450,7 +450,9 @@ Rules:
 - Exactly one statement, and it MUST be a SELECT (or WITH ... SELECT).
 - Only use the table and columns listed above.
 - When a measure can be NULL, add a "column IS NOT NULL" filter so nulls don't sort to the top.
-- Always include a sensible ORDER BY and a LIMIT (15 unless the question implies otherwise).
+- When the answer is a LIST of rows, include a sensible ORDER BY and a LIMIT (15 unless
+  the question implies otherwise). When it is ONE aggregate row (COUNT, AVG, SUM, MIN or
+  MAX with no GROUP BY), write neither: no ORDER BY and no LIMIT.
 - Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add facility_id ASC
   as the final tie-breaker (e.g. ORDER BY mspb_score DESC, facility_id ASC). This
   guarantees the same rows come back in the same order every run, even when several
