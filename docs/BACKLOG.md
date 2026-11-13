@@ -288,11 +288,12 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: a file dropped into the intake platform can be asked about here, through the
     guard.
 
-- [ ] **27. Showcase.** `docs/ARCHITECTURE.md`: one page, one diagram, "how it scales and
+- [x] **27. Showcase.** `docs/ARCHITECTURE.md`: one page, one diagram, "how it scales and
   where it breaks" with item 20's numbers, and the main trade-offs, each linked to its
   decision; a three-minute walkthrough script for the owner to record (ask, guard refusal,
   approval, trace), linked from the README.
   - Done when: both exist and the README links them.
+  - **Done 2026-11-13:** `docs/ARCHITECTURE.md` (a Mermaid diagram of one question's path, item 20's before/after numbers, where it breaks in order, seven trade-offs each linked to its decision) and `docs/WALKTHROUGH.md` (ask, guard refusal, approval, trace, timed to three minutes, on today's UI; to be updated when item 9 changes the first screen). The README links both, and its stale "queries serialized under a lock" limitation now reads as item 20 measured it.
 
 - [x] **28. Security audit against `docs/SECURITY_STANDARDS.md`** (owner, 2026-11-09). Plan only, change no code. Audit the repo against Section 19.3 of `docs/SECURITY_STANDARDS.md` and every section that applies to this stack, and report each gap in the file's SEVERITY format. Add one backlog item per gap, numbered after this one, with anything Critical (CVSS 9+) first in the Order of work. Propose a `.claude/settings.json` from Section 17.2, tailored so unattended runs don't stall: keep the deny list, and explain each change to the ask list. Check every vendor-specific setting (npm, uv, GitHub, Claude Code permission syntax) against the vendor's current docs before proposing it. One docs-only PR, which the owner reviews and merges himself (security decisions are his). Check Section 14.2 first: the agent's DuckDB connection should have external access off and the configuration locked.
   - **Status 2026-11-10: done, in the PR "Item 28".** `docs/SECURITY_AUDIT_2026-11-10.md`:
