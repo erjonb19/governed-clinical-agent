@@ -78,7 +78,7 @@ Where it breaks, in the order you would hit it:
   row-multiplying joins, set-returning functions and seeded sampling, whose fix
   is open in [#116](https://github.com/erjonb19/governed-clinical-agent/pull/116)
   waiting on its eval comparison; and key-joined self-joins, which stay open
-  after #116 (an owner's decision, backlog item 71 on that branch). The planned
+  after #116, pending the owner's decision (backlog item 71 on that branch). The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 
