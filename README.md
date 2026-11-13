@@ -700,6 +700,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   FHIR eval gate on every push, the full evals nightly; a failing test, an eval
   below the gate, or an inconclusive nightly (after one retry) turns the build red
   (see [CI](#ci)).
+- [x] **Alerts on a red nightly**: one GitHub issue per kind (`eval-regression`,
+  `provider-outage`) and dataset, closed by the next healthy night; proved by a
+  deliberate drill on 2026-11-13 (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 - [x] **Repeat questions skip the model** (`llm_cache.py`): the model's answer
