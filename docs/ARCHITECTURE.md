@@ -11,7 +11,7 @@ flowchart LR
     U[Browser /ui<br/>or MCP client] -->|API key| API[FastAPI app.py<br/>rate limit, size limits]
     API --> G{{LangGraph<br/>agent_graph.py}}
     subgraph run [one run, bounded retries]
-      P[plan<br/>LLM writes SQL] --> C[critic<br/>LLM: approve / revise]
+      P[plan<br/>LLM writes SQL] --> C[critic<br/>LLM: approve / revise /<br/>unavailable = go on]
       C -->|revise| P
       C --> X[execute]
       X -->|guard denied| P
@@ -23,7 +23,7 @@ flowchart LR
     OUT --> API
     X -.spans.-> T[(traces SQLite<br/>optional OTLP export)]
     X -.events.-> A[(audit log JSONL)]
-    API -->|/propose| AP[approval graph<br/>interrupt + checkpoint]
+    API -->|/propose| AP[approval graph<br/>same plan, critic, guard<br/>+ interrupt for a human]
 ```
 
 - **The guard is the security boundary, not the model.** Every SQL statement,
@@ -31,8 +31,8 @@ flowchart LR
   `phi_guard` before it runs, and the result goes through `check_output` after.
   The critic can only make the agent stricter; it never skips the guard
   (`test_the_guard_still_denies_what_the_critic_approved`).
-- **The database connection is locked down too** (security audit item 30): read
-  only, no external access, no extension loading, configuration locked, so a
+- **The database connection is locked down too** (security audit item 30): the
+  Gold files are opened read only, with no external access, no extension loading, configuration locked, so a
   guard escape still reaches no file or network.
 - **Every run is a trace** whose id is the LangGraph thread id: spans hold the
   question, SQL and row counts, never rows.
@@ -72,8 +72,11 @@ Where it breaks, in the order you would hit it:
   the shared backend (verified for parity once) or a read-only copy per
   replica (item 21).
 - **The guard is a parser.** It is a patch list over SQL shapes, hardened by
-  adversarial reviews, with known open gaps recorded (nested-filter
-  differencing, key-joined self-joins; `docs/BACKLOG.md` item 71). The planned
+  adversarial reviews. Known open gaps on `main`: a date grouped below the year
+  as a hidden key (a strict xfail in `tests/security/test_phi_guard.py`),
+  cross-query differencing (accepted residual risk, [PLAN_v2 §0.4](PLAN_v2.md)),
+  and row-multiplying joins and set-returning functions, whose fix is an open PR
+  waiting on its eval comparison. The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 
@@ -85,8 +88,8 @@ Where it breaks, in the order you would hit it:
 | Critic fails open to the guard | A provider blip should not block every query; security stays with the guard | A bad plan can reach the guard unreviewed | PLAN_v2 D4 |
 | Fixed, reviewed SQL for the Overview findings | No invented numbers, $0 | Only the questions someone wrote in advance | PLAN_v2 D7 |
 | PHI rules in the guard, aggregate-only FHIR, 11-person floor | Patient-level data never leaves, even to a key holder | Some legitimate questions are refused; accuracy cost measured per PR | PLAN_v2 §0.4 |
-| Home-grown tracing in SQLite, optional OTLP | Runs on Render free with no second service | A plainer viewer; Phoenix (530 MB idle) only locally | PLAN_v2 D3, backlog items 2 and 12 |
-| Recorded answers in the push gate | Every push tests the guard and scoring at $0 | It does not test a model; the nightly does | Backlog item 13 |
+| Home-grown tracing in SQLite, optional OTLP | Runs on Render free with no second service | A plainer viewer; Phoenix (530 MB idle) only locally; hosted export (item 12) waits on the owner's Render settings | PLAN_v2 D3, backlog items 2 and 12 |
+| Recorded answers in the push gate | Every push tests the guard and scoring at $0 | The replayed gate does not test a model; a 3-case live Groq check and the nightly do | Backlog item 13 |
 | Free tiers only | $0 project | Quota and cold starts shape every number above | CLAUDE.md, ground rules |
 
 ## Where to look next
