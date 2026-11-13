@@ -75,7 +75,7 @@ It should include `required_status_checks`, `non_fast_forward` (no force push)
 and `deletion`. To see the required check names (works in PowerShell 5.1 and 7):
 
 ```powershell
-gh api repos/erjonb19/governed-clinical-agent/rules/branches/main | ConvertFrom-Json | Where-Object type -eq 'required_status_checks' | ForEach-Object { $_.parameters.required_status_checks.context }
+(gh api repos/erjonb19/governed-clinical-agent/rules/branches/main | ConvertFrom-Json) | Where-Object type -eq 'required_status_checks' | ForEach-Object { $_.parameters.required_status_checks.context }
 ```
 
 They should include `pytest`, `pip-audit`, `image` (container), `analyze (python)`
