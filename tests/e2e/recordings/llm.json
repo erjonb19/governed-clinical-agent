@@ -1,39 +1,12 @@
 {
-  "19c6fa00c72ca90b5e04deb0e08bf452297cc489c561ecbbe938976684d134e7": {
+  "22e455136810d55ea9ab37639b2c5ebf2efb934cf6e142fe2ceb9c8a48854b2e": {
     "authored": true,
     "completion_tokens": 9,
     "model": "authored",
-    "prompt_tokens": 719,
+    "prompt_tokens": 766,
     "role": "plan",
     "text": "SELECT * FROM bronze_patient LIMIT 10",
     "user": "Show every column of bronze_patient for the first ten patients.\n\nYour previous SQL attempt was REJECTED. Reason:\nOperation denied: analytics.query_aggregate\nReason: Tool execution failed: DENIED by sql_guard: table not on Gold allowlist: bronze_patient\nSafe query shape: query only the tables the sch"
-  },
-  "44348c80a847d70aebc7cbb880eb89d3a1fa86a028a5b34e9e16a375fa64950a": {
-    "authored": true,
-    "completion_tokens": 19,
-    "model": "authored",
-    "prompt_tokens": 719,
-    "role": "plan",
-    "text": "SELECT count(*) AS hospitals FROM gold_hospital_profile WHERE star_rating = 5",
-    "user": "How many hospitals have an overall star rating of exactly 5?"
-  },
-  "47539ec319268c37fc27986d0f7402bcb204e4e901f6690d8a5ea6eb1c8569ae": {
-    "authored": true,
-    "completion_tokens": 40,
-    "model": "authored",
-    "prompt_tokens": 719,
-    "role": "plan",
-    "text": "SELECT facility_id, facility_name, ed_median_min FROM gold_hospital_profile WHERE ed_median_min IS NOT NULL ORDER BY ed_median_min DESC, facility_id ASC LIMIT 10",
-    "user": "Which hospitals have the longest emergency department waits?"
-  },
-  "50ba83041c4a2fffad60bd16e12d93b266db610afcc4c3aa634fcd7d0236f5ea": {
-    "authored": true,
-    "completion_tokens": 9,
-    "model": "authored",
-    "prompt_tokens": 719,
-    "role": "plan",
-    "text": "SELECT * FROM bronze_patient LIMIT 10",
-    "user": "Show every column of bronze_patient for the first ten patients."
   },
   "74eb44f175a91dcb3ae0ea6a1c689e0b3cd738302df2ea03cf6a16a46bd76af0": {
     "authored": true,
@@ -53,11 +26,11 @@
     "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
     "user": "Question:\nWhich hospitals have the worst heart failure readmission rates?\n\nProposed SQL:\nSELECT facility_id, facility_name, readmit_hf FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL ORDER BY readmit_hf DESC, facility_id ASC LIMIT 10"
   },
-  "a9da36b36d4ccbaf0beff89e02142b0fc5f02295847dea2fed1f0ae7bdbe6b11": {
+  "93b69e1f9909297062ed91d905043cffd10e37355bc2ecfc6516db2da9e0e934": {
     "authored": true,
     "completion_tokens": 38,
     "model": "authored",
-    "prompt_tokens": 719,
+    "prompt_tokens": 766,
     "role": "plan",
     "text": "SELECT facility_id, facility_name, readmit_hf FROM gold_hospital_profile WHERE readmit_hf IS NOT NULL ORDER BY readmit_hf DESC, facility_id ASC LIMIT 10",
     "user": "Which hospitals have the worst heart failure readmission rates?"
@@ -79,5 +52,32 @@
     "role": "critic",
     "text": "{\"verdict\": \"approve\", \"reason\": \"authored E2E fixture\", \"issues\": []}",
     "user": "Question:\nHow many hospitals have an overall star rating of exactly 5?\n\nProposed SQL:\nSELECT count(*) AS hospitals FROM gold_hospital_profile WHERE star_rating = 5"
+  },
+  "d8d580e54798e47e0b5073328e950253200c1c7a85152e674b142c8d91b40793": {
+    "authored": true,
+    "completion_tokens": 19,
+    "model": "authored",
+    "prompt_tokens": 766,
+    "role": "plan",
+    "text": "SELECT count(*) AS hospitals FROM gold_hospital_profile WHERE star_rating = 5",
+    "user": "How many hospitals have an overall star rating of exactly 5?"
+  },
+  "f4c9827e79ae5841f6441900d8b98971a60f496b92cf98156be7a0057747311e": {
+    "authored": true,
+    "completion_tokens": 9,
+    "model": "authored",
+    "prompt_tokens": 766,
+    "role": "plan",
+    "text": "SELECT * FROM bronze_patient LIMIT 10",
+    "user": "Show every column of bronze_patient for the first ten patients."
+  },
+  "fc3093031a81dd52f432ace81b14deab084f556415f4e083800c0e1628f8b451": {
+    "authored": true,
+    "completion_tokens": 40,
+    "model": "authored",
+    "prompt_tokens": 766,
+    "role": "plan",
+    "text": "SELECT facility_id, facility_name, ed_median_min FROM gold_hospital_profile WHERE ed_median_min IS NOT NULL ORDER BY ed_median_min DESC, facility_id ASC LIMIT 10",
+    "user": "Which hospitals have the longest emergency department waits?"
   }
 }
