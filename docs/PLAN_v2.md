@@ -726,7 +726,7 @@ decisions taken inside one piece of work.
 
 | Date | Decision |
 |---|---|
-| 2026-11-14 | **Item 9 UI plan (`docs/UI_PLAN.md`) approved: D1a, D2a, D3a.** D1a, a keyless findings route, only on these conditions: hospital data only; only the fixed, reviewed findings queries (`findings.py`); no LLM calls; rate-limited; no key exposed to the browser. (Met by: the route needs and returns no key, the Pages page holds none, and `/ui-config`'s `prefill_key` stays loopback-only.) D2a: a GitHub Pages wake-up page. D3a: three tabs (Answers, Ask, About), the rest behind Advanced. Build in the plan's order. |
+| 2026-11-14 | **Item 9 UI plan (`docs/UI_PLAN.md`) approved: D1a, D2a, D3a.** D1a, a keyless findings route, only on these conditions: hospital data only; only the fixed, reviewed findings queries (`findings.py`); no LLM calls; rate-limited; no key exposed to the browser. D2a: a GitHub Pages wake-up page. D3a: three tabs (Answers, Ask, About), the rest behind Advanced. Build in the plan's order. |
 | 2026-11-14 | **#116 first.** "Finish #116 first under rule 0" (so its FHIR comparison must pass before it merges). |
 | 2026-11-11 | **Item 70: refuse the shape.** With 2+ counting scopes in one query, a grouped count beside an ungrouped one, and counts over different base tables, are refused (fail closed). Merge under rule 0 once the full FHIR comparison passes after a Gemini reset. |
 | 2026-11-11 | **Rule 0, two clarifications.** (a) A new dependency still needs the owner's OK first; once approved, rule 0 covers merging its PR. Dependabot updates of existing dependencies stay under the standing OK. (b) An ordinary merge that Render auto-deploys is not a Render change; changes to `render.yaml` or the Render dashboard are, and need the owner's OK. |
