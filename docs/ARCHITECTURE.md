@@ -75,10 +75,12 @@ Where it breaks, in the order you would hit it:
   adversarial reviews. Known open gaps on `main`: a date grouped below the year
   as a hidden key (a strict xfail in `tests/security/test_phi_guard.py`),
   cross-query differencing (accepted residual risk, [PLAN_v2 §0.4](PLAN_v2.md)),
-  row-multiplying joins, set-returning functions and seeded sampling, whose fix
-  is open in [#116](https://github.com/erjonb19/governed-clinical-agent/pull/116)
-  waiting on its eval comparison; and key-joined self-joins, which stay open
-  after #116, pending the owner's decision (backlog item 71 on that branch). The planned
+  and key-joined self-joins (each person weighted by their row count to the power
+  of the number of joins), pending the owner's decision (backlog item 71). Row
+  multipliers in general (set-returning functions, unkeyed joins, duplicating
+  unions) and seeded sampling were closed by
+  [#116](https://github.com/erjonb19/governed-clinical-agent/pull/116) on
+  2026-11-14, after its FHIR comparison scored the branch level with `main`. The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 
