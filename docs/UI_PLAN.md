@@ -1,7 +1,9 @@
 # UI plan (backlog item 9) -- for the owner's OK before any code
 
-Status: **plan only.** Nothing here is built. Building starts after the owner
-approves it, including the three decisions in section 3.
+Status: **approved by the owner 2026-11-14 (D1a, D2a, D3a; PLAN_v2 §0.7).** Built
+in the order of section 7. D1a carries the owner's conditions: hospital data only,
+only the fixed reviewed findings queries, no LLM calls, rate-limited, and no key
+exposed to the browser.
 
 ## 1. Goal (from the backlog)
 
@@ -35,7 +37,7 @@ if it was something else.
 ## 3. Decisions needed from the owner
 
 **D1. Let a visitor see the fixed findings without a key?**
-- **(a) Recommended:** a new read-only `GET /public/findings` with no key,
+- **(a) Recommended, approved:** a new read-only `GET /public/findings` with no key,
   serving only the cached hospital findings (public CMS data, fixed reviewed
   SQL, the same guard path, no LLM, $0). Its own tight rate limit (for example
   `10/minute` per IP). FHIR (synthetic patient data) never goes through it,
