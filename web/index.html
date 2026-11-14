@@ -549,7 +549,7 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
    setup at all. Remote users get the inline connect card. */
 (async function boot(){
   let cfg={auth_required:true};   // fail closed: if /ui-config fails, never assume open access
-  try{ cfg=await (await fetch("/ui-config")).json(); }catch(_){}
+  try{ const r=await fetch("/ui-config"); if(r.ok) cfg=await r.json(); }catch(_){}
   if(Array.isArray(cfg.datasets)){
     DATASET=DEFAULT_DATASET=cfg.default_dataset||cfg.datasets[0].id;
     $("segDataset").innerHTML=cfg.datasets.map(x=>
