@@ -115,8 +115,14 @@ def test_2_a_guard_denial_names_the_rule_and_the_retries_are_traced(page, server
     assert names.count("guard") >= 2 and "retry" in names, names
 
 
+def _advanced_on(page):
+    if page.get_attribute("#advBtn", "aria-pressed") != "true":
+        page.click("#advBtn")
+
+
 def _review(page, base, who):
     page.goto(base + "/ui")
+    _advanced_on(page)                         # Review sits behind Advanced (item 9, D3a)
     page.click("nav button[data-v='review']")
     page.wait_for_selector("#reviewer")
     page.fill("#reviewer", who)
@@ -182,21 +188,52 @@ def test_6_every_recorded_critic_call_is_replayed(server):
     assert verdicts and "unavailable" not in verdicts, verdicts
 
 
-def test_7_overview_is_the_landing_view_for_leaders(page, server):
+def test_7_answers_is_the_landing_view_with_three_tabs(page, server):
     page.goto(server + "/ui")
     assert page.locator("#v-overview").is_visible()
-    page.wait_for_selector("#ovFindings .ovcard .metric", timeout=30_000)
-    cards = page.locator("#ovFindings .ovcard")
-    assert cards.count() >= 3
-    for i in range(cards.count()):
-        text = cards.nth(i).inner_text()
-        assert any(ch.isdigit() for ch in text) and "Unavailable" not in text
-    assert page.locator("#ovDefs dt").count() >= 6
+    visible = [b.inner_text().strip() for b in page.locator("nav button").all() if b.is_visible()]
+    assert visible == ["Answers", "Ask", "About"], visible
+    assert page.locator("#ovDefs dt").count() >= 6 and page.locator("#ovDefs").is_visible()
     assert "limits" in page.locator("#ovHow").inner_text().lower()
-    # the raw controls are hidden until Advanced is switched on
+    # every fixed question answers with a number
+    for i in range(page.locator("#ovQuestions button").count()):
+        page.click(f"#ovQuestions button >> nth={i}")
+        page.wait_for_selector("#ovAnswer .metric", timeout=30_000)
+        text = page.locator("#ovAnswer").inner_text()
+        assert any(ch.isdigit() for ch in text) and "Unavailable" not in text
+    # the raw controls and the other views are hidden until Advanced is switched on
+    assert not page.locator("nav button[data-v='review']").is_visible()
     page.click("nav button[data-v='ask']")
     assert not page.locator("#segBackend").is_visible()
     page.click("#advBtn")
     assert page.locator("#segBackend").is_visible()
+    assert page.locator("nav button[data-v='traces']").is_visible()
     page.click("#advBtn")
     assert not page.locator("#segBackend").is_visible()
+
+
+def test_8_a_first_time_visitor_with_no_key_gets_an_answer_in_one_click(page, server):
+    """The deployed case (item 9's done-when): no key saved and none prefilled, as on
+    Render. The page must reach a useful answer in at most two clicks, show the
+    definitions on the first screen, have the cold-start note, and make no call
+    that fails (the nightly live check fails on any console error)."""
+    def no_prefill(route):
+        resp = route.fetch()
+        cfg = resp.json()
+        cfg["prefill_key"], cfg["auth_required"] = None, True
+        route.fulfill(response=resp, json=cfg)
+
+    failed, errors = [], []
+    page.on("response", lambda r: r.status >= 400 and failed.append((r.status, r.url)))
+    page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+    page.route("**/ui-config", no_prefill)
+    page.goto(server + "/ui")
+    page.evaluate("localStorage.clear()")
+    page.reload(wait_until="networkidle")
+    assert page.locator("#ovDefs").is_visible()            # definitions on the first screen
+    assert page.locator("#coldNote").count() == 1          # the cold-start note exists
+    page.click("#ovQuestions button >> nth=0")             # click 1
+    page.wait_for_selector("#ovAnswer .metric", timeout=30_000)
+    text = page.locator("#ovAnswer").inner_text()
+    assert any(ch.isdigit() for ch in text) and "Unavailable" not in text
+    assert failed == [] and errors == [], (failed, errors)

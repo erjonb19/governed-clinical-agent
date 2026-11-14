@@ -51,6 +51,10 @@
           font:inherit;font-size:13px;color:var(--ink-3);cursor:pointer;margin-left:auto}
   .advtog[aria-pressed="true"]{background:var(--paper-2);color:var(--ink)}
   .ovgrid{margin-bottom:18px}
+  .qpick{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0 14px}
+  .qpick button{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px 15px;cursor:pointer;text-align:left;font-family:var(--sans);font-size:15px;line-height:1.35;color:var(--ink)}
+  .qpick button:hover{border-color:var(--green-2)}
+  .qpick button.on{background:var(--green-wash);border-color:var(--green-2);font-weight:600}
   .ovcard .metric{font-family:var(--serif);font-size:34px;line-height:1.1;margin:4px 0 8px}
   .ovcard h3{font-family:var(--serif);font-size:18px;font-weight:600;margin:0 0 8px;line-height:1.3}
   .ovcard p{margin:0 0 10px;line-height:1.55}
@@ -195,16 +199,15 @@
     <div><h1>Clinical Intelligence</h1><span>Governed Analytics</span></div>
   </div>
   <nav id="nav">
-    <button data-v="overview" class="on">Overview</button>
+    <button data-v="overview" class="on">Answers</button>
     <button data-v="ask">Ask</button>
-    <button data-v="review">Review<span class="qbadge" id="qBadge" hidden>0</span></button>
-    <button data-v="data">Data</button>
-    <button data-v="uses">Guide</button>
-    <button data-v="trust">Trust</button>
-    <button data-v="usage">Usage</button>
-    <button data-v="traces">Traces</button>
+    <button data-v="about">About</button>
+    <button data-v="review" class="adv">Review<span class="qbadge" id="qBadge" hidden>0</span></button>
+    <button data-v="data" class="adv">Data</button>
+    <button data-v="usage" class="adv">Usage</button>
+    <button data-v="traces" class="adv">Traces</button>
   </nav>
-  <button class="advtog" id="advBtn" aria-pressed="false" title="Show the technical controls: data source, dataset, SQL mode, and links from an answer to its trace">Advanced</button>
+  <button class="advtog" id="advBtn" aria-pressed="false" title="Show the technical controls and views: data source, dataset, SQL mode, the review queue, data, usage and traces">Advanced<span class="qbadge" id="advBadge" hidden>0</span></button>
   <button class="gear adv" id="gearBtn"><span class="dot" id="connDot"></span><span id="connTxt">Connect</span></button>
 </div></div>
 
@@ -212,16 +215,21 @@
   <!-- ============ OVERVIEW (the landing view, PLAN v2 item 6) ============ -->
   <section class="view on" id="v-overview">
     <div class="hero">
-      <h2>Hospital quality at a glance</h2>
-      <p>What the latest Medicare data says about hospitals in the Northeast and Mid-Atlantic. Each finding is computed the same way every time, from the published data, and checked by the same security layer as every other question. <span id="ovVintage"></span></p>
+      <h2>Hospital quality, answered</h2>
+      <p>Medicare's public hospital quality data for 12 Northeast and Mid-Atlantic states, in plain English. Pick a question to see the answer. <span id="ovVintage"></span></p>
     </div>
 
-    <div class="card pad" id="ovConnect" hidden style="border-color:var(--copper);background:var(--copper-wash);margin-bottom:18px">
-      <p style="margin:0 0 10px;color:#6E3E20">This service is protected. Enter your access key once to see the findings.</p>
-      <button class="go" id="ovConnectBtn" style="margin:0">Enter access key</button>
-    </div>
+    <div class="note" id="coldNote" hidden style="margin-bottom:14px">Waking the service up: on the free hosting plan the first answer can take up to a minute. It is faster after that.</div>
 
-    <div class="grid ovgrid" id="ovFindings"></div>
+    <div class="eyebrow">Pick a question</div>
+    <div class="qpick" id="ovQuestions">
+      <button data-f="hf_readmission_by_state">Which states have the highest heart-failure readmissions?</button>
+      <button data-f="high_quality_low_cost">How many hospitals are both high quality and lower cost?</button>
+      <button data-f="psych_ed_wait">Where do mental-health patients wait longest in the ED?</button>
+      <button data-f="ed_left_before_seen">Where do patients leave the ED before being seen?</button>
+    </div>
+    <div id="ovAnswer" aria-live="polite"></div>
+    <p class="small muted" style="margin:10px 0 18px">These answers are measures, not verdicts, and the data lags the present by months (see <a href="#" id="ovToAbout">About</a>). To ask your own question in plain English, use <a href="#" id="ovToAsk2">Ask</a> (needs an access key).</p>
 
     <div class="ovcols">
       <div class="card pad" id="ovDefs">
@@ -292,9 +300,31 @@
     <div id="dataBody"><div class="card pad muted">Loading…</div></div>
   </section>
 
-  <!-- ============ USE CASES ============ -->
-  <section class="view" id="v-uses">
-    <div class="hero"><h2>Guide</h2><p>Which dataset to ask, and how to ask it.</p></div>
+  
+    <!-- ============ ABOUT (Trust + Guide, item 9 D3a) ============ -->
+  <section class="view" id="v-about">
+    <div class="hero"><h2>About this service</h2><p>Why you can trust the answers, and how to ask your own question.</p></div>
+    <div class="card pad">
+      <ol class="steps">
+        <li><b>You ask a question</b><span>In plain English &mdash; no query language required.</span></li>
+        <li><b>A model drafts the query</b><span>Written against a fixed, published data dictionary. It cannot invent tables or columns.</span></li>
+        <li><b>The security layer rules on it</b><span>Read-only, approved tables only, automatic result limits, no system or file access. Anything else is refused at the boundary &mdash; with the reason shown.</span></li>
+        <li><b>You get the answer and the receipt</b><span>The result, the exact query that ran, and what the request cost.</span></li>
+      </ol>
+      <div style="margin-top:20px" class="eyebrow">Guarantees</div>
+      <div class="grid">
+        <div><div class="badge">Read-only</div><p class="small muted" style="margin:7px 0 0">Data can never be modified or deleted.</p></div>
+        <div><div class="badge">Approved tables only</div><p class="small muted" style="margin:7px 0 0">Access outside the allow-list is refused.</p></div>
+        <div><div class="badge">Result limits</div><p class="small muted" style="margin:7px 0 0">Bulk extraction is capped automatically.</p></div>
+        <div><div class="badge">Fully audited</div><p class="small muted" style="margin:7px 0 0">Every decision is recorded and reviewable.</p></div>
+      </div>
+      <div class="note" style="margin-top:20px"><b>See it yourself:</b> on the Ask tab, switch <b>Mode</b> to <b>SQL</b> and run
+      <code style="font-family:var(--mono);font-size:12px">SELECT * FROM information_schema.tables</code>.
+      It is valid SQL, and it is still refused &mdash; because it reaches into the system catalog.
+      Ask the same thing in plain English and you see the other half of the design: the assistant
+      declines up front, because the data dictionary it was given contains no such table.</div>
+    </div>
+    <div style="height:18px"></div>
 
     <div class="card pad">
       <div class="eyebrow">Step 1 &mdash; choose the right dataset</div>
@@ -354,31 +384,6 @@
     <div class="card pad" style="margin-top:16px">
       <div class="eyebrow">Example workflows for the selected dataset</div>
       <div id="useBody"></div>
-    </div>
-  </section>
-
-  <!-- ============ TRUST ============ -->
-  <section class="view" id="v-trust">
-    <div class="hero"><h2>Why you can trust the answers</h2><p>The assistant proposes; an independent security layer decides.</p></div>
-    <div class="card pad">
-      <ol class="steps">
-        <li><b>You ask a question</b><span>In plain English &mdash; no query language required.</span></li>
-        <li><b>A model drafts the query</b><span>Written against a fixed, published data dictionary. It cannot invent tables or columns.</span></li>
-        <li><b>The security layer rules on it</b><span>Read-only, approved tables only, automatic result limits, no system or file access. Anything else is refused at the boundary &mdash; with the reason shown.</span></li>
-        <li><b>You get the answer and the receipt</b><span>The result, the exact query that ran, and what the request cost.</span></li>
-      </ol>
-      <div style="margin-top:20px" class="eyebrow">Guarantees</div>
-      <div class="grid">
-        <div><div class="badge">Read-only</div><p class="small muted" style="margin:7px 0 0">Data can never be modified or deleted.</p></div>
-        <div><div class="badge">Approved tables only</div><p class="small muted" style="margin:7px 0 0">Access outside the allow-list is refused.</p></div>
-        <div><div class="badge">Result limits</div><p class="small muted" style="margin:7px 0 0">Bulk extraction is capped automatically.</p></div>
-        <div><div class="badge">Fully audited</div><p class="small muted" style="margin:7px 0 0">Every decision is recorded and reviewable.</p></div>
-      </div>
-      <div class="note" style="margin-top:20px"><b>See it yourself:</b> on the Ask tab, switch <b>Mode</b> to <b>SQL</b> and run
-      <code style="font-family:var(--mono);font-size:12px">SELECT * FROM information_schema.tables</code>.
-      It is valid SQL, and it is still refused &mdash; because it reaches into the system catalog.
-      Ask the same thing in plain English and you see the other half of the design: the assistant
-      declines up front, because the data dictionary it was given contains no such table.</div>
     </div>
   </section>
 
@@ -467,28 +472,44 @@ function findingCard(f){
     <div class="metric">${esc(f.metric)}</div><h3>${esc(f.headline)}</h3>
     <p>${esc(f.sentence)}</p>${how}</div>`;
 }
-async function loadOverview(){
-  const box=$("ovFindings");
-  $("ovConnect").hidden=true;
-  box.innerHTML=`<div class="card pad muted">Loading the findings…</div>`;
-  try{
-    const r=await fetch("/findings",{headers:authHdrs()});
-    if(r.status===401){ box.innerHTML=""; $("ovConnect").hidden=false; return; }
-    if(!r.ok){
-      box.innerHTML=`<div class="card pad">The findings are not available right now (${r.status===429?"too many requests; try again in a minute":"server error "+r.status}).</div>`;
-      return;
-    }
-    const d=await r.json();
-    $("ovVintage").textContent=d.vintage?`Data as of ${d.vintage}.`:"";
-    box.innerHTML=(d.findings||[]).map(findingCard).join("");
-  }catch(e){ box.innerHTML=`<div class="card pad">Could not load the findings: ${esc(e.message||e)}</div>`; }
+let FINDINGS=null, PICKED=null, FINDINGS_ERR=null;
+function showFinding(id){
+  PICKED=id;
+  document.querySelectorAll("#ovQuestions button").forEach(b=>b.classList.toggle("on",b.dataset.f===id));
+  const box=$("ovAnswer");
+  if(FINDINGS_ERR){ box.innerHTML=`<div class="card pad">${esc(FINDINGS_ERR)}</div>`; return; }
+  if(!FINDINGS){ box.innerHTML=`<div class="card pad muted">Loading the answer…</div>`; return; }
+  const f=FINDINGS.find(x=>x.id===id);
+  box.innerHTML=f?findingCard(f):`<div class="card pad">This answer is not available right now.</div>`;
 }
-function overviewNeedsKey(){ $("ovFindings").innerHTML=""; $("ovConnect").hidden=false; }
+$("ovQuestions").onclick=e=>{const b=e.target.closest("button[data-f]"); if(b) showFinding(b.dataset.f);};
+/* The fixed findings: /findings with a key, /public/findings without one (owner's
+   D1a: hospital data, fixed reviewed queries, no model, rate-limited, no key).
+   Without a key this makes no call that can 401, so the nightly live check
+   (no key, fails on any console error) stays clean. */
+async function loadOverview(){
+  FINDINGS=null; FINDINGS_ERR=null;
+  const cold=setTimeout(()=>{ $("coldNote").hidden=false; },1500);
+  try{
+    const k=($("key").value||"").trim();
+    const r=k ? await fetch("/findings",{headers:authHdrs()}) : await fetch("/public/findings");
+    if(!r.ok){
+      FINDINGS_ERR=`The answers are not available right now (${r.status===429?"too many requests; try again in a minute":"server error "+r.status}).`;
+    } else {
+      const d=await r.json();
+      $("ovVintage").textContent=d.vintage?`Data as of ${d.vintage}.`:"";
+      FINDINGS=d.findings||[];
+    }
+  }catch(e){ FINDINGS_ERR=`Could not load the answers: ${e.message||e}`; }
+  finally{ clearTimeout(cold); $("coldNote").hidden=true; }
+  if(PICKED) showFinding(PICKED);
+}
 
 function openDrawer(){ $("drawer").classList.add("on"); $("scrim").classList.add("on"); $("key").focus(); }
 function closeDrawer(){ $("drawer").classList.remove("on"); $("scrim").classList.remove("on"); }
-$("ovConnectBtn").onclick=openDrawer;
 $("ovToAsk").onclick=e=>{e.preventDefault();show("ask");};
+$("ovToAsk2").onclick=e=>{e.preventDefault();show("ask");};
+$("ovToAbout").onclick=e=>{e.preventDefault();show("about");};
 $("gearBtn").onclick=openDrawer; $("closeDrawer").onclick=closeDrawer; $("scrim").onclick=closeDrawer;
 $("key").value=localStorage.getItem(KEY)||"";
 $("whereAmI").textContent=location.origin;
@@ -543,7 +564,7 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
     localStorage.removeItem(KEY); $("key").value="";
   }
   // testKey already set the badge (rejected / Offline / Error) if it ran.
-  if(!ok){ if(!haveKey) setConn("bad","Key needed"); $("connectCard").style.display="block"; overviewNeedsKey(); }
+  if(!ok){ if(!haveKey) setConn("bad","Key needed"); $("connectCard").style.display="block"; loadOverview(); }
   else { refreshBadge(); loadOverview(); }
 })();
 
@@ -714,7 +735,7 @@ function renderAnswer(d){
       ${d.trace_id?`<span class="adv"><a href="#" id="toTrace" data-tid="${esc(d.trace_id)}">View trace</a></span>`:""}
     </div></div>`;
   el.innerHTML=h;
-  const t=$("toTrust"); if(t)t.onclick=e=>{e.preventDefault();show("trust");};
+  const t=$("toTrust"); if(t)t.onclick=e=>{e.preventDefault();show("about");};
   const tl=$("toTrace"); if(tl)tl.onclick=e=>{e.preventDefault();show("traces");openTrace(tl.dataset.tid);};
   el.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
@@ -889,6 +910,7 @@ const pctOf=v=>(v===null||v===undefined)?"—":Math.round(v*100)+"%";
 function setBadge(n){
   const b=$("qBadge");
   if(n>0){ b.textContent=n; b.hidden=false; } else { b.hidden=true; }
+  const a=$("advBadge"); a.textContent=n; a.hidden=!(n>0);
 }
 
 /* Count the queue without rendering it. A badge that only appears once you

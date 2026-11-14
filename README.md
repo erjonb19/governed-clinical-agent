@@ -622,11 +622,16 @@ Then open **http://localhost:8000/ui** — a self-contained web UI to ask questi
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
 The API's Swagger docs remain at `/docs`.
 
-The UI has eight views and opens on **Overview**: four plain-English findings about the
-current data for leadership (from `/findings`, each with a "How we know" showing its
-exact query; a finding that cannot be computed says so and shows no number), what
-the measures mean, and the limits. Raw controls (SQL mode, backend, trace links) sit
-behind **Advanced**. Most views are read-only, but **Review** is the human-in-the-loop
+The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
+**About** (backlog item 9). Answers offers four questions as buttons; one click shows
+the answer as a plain sentence with its number and a "How we know" showing the exact
+query, with what the measures mean and the limits on the same screen. It works with
+**no key**: without one the page reads `/public/findings`, with one `/findings` (the
+same fixed findings; a finding that cannot be computed says so and shows no number).
+While the service is slow to answer, a note says the free plan may be waking it up.
+**Advanced** shows the raw controls (SQL mode, backend, trace links) and the other
+views: Review, Data, Usage and Traces; the review queue's count also shows on the
+Advanced button. Most views are read-only, but **Review** is the human-in-the-loop
 surface: it shows the approval queue, drafts a proposal into it (`/propose`), and
 submits any of the four decisions — approve, reject, escalate, approve with edits
 — which **resumes the paused agent** on the server. Queue depth, average wait,
