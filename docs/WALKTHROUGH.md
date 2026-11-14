@@ -11,11 +11,11 @@ the key on screen.
 
 ## 0:00-0:20 -- What this is
 
-Show: the Overview.
+Show: the **Answers** tab, then click the first question.
 
 Say: "This is a governed AI analyst over public Medicare hospital data and
 synthetic patient records. You ask in plain English; a model writes the SQL; a
-security layer decides whether that SQL may run. These four findings at the top
+security layer decides whether that SQL may run. These four questions at the top
 are fixed, reviewed queries, so no model writes those numbers."
 
 ## 0:20-1:00 -- Ask a question
@@ -44,7 +44,7 @@ Point at: the denial and the rule it names.
 
 ## 1:40-2:20 -- A human approves
 
-Do: open **Review**, enter a reviewer name, type *Which hospitals have the worst
+Do: open **Review** (behind **Advanced**, already on from the previous step), enter a reviewer name, type *Which hospitals have the worst
 heart failure readmission rates?*, press **Draft & pause**, then **Approve** it.
 
 Say: "Some actions wait for a person. The agent pauses at a checkpoint; the
