@@ -38,9 +38,13 @@ if it was something else.
 
 **D1. Let a visitor see the fixed findings without a key?**
 - **(a) Recommended, approved:** a new read-only `GET /public/findings` with no key,
+  which also returns no key (and `/ui-config` keeps handing its key to loopback
+  callers only),
   serving only the cached hospital findings (public CMS data, fixed reviewed
   SQL, the same guard path, no LLM, $0). Its own tight rate limit (for example
-  `10/minute` per IP). FHIR (synthetic patient data) never goes through it,
+  `10/minute` per IP; on Render every caller shares the proxy's address until
+  item 38, so this is one shared limit and must be set high enough that a first
+  visit never gets a 429). FHIR (synthetic patient data) never goes through it,
   and `/query`, `/raw-sql`, `/propose`, `/mcp` keep the key. This is an
   **auth change**, so it needs your explicit yes; it would get a security
   review and tests that every other route still returns 401 without a key.
@@ -94,11 +98,14 @@ can click the next question straight away.
   button, and assert a plain-sentence answer with a number appears -- **one
   click**, under the two-click bar. Also assert the definitions section is on
   the first screen and the cold-start note element exists.
-- Security tests: every route other than `/public/findings`, `/health`,
-  `/ui` and `/ui-config` still returns 401 without a key; `/public/findings`
-  serves only the hospital set and never FHIR.
+- Security tests: the routes that answer without a key are listed explicitly
+  (today's open set -- `/`, `/ui`, `/ui-config`, `/health`, `/schema`,
+  `/datasets`, `/metrics`, the API docs -- plus `/public/findings`), and every
+  other route must return 401 without a key; `/public/findings` serves only the
+  hospital set and never FHIR. A new open route fails the test until it is added
+  to the list on purpose.
 - `live-check.yml` (no key, fails on any console error) must stay green: the
-  first visit must make no 401 call.
+  first visit must get no 4xx (no 401, no 429) from any call.
 - The existing E2E tests 1-7 are updated for the new tab names, not removed.
 
 ## 6. Out of scope
