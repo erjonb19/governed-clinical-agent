@@ -309,13 +309,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **30. DuckDB external access on, configuration unlocked** (High; security audit finding 1, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: analytics_query_tool.py:155, :171, :204; data_backends.py:37
   - Done when: open every agent connection with enable_external_access, autoinstall and autoload off and lock_configuration on (lock last); a test that a cursor cannot SET it back or read a file with the guard bypassed; a test or check shows it.
-- [x] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - **Done 2026-11-11, in the PR "Item 30".**
     - **The change:** every agent DuckDB connection now goes through `connect_agent_db` / `lock_down` in `analytics_query_tool.py`. That covers the tool's primary connection, its dataset connections and its seeded `:memory:` demo, plus the eval harness's `LocalDuckDBBackend`. Each one gets `enable_external_access`, `autoinstall_known_extensions` and `autoload_known_extensions` off, then `lock_configuration` on.
     - **Why runtime SET:** DuckDB refuses a second connection to one file with a different connect-time config. Connections to one file share one instance, so the settings cover all of them.
     - **Tests:** `tests/security/test_duckdb_lockdown.py`, 26 of them, run directly on the connections with the guard bypassed. They check that the settings are off and locked, that generated `SET`s cannot undo them, and that `read_text('/proc/self/environ')`, `read_csv` of a file or URL, and `ATTACH` are all refused. Queries through the guard still answer.
 
-- [ ] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **31. No GitHub Action is pinned to a full commit SHA** (High; security audit finding 2, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: every .github/workflows/*.yml, ~52 `uses:` lines (e.g. tests.yml:22 actions/checkout@v7, codeql.yml:29 github/codeql-action/init@v4)
   - Done when: Pin each to `@<40-char sha> # vX.Y.Z`; Dependabot's github-actions updates (already on) keep SHAs current.; a test or check shows it.
   - **Done 2026-11-11, in the PR "Item 31".**
@@ -329,7 +328,6 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **33. No security headers on any response** (Medium; security audit finding 4, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-335 (middleware), app.py:381-391 (/ui sets only Cache-Control)
   - Done when: A header middleware: CSP `default-src 'self'; script-src 'sha256-<inline>'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`, nosniff, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy, HSTS; a test on /ui.; a test or check shows it.
-- [x] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - **Done 2026-11-11, in the PR "Item 33".**
     - **Every response** gets `_SecurityHeaders` in `app.py`: nosniff, a strict-origin-when-cross-origin Referrer-Policy, a Permissions-Policy with camera, microphone and location off, HSTS, and `X-Frame-Options: DENY`.
     - **The `/ui` page** also gets a Content Security Policy. Scripts may come only from this origin plus the page's one inline script, allowed by its SHA-256, which is computed from the file actually served. Inline styles are allowed. No frames, objects or base-URI changes.
@@ -337,22 +335,19 @@ What real AI, data and software engineering teams would add, checked against the
     - **Tests:** `tests/integration/test_security_headers.py`. A local Chromium load of `/ui`, clicking through every view, showed no console errors and no CSP violations.
     - `/docs` gets the headers but no CSP, because putting it behind a flag is item 53.
 
-- [ ] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **34. No request body or field size limits** (Medium; security audit finding 5, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423 (question, sql, decided_by, reason, edited_proposal: no max_length)
   - Done when: Field(max_length=...) (question 2,000, sql 20,000, names 200) and a 64 KB body cap.; a test or check shows it.
-- [x] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `Field(max_length=...)` on every request model (question 2,000, sql and free text 20,000, names 200) gives 422; `_BodySizeLimit` refuses a body over 64 KB with 413 before it is parsed, by Content-Length or by counting a chunked body. `tests/integration/test_request_limits.py`.
-- [ ] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **35. Failed API-key attempts are neither rate-limited nor logged** (Medium; security audit finding 6, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:171-178 (dependency runs before the slowapi decorator); mcp_server.py:542, :549
   - Done when: Count and audit 401s per client IP in middleware (or move auth after the limiter); same for the MCP branches.; a test or check shows it.
-- [x] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `auth_failures.py`. Every refused key on the API and on MCP over HTTP is counted per client address and audited (`auth_failure` event: client, path, count in the window, whether over the limit; never the key). By default that is all: on Render every caller shares the proxy's address until item 38, so a lockout would let one scanner lock everyone out, and a 429 for wrong keys alone would not slow guessing (review, 2026-11-11). `AUTH_FAILURE_LOCKOUT=1` gives a client past `AUTH_FAILURES_PER_WINDOW` (10) in `AUTH_FAILURE_WINDOW_SEC` (300) a 429 on every request until its window ends. Turn it on with item 38. `tests/integration/test_auth_failures.py`.
-- [ ] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **36. /datasets is unauthenticated and unthrottled, and runs one query per table** (Medium; security audit finding 7, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:601-638
   - Done when: require_api_key + RATE_LIMIT_READ, or cache the counts per data vintage as /findings does.; a test or check shows it.
-- [x] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: both halves that keep the UI working. `/datasets` stays open (the Data view and the nightly live check load it with no key) but is limited by `RATE_LIMIT_READ` (per client address without a key), and the per-table counts are computed once per data vintage (the Gold file's mtime) and dataset; a failed count is not cached. `tests/integration/test_datasets_endpoint.py`.
-- [ ] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **37. LLM consumption is limited by rate only, per process, with no budget** (Medium; security audit finding 8, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:145-168 (memory://, 20/min per key); agent_graph.py:87; nl_to_sql_planner.py:88
   - Done when: A global daily request and cost budget checked against the worst case before each call (the scheduled_runs.py pattern), max_length on questions (5), provider-side spend caps.; a test or check shows it.
   - Done 2026-11-11 (code part): `llm_budget.py`. Every /query and /propose run reserves its worst case (every attempt, plan and critic, at full prompt and output, priced with `rate_for` at the dearer of the primary and fallback providers) against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` (1.00, estimated) per UTC day before it starts; a /query run is then charged its reported cost, a run that raises or reports nothing keeps its worst case, and a run that cost more than its estimate is charged in full; a run starts only if its worst case fits. An answer-cache hit still counts as a run. Past a cap: 429 with Retry-After to the next UTC midnight. Today's count is in `/metrics` (`llm_budget`). In memory, per process: a restart starts a fresh count. The max_length half is item 34. **Owner:** provider-side spend caps (each provider's console) are not something the agent can set. `tests/unit/test_llm_budget.py`.
@@ -381,6 +376,7 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: A ruleset on main: required checks (pytest, pip-audit, container, CodeQL, ui-e2e, mcp-e2e), no force push or deletion; data-refresh opens a PR instead of pushing. (The owner said he is turning protection on; this records it.); a test or check shows it.
   - 2026-11-11, code part done: `data-refresh.yml` now pushes a `data-refresh/<date>-<run>` branch, opens a PR against main and dispatches the required checks on it (a PR opened with the workflow token starts no workflows by itself). A failed push or PR now fails the job; before, `git push || echo "no changes to commit"` turned a refused push into a pass. `tests/unit/test_data_refresh_workflow.py`.
   - **Owner (settings, not code):** (1) confirm the ruleset on main lists the required checks above and blocks force pushes and deletion -- PRs now report "blocked" until checks pass, so protection looks on, but this session cannot read the ruleset; (2) Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests" must be on, or the refresh's `gh pr create` is refused (the job then fails loudly). Stays unticked until both are confirmed.
+  - **2026-11-14, owner's settings in place:** Actions may create and approve PRs, and `main` has classic branch protection (not a ruleset) requiring 9 checks with bypass off, no force push, no deletion: `analyze (actions)`, `analyze (python)`, `image`, `pytest`, `ui-e2e`, `mcp-e2e`, `fhir-quick-eval`, `quick-eval`, `secret-scan` (read from `branches/main/protection`). **Not yet done:** `pip-audit`, which the Done-when lists, is not required. Either the owner adds it or decides to leave it out (`docs/OWNER_STEPS.md` step 5).
 - [x] **45. No lockfile, no hashes, no release-age cooldown for Python installs** (Medium; security audit finding 16, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: requirements*.txt (== top-level only); render.yaml:15; Dockerfile:23
   - Done when: uv with a committed uv.lock and `exclude-newer = "1 week"` (uv's documented cooldown; needs a recent uv), `uv sync --locked` in CI, Render and the Dockerfile. Or `--generate-hashes` + `--require-hashes`.; a test or check shows it.
@@ -396,14 +392,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **48. Four workflows set no top-level permissions** (Medium; security audit finding 19, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: tests.yml, eval-on-push.yml, mcp-e2e.yml, eval-fhir-manual.yml
   - Done when: `permissions: contents: read` at the top of each.; a test or check shows it.
-- [x] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: `permissions: contents: read` at the top of tests.yml, eval-on-push.yml, mcp-e2e.yml and eval-fhir-manual.yml (none of their jobs uses the token for anything else). `tests/unit/test_workflow_permissions.py` fails on any workflow without top-level permissions.
-- [ ] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **49. release.yml grants contents:write to the whole workflow, and credentials persist in both write workflows** (Medium; security audit finding 20, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: release.yml:25-26 (pip install … pytest unpinned, tests run under the write token); release.yml:33, data-refresh.yml:28 (checkout without persist-credentials: false)
   - Done when: contents:read at the workflow level, write only on the `gh release create` job; persist-credentials: false except where data-refresh pushes; pin pytest.; a test or check shows it.
-- [x] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-11: release.yml is `contents: read`; the checks and the test suite run in a `check` job with no stored git credentials; a separate `release` job with `contents: write` runs only `gh release create` (no checkout, no repository code); the image job's checkout keeps no credentials either; pytest pinned (9.2.0). data-refresh.yml keeps its credentials because it pushes. `tests/unit/test_release_workflow.py`.
-- [ ] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **50. Base images pinned by tag, not digest** (Medium; security audit finding 21, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: Dockerfile:12, docker/Dockerfile.sandbox:1 (python:3.11-slim); docker-compose.yml:36; tests.yml postgres:16
   - Done when: Pin by @sha256 digest; Dependabot `docker` updates keep them current.; a test or check shows it.
   - Done 2026-11-11: `python:3.11-slim` (Dockerfile, docker/Dockerfile.sandbox), the Phoenix image (docker-compose.yml) and the Postgres service (tests.yml) are pinned by the digest each tag pointed to on 2026-11-11 (read from the Docker Hub registry), so builds use the same image as before. Dependabot's new `docker` entry moves the two Dockerfiles; the compose and workflow images are bumped by hand. `tests/unit/test_image_digests.py` fails on any image without a digest.
