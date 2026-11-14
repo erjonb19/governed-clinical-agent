@@ -39,7 +39,9 @@ gh api repos/erjonb19/governed-clinical-agent/code-scanning/alerts/10 --jq .stat
 
 ---
 
-## [ ] 2. Let GitHub Actions open pull requests (backlog item 44)
+## [x] 2. Let GitHub Actions open pull requests (backlog item 44)
+
+**Done (owner, 2026-11-14).**
 
 **Why:** the monthly data refresh now opens a PR instead of pushing to `main`.
 Without this setting its `gh pr create` is refused and the job fails (loudly, by
@@ -59,29 +61,20 @@ gh api repos/erjonb19/governed-clinical-agent/actions/permissions/workflow --jq 
 
 ---
 
-## [ ] 3. Confirm the ruleset on `main` (backlog item 44)
+## [x] 3. Confirm the branch protection on `main` (backlog item 44)
+
+**Done (owner, 2026-11-14):** classic branch protection on `main` (not a ruleset)
+requires 9 checks with bypass off, no force push and no deletion. `pip-audit` is
+not among them: see step 5.
 
 **Why:** item 44 is done only when `main` requires the checks to pass and blocks
-force pushes and deletion. PRs already show "blocked" until checks pass, so a rule
-looks active, but the agent cannot read rulesets to confirm what it contains.
+force pushes and deletion.
 
-List what applies to `main`:
-
-```powershell
-gh api repos/erjonb19/governed-clinical-agent/rules/branches/main --jq ".[].type"
-```
-
-It should include `required_status_checks`, `non_fast_forward` (no force push)
-and `deletion`. To see the required check names (works in PowerShell 5.1 and 7):
+Check what is required (works in PowerShell 5.1 and 7):
 
 ```powershell
-(gh api repos/erjonb19/governed-clinical-agent/rules/branches/main | ConvertFrom-Json) | Where-Object type -eq 'required_status_checks' | ForEach-Object { $_.parameters.required_status_checks.context }
+(gh api repos/erjonb19/governed-clinical-agent/branches/main/protection | ConvertFrom-Json).required_status_checks.contexts
 ```
-
-They should include `pytest`, `pip-audit`, `image` (container), `analyze (python)`
-and `analyze (actions)` (CodeQL), `ui-e2e` and `mcp-e2e`. If anything is missing, add it under
-Settings -> Rules -> Rulesets -> (the ruleset for `main`), then tell the agent
-"step 3 done".
 
 ---
 
@@ -105,4 +98,23 @@ Check the service answers afterwards:
 
 ```powershell
 Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health
+```
+
+---
+
+## [ ] 5. Add `pip-audit` to the required checks on `main` (backlog item 44)
+
+**Why:** item 44's "Done when" lists `pip-audit` (the dependency vulnerability scan)
+among the required checks, and it is not required today, so a PR that adds a
+dependency with a known vulnerability could still merge. If you would rather leave
+it out, tell the agent, and it records that decision instead.
+
+1. GitHub -> the repo -> Settings -> Branches -> the rule for `main` -> Edit.
+2. Under "Require status checks to pass", search for `pip-audit` and add it.
+3. Save changes.
+
+Check (the list should now include `pip-audit`):
+
+```powershell
+(gh api repos/erjonb19/governed-clinical-agent/branches/main/protection | ConvertFrom-Json).required_status_checks.contexts
 ```
