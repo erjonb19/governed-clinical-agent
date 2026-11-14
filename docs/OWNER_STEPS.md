@@ -118,3 +118,39 @@ Check (the list should now include `pip-audit`):
 ```powershell
 (gh api repos/erjonb19/governed-clinical-agent/branches/main/protection | ConvertFrom-Json).required_status_checks.contexts
 ```
+
+---
+
+## [ ] 6. Turn on GitHub Pages for the wake-up page (backlog item 9)
+
+**Why:** on Render's free plan the service sleeps when idle, and a sleeping
+service cannot show its own "please wait" note. The wake-up page (`site/`,
+published by `.github/workflows/pages.yml`) shows that note, pings the service,
+and opens it once it answers. Pages is free on a public repo; the page holds no
+key and no secret. The workflow cannot publish until Pages is set to deploy
+from GitHub Actions.
+
+```powershell
+gh api -X POST repos/erjonb19/governed-clinical-agent/pages -f build_type=workflow
+```
+
+(If it answers that Pages already exists, run this instead:
+`gh api -X PUT repos/erjonb19/governed-clinical-agent/pages -f build_type=workflow`.)
+
+Then publish it once:
+
+```powershell
+gh workflow run pages.yml --repo erjonb19/governed-clinical-agent --ref main
+```
+
+Check (should print the page address,
+`https://erjonb19.github.io/governed-clinical-agent/`):
+
+```powershell
+gh api repos/erjonb19/governed-clinical-agent/pages --jq .html_url
+```
+
+Open that address in a browser: it should say "Waking the service up" and then
+open the service. Tell the agent "step 6 done", and it will point the README's
+links at the page.
+
