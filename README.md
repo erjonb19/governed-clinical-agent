@@ -707,6 +707,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Architecture page and walkthrough**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
   (diagram, measured limits, trade-offs) and a three-minute script,
   [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+- [x] **A first visit answers in one click, with no key** (item 9): four question
+  buttons on the first screen, read from a keyless route limited to the fixed
+  hospital findings (no model, rate-limited); definitions on the same screen; a note
+  while the free-plan service wakes; checked by the E2E `test_8`.
 - [x] **Alerts on a red nightly**: one GitHub issue per kind (`eval-regression`,
   `provider-outage`) and dataset, closed by the next healthy night; proved by a
   deliberate drill on 2026-11-13: the regression path, on the 6-case replayed
