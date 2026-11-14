@@ -439,7 +439,12 @@ let MODE="query", BACKEND="local", DATASET=null, DEFAULT_DATASET=null;
 const ADV="ci_advanced";
 function setAdvanced(on){
   document.body.classList.toggle("advanced",on);
-  if(!on) resetHiddenControls();
+  if(!on){
+    resetHiddenControls();
+    // a view whose tab Advanced just hid would stay on screen with no tab
+    const cur=document.querySelector(".view.on");
+    if(cur && ["v-review","v-data","v-usage","v-traces"].includes(cur.id) && typeof show==="function") show("overview");
+  }
   $("advBtn").setAttribute("aria-pressed",on?"true":"false");
   try{ localStorage.setItem(ADV,on?"1":"0"); }catch(_){}
 }
@@ -475,7 +480,8 @@ function findingCard(f){
 let FINDINGS=null, PICKED=null, FINDINGS_ERR=null;
 function showFinding(id){
   PICKED=id;
-  document.querySelectorAll("#ovQuestions button").forEach(b=>b.classList.toggle("on",b.dataset.f===id));
+  document.querySelectorAll("#ovQuestions button").forEach(b=>{
+    b.classList.toggle("on",b.dataset.f===id); b.setAttribute("aria-pressed",b.dataset.f===id?"true":"false"); });
   const box=$("ovAnswer");
   if(FINDINGS_ERR){ box.innerHTML=`<div class="card pad">${esc(FINDINGS_ERR)}</div>`; return; }
   if(!FINDINGS){ box.innerHTML=`<div class="card pad muted">Loading the answer…</div>`; return; }
@@ -503,6 +509,7 @@ async function loadOverview(){
   }catch(e){ FINDINGS_ERR=`Could not load the answers: ${e.message||e}`; }
   finally{ clearTimeout(cold); $("coldNote").hidden=true; }
   if(PICKED) showFinding(PICKED);
+  else if(FINDINGS_ERR) $("ovAnswer").innerHTML=`<div class="card pad">${esc(FINDINGS_ERR)}</div>`;
 }
 
 function openDrawer(){ $("drawer").classList.add("on"); $("scrim").classList.add("on"); $("key").focus(); }
@@ -541,7 +548,7 @@ $("key2").addEventListener("keydown",e=>{ if(e.key==="Enter") $("connect2").clic
 /* Bootstrap: on your own machine the server hands us the key, so there is no
    setup at all. Remote users get the inline connect card. */
 (async function boot(){
-  let cfg={};
+  let cfg={auth_required:true};   // fail closed: if /ui-config fails, never assume open access
   try{ cfg=await (await fetch("/ui-config")).json(); }catch(_){}
   if(Array.isArray(cfg.datasets)){
     DATASET=DEFAULT_DATASET=cfg.default_dataset||cfg.datasets[0].id;

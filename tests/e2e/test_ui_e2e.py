@@ -9,8 +9,11 @@ provider. Chromium (pytest-playwright) drives the UI.
                       (plan -> critic -> guard -> execute)
     2 guard denial    a question whose recorded SQL reads a bronze table: the
                       refusal names the rule, and the retries are in the trace
-    4 overview        the landing view: findings with numbers, the definitions,
-                      the limits, and the raw controls hidden until Advanced
+    7 answers         the landing view (item 9): three tabs, every question
+                      answers with a number, the definitions, the limits, and
+                      the other views and raw controls hidden until Advanced
+    8 first visit     no key saved or prefilled (the deployed case): one click
+                      to a numeric answer, no failed request, no console error
     3 approval        Review: draft & pause -> pending -> approve as a named
                       reviewer -> committed, the decision in the trace
       escalation      escalate -> still pending, now owned by someone else
