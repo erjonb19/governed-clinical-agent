@@ -117,31 +117,34 @@ def test_takes_no_input_that_could_reach_sql_or_another_dataset(make):
     assert params == set()
 
 
-def test_makes_no_model_call(make, monkeypatch):
+def test_makes_no_model_call_and_runs_only_the_fixed_hospital_sql(make, monkeypatch):
     app_module = make()
     import findings
+    import nl_to_sql_planner
 
-    calls = []
-    monkeypatch.setattr(
-        app_module.llm_budget.BUDGET,
-        "reserve",
-        lambda *a, **k: (
-            calls.append("reserve") or (_ for _ in ()).throw(AssertionError("model budget used"))
-        ),
-    )
-    if app_module._STATE.get("planner") is not None:
-        monkeypatch.setattr(
-            app_module._STATE["planner"],
-            "plan",
-            lambda *a, **k: (
-                calls.append("plan") or (_ for _ in ()).throw(AssertionError("planner called"))
-            ),
-        )
-    app_module._STATE.pop("findings_cache", None)  # force a real computation
+    def forbidden(*a, **k):
+        raise AssertionError("a model entry point was called")
+
+    # Class-level, so it holds whether or not a planner was built in this environment.
+    for name in ("generate_sql", "generate_sql_with_metrics", "critique"):
+        monkeypatch.setattr(nl_to_sql_planner.NLToSQLPlanner, name, forbidden, raising=True)
+    monkeypatch.setattr(app_module.llm_budget.BUDGET, "reserve", forbidden)
+    fixed = {sql for f in findings.FINDINGS for sql in f["sql"]}
+    seen = []
+    real = app_module.run_governed_sql
+
+    def spy(sql, backend, dataset):
+        seen.append((sql, backend, dataset))
+        return real(sql, backend, dataset)
+
+    monkeypatch.setattr(app_module, "run_governed_sql", spy)
     with TestClient(app_module.app) as c:
-        app_module._STATE.pop("findings_cache", None)
+        app_module._STATE.pop("findings_cache", None)  # force a real computation
         body = c.get("/public/findings").json()
-    assert calls == [] and len(body["findings"]) == len(findings.FINDINGS)
+    assert len(body["findings"]) == len(findings.FINDINGS)
+    assert seen, "the findings were not computed"
+    for sql, backend, dataset in seen:
+        assert sql in fixed and backend == "local" and dataset == "hospital"
 
 
 def test_returns_no_key_or_secret(make):
@@ -160,6 +163,18 @@ def test_rate_limited_per_address_and_a_made_up_key_does_not_reset_it(make):
         assert c.get("/public/findings").status_code == 429
         assert c.get("/public/findings", headers={"X-API-Key": "made-up-1"}).status_code == 429
         assert c.get("/public/findings", headers={"X-API-Key": KEY}).status_code == 429
+        assert c.get("/v1/public/findings").status_code == 429  # one bucket, either prefix
+        assert (
+            c.get("/findings", headers={"X-API-Key": KEY}).status_code == 200
+        )  # keyed path unaffected
+
+
+def test_security_headers_apply(make):
+    app_module = make()
+    with TestClient(app_module.app) as c:
+        r = c.get("/public/findings")
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert r.headers.get("x-frame-options") == "DENY"
 
 
 def test_every_other_route_still_needs_the_key(make):

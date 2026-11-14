@@ -357,6 +357,7 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **38. Audit events do not say who asked or from where** (Medium; security audit finding 9, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: src/runtime/audit_logger.py:38-56; app.py:212 (agent_id="api"); render.yaml:16
   - Done when: request_id, principal (hash/prefix of the key) and source_ip on every AuditEvent via middleware; uvicorn --proxy-headers --forwarded-allow-ips.; a test or check shows it.
+  - **Note from item 9 (2026-11-14):** `/public/findings` is rate-limited per client address. When this item turns on proxy headers, trust only Render's proxy addresses (`FORWARDED_ALLOW_IPS` set to its exact range), never `*`: a wide trust list lets any caller pick a fresh address with `X-Forwarded-For` and skip the limit.
 - [ ] **39. The audit trail is lost on every redeploy, is editable by the app, and has no backup** (Medium; security audit finding 10, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:154, 211-213 (JSONL under logs/); approval.py:110-145 (SQLite unless STATE_DB_URL)
   - Done when: Ship audit events to an append-only store (an INSERT-only table in the item-19 Postgres, or a log drain); set STATE_DB_URL on the deploy; a dated restore test in docs/runbooks.; a test or check shows it.
