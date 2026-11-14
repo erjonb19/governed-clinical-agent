@@ -39,7 +39,9 @@ gh api repos/erjonb19/governed-clinical-agent/code-scanning/alerts/10 --jq .stat
 
 ---
 
-## [ ] 2. Let GitHub Actions open pull requests (backlog item 44)
+## [x] 2. Let GitHub Actions open pull requests (backlog item 44)
+
+**Done (owner, 2026-11-14).**
 
 **Why:** the monthly data refresh now opens a PR instead of pushing to `main`.
 Without this setting its `gh pr create` is refused and the job fails (loudly, by
@@ -59,7 +61,9 @@ gh api repos/erjonb19/governed-clinical-agent/actions/permissions/workflow --jq 
 
 ---
 
-## [ ] 3. Confirm the ruleset on `main` (backlog item 44)
+## [x] 3. Confirm the ruleset on `main` (backlog item 44)
+
+**Done (owner, 2026-11-14):** branch protection on `main` requires the 8 checks plus `secret-scan`, with bypass off.
 
 **Why:** item 44 is done only when `main` requires the checks to pass and blocks
 force pushes and deletion. PRs already show "blocked" until checks pass, so a rule
