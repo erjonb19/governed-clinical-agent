@@ -42,7 +42,7 @@ if it was something else.
   callers only),
   serving only the cached hospital findings (public CMS data, fixed reviewed
   SQL, the same guard path, no LLM, $0). Its own tight rate limit (for example
-  `10/minute` per IP; on Render every caller shares the proxy's address until
+  `RATE_LIMIT_PUBLIC`, default `60/minute` per address; on Render every caller shares the proxy's address until
   item 38, so this is one shared limit and must be set high enough that a first
   visit never gets a 429). FHIR (synthetic patient data) never goes through it,
   and `/query`, `/raw-sql`, `/propose`, `/mcp` keep the key. This is an
