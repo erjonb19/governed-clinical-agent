@@ -564,7 +564,9 @@ def test_a_cross_join_cannot_pad_a_group_past_11(tool):
     r = tool.execute({"sql": "SELECT c.condition_name, count(DISTINCT c.patient_id) AS n "
                              "FROM gold_patient pad, gold_condition c "
                              "WHERE c.condition_name = 'Rare disease' GROUP BY 1"})
-    assert r.success and r.output["rows"] == []
+    # refused outright since item 71 (an unkeyed join multiplies rows); before
+    # that, answered with the group suppressed. Either way the 4 never show.
+    assert (not r.success) or r.output["rows"] == [], r.output
 
 
 def test_a_filtered_count_of_a_small_subgroup_is_nulled(tool):
@@ -1677,7 +1679,7 @@ def test_a_grouping_the_check_cannot_correlate_is_refused():
     d = validate_query(
         "SELECT (SELECT count(*) FROM gold_encounter) AS t, x.n FROM (SELECT gender, count(*) AS n "
         "FROM gold_encounter WHERE class_code = 'EMER' GROUP BY ROLLUP (gender)) x")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 def test_nested_filters_in_two_scopes_cannot_recover_a_small_group(encounter_tool):
@@ -1770,7 +1772,8 @@ def _numbers(rows):
 def test_no_pair_of_filtered_counts_recovers_the_3_women(encounter_tool, name):
     r = encounter_tool.execute({"sql": NESTED_PAIRS[name]})
     if not r.success:
-        assert "cannot be checked" in r.error, r.error
+        # item 71 refuses a join with a constant row source outright
+        assert "cannot be checked" in r.error or "non-patient source" in r.error, r.error
         return
     nums = _numbers(r.output["rows"])
     assert 3 not in nums, (name, r.output["rows"])
@@ -1805,7 +1808,7 @@ def test_row_counts_over_different_tables_are_refused():
     d = validate_query(
         "SELECT (SELECT count(*) FROM gold_encounter WHERE gender = 'female') - "
         "(SELECT count(*) FROM gold_condition WHERE gender = 'female') AS n")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
@@ -1814,7 +1817,7 @@ def test_a_grouped_filtered_scope_beside_another_filtered_scope_is_refused():
         "WHERE gender = 'female' GROUP BY state), b AS (SELECT state, count(DISTINCT patient_id) "
         "AS n FROM gold_encounter WHERE gender = 'female' AND class_code = 'EMER' GROUP BY state) "
         "SELECT a.state, a.n - b.n AS n FROM a JOIN b ON a.state = b.state")
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 # second adversarial review (2026-11-09): a GROUP BY is a filter per group
@@ -1845,7 +1848,7 @@ GROUPED_LEAKS = {
 def test_groupings_at_different_grain_cannot_recover_the_3_women(encounter_tool, name):
     r = encounter_tool.execute({"sql": GROUPED_LEAKS[name]})
     if not r.success:
-        assert "cannot be checked" in r.error, r.error
+        assert "cannot be checked" in r.error or "GROUPING SETS" in r.error, r.error
         return
     nums = _numbers(r.output["rows"])
     assert not (15 in nums and 12 in nums), (name, r.output["rows"])
@@ -1907,7 +1910,7 @@ def test_a_join_count_beside_an_average_is_answered():
 
 def test_a_join_count_beside_another_count_is_still_refused():
     d = validate_query(F5_SHAPE.replace("SELECT AVG(value_num)", "SELECT COUNT(DISTINCT patient_id)"))
-    assert not d.allowed and "cannot be checked" in d.reason, d.reason
+    assert not d.allowed and ("cannot be checked" in d.reason or "GROUPING SETS" in d.reason), d.reason
 
 
 # fourth review (2026-11-11): row counters other than COUNT/SUM, and the
@@ -2056,3 +2059,151 @@ def test_unfiltered_counts_over_two_tables_cannot_recover_a_small_group(partial_
     for row in rows:
         a, b = row.get("a"), row.get("b")
         assert a is None or b is None or a - b == 0 or a - b >= 11, row
+
+
+# --- backlog item 71: set-returning functions outside FROM (2026-11-11) -------------
+# unnest() in a projection multiplies one person's rows: under sum(age) or
+# count(*) in ONE scope that still covers 11 people, the multiplier carried one
+# person's exact age or zip out (found by the third review of item 70).
+ROW_MULTIPLIER_LEAKS = {
+    "an age by a million-fold row multiplier": (
+        "SELECT sum(age_years) AS s FROM (SELECT patient_id, age_years, unnest(CASE WHEN "
+        "patient_id = 'p3' THEN range(1000000) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a zip by a zip-sized row multiplier": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, unnest(CASE WHEN patient_id = 'p3' THEN "
+        "range(CAST(postal_code AS INTEGER)) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a group size by a thousand-fold multiplier": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, unnest(CASE WHEN gender = 'male' THEN "
+        "range(1000) ELSE [1] END) AS u FROM gold_patient) t"),
+    "a filter made of an empty list": (
+        "SELECT (SELECT count(*) FROM gold_patient) AS a, (SELECT count(*) FROM (SELECT patient_id, "
+        "unnest(CASE WHEN gender = 'female' THEN [1] ELSE [] END) AS u FROM gold_patient) t) AS b"),
+    # the review of this fix (same day): unnest in FROM / JOIN with column arguments
+    "unnest in FROM over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, unnest(CASE WHEN p.patient_id = 'p3' "
+        "THEN range(1000000) ELSE [1] END)"),
+    "a LATERAL unnest over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, LATERAL unnest(CASE WHEN "
+        "p.patient_id = 'p3' THEN range(1000000) ELSE [1] END)"),
+    "a JOIN unnest over a patient column": (
+        "SELECT sum(age_years) AS s FROM gold_patient p JOIN unnest(CASE WHEN p.patient_id = 'p3' "
+        "THEN range(1000000) ELSE [1] END) ON true"),
+    "a zip through unnest in FROM": (
+        "SELECT count(*) AS n FROM gold_patient p, unnest(CASE WHEN p.patient_id = 'p3' THEN "
+        "range(CAST(p.postal_code AS INTEGER)) ELSE [1] END)"),
+    "generate_subscripts in a projection": (
+        "SELECT count(*) AS n FROM (SELECT patient_id, generate_subscripts([1, 2], 1) AS u "
+        "FROM gold_patient) t"),
+}
+
+
+@pytest.mark.parametrize("name", list(ROW_MULTIPLIER_LEAKS))
+def test_a_row_multiplier_outside_from_is_refused(tool, name):
+    r = tool.execute({"sql": ROW_MULTIPLIER_LEAKS[name]})
+    assert not r.success, (name, r.output)
+    assert "returns rows" in (r.error or ""), r.error
+
+
+def test_a_constant_row_source_beside_patient_rows_is_refused_too():
+    # allowed before item 71's review; a constant source is a multiplier once a
+    # join condition decides whose rows it repeats (see ROW_JOIN_LEAKS)
+    for sql in ("SELECT count(*) AS n FROM gold_patient, range(3) r",
+                "SELECT count(*) AS n FROM gold_patient, unnest([1, 2])"):
+        assert not validate_query(sql).allowed, sql
+    assert validate_query("SELECT count(*) AS n FROM range(3) r").allowed   # no patient data
+
+
+# The review of the first item-71 fix (2026-11-11): constant row sources, unkeyed
+# self-joins and UNION ALL duplicate rows with no set-returning function at all.
+# Each recovered a group under 11, or one person's diagnosis or birth year.
+ROW_JOIN_LEAKS = {
+    "a range cross join keyed to a group": (
+        "SELECT count(*) AS n FROM gold_patient p, range(1000) t(i) WHERE p.gender = 'male' OR t.i = 0"),
+    "the same as a JOIN ON": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN range(1000) t(i) ON p.gender = 'male' OR t.i = 0"),
+    "the same through a derived table": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT i FROM range(1000) r(i)) t "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a group's summed ages": (
+        "SELECT sum(age_years) AS s FROM gold_patient p, range(1000000) t(i) "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a self-join with no key": (
+        "SELECT count(*) AS n FROM gold_patient p, gold_patient q WHERE p.gender = 'male' OR q.age_years = 40"),
+    "a key join weakened by OR": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c "
+        "ON c.patient_id = p.patient_id OR p.gender = 'male'"),
+    "UNION ALL of differently filtered branches": (
+        "SELECT count(*) AS n FROM (SELECT patient_id FROM gold_patient UNION ALL SELECT patient_id "
+        "FROM gold_patient WHERE gender = 'male' UNION ALL SELECT patient_id FROM gold_patient "
+        "WHERE gender = 'male') t"),
+    "one person's diagnosis": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON c.patient_id = p.patient_id, "
+        "range(1000) t(i) WHERE (p.age_years = 43 AND c.condition_name = 'Rare disease') OR t.i = 0"),
+    # the review of the widened fix: a per-patient aggregate as the multiplier
+    "a per-patient aggregate as a multiplier": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT patient_id, count(*) AS c FROM "
+        "gold_condition GROUP BY patient_id) t WHERE p.gender = 'male' OR t.patient_id = p.patient_id"),
+    "the same in a JOIN ON with OR": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN (SELECT patient_id, count(*) AS c FROM "
+        "gold_patient GROUP BY patient_id) t ON t.patient_id = p.patient_id OR p.gender = 'male'"),
+    "a diagnosis through a per-patient aggregate": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON c.patient_id = p.patient_id, "
+        "(SELECT patient_id, count(*) AS k FROM gold_patient GROUP BY patient_id) t "
+        "WHERE (p.age_years = 43 AND c.condition_name = 'Rare disease') OR t.patient_id = p.patient_id"),
+    "a grouped aggregate on another key beside patient rows": (
+        "SELECT count(*) AS n FROM gold_patient p, (SELECT gender, count(*) AS c FROM gold_patient "
+        "GROUP BY gender) g WHERE p.gender = g.gender"),
+    # the fourth review: parentheses hid the joins; GROUPING SETS faked a per-patient source
+    "a parenthesized cross join": (
+        "SELECT count(*) AS n FROM (gold_patient p CROSS JOIN range(1000) t(i)) "
+        "WHERE p.gender = 'male' OR t.i = 0"),
+    "a parenthesized condition join keyed to one diagnosis": (
+        "SELECT sum(p.age_years) AS s FROM (gold_patient p JOIN gold_condition c ON "
+        "p.patient_id = c.patient_id CROSS JOIN range(1000000) t(i)) "
+        "WHERE c.condition_name = 'Other' OR t.i = 0"),
+    "a parenthesized unkeyed self-join": (
+        "SELECT count(*) AS n FROM (gold_patient p JOIN gold_patient q ON true) "
+        "WHERE p.gender = 'male' OR q.age_years = 40"),
+    "GROUPING SETS faking a per-patient source": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN (SELECT patient_id FROM gold_condition "
+        "GROUP BY patient_id, GROUPING SETS ((patient_id = 'p3' AND condition_name = 'Hypertension'))) t "
+        "ON p.patient_id = t.patient_id"),
+    "ROLLUP in a per-patient source": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN (SELECT patient_id FROM gold_condition "
+        "GROUP BY patient_id, ROLLUP (condition_name)) t ON p.patient_id = t.patient_id"),
+    # the fifth review: a seeded sample is a filter the differencing checks don't see
+    "a seeded sample beside the total": (
+        "SELECT (SELECT sum(age_years) FROM gold_patient) AS c, (SELECT sum(age_years) FROM "
+        "gold_patient USING SAMPLE 14 ROWS (reservoir, 1)) AS d"),
+    "TABLESAMPLE on a join source": (
+        "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c TABLESAMPLE 18 ROWS "
+        "ON p.patient_id = c.patient_id"),
+    "one person's birth year": (
+        "SELECT sum(year(CAST(birth_date AS DATE))) AS s FROM gold_patient p, range(1000000) t(i) "
+        "WHERE p.age_years = 43 OR t.i = 0"),
+}
+
+
+@pytest.mark.parametrize("name", list(ROW_JOIN_LEAKS))
+def test_patient_rows_cannot_be_multiplied_by_a_join_or_a_union(tool, name):
+    r = tool.execute({"sql": ROW_JOIN_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_patient p "
+    "ON c.patient_id = p.patient_id WHERE p.age_years >= 65 AND c.is_active",
+    "SELECT count(*) AS n FROM gold_patient p, gold_condition c WHERE p.patient_id = c.patient_id",
+    "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c USING (patient_id)",
+    # a per-patient aggregate joined on the key: one group row per person, no multiplier
+    "SELECT avg(t.c) AS a FROM gold_patient p JOIN (SELECT patient_id, count(*) AS c FROM "
+    "gold_condition GROUP BY patient_id) t ON t.patient_id = p.patient_id",
+    # a one-row aggregate beside patient rows
+    "SELECT count(*) AS n FROM gold_patient p, (SELECT avg(age_years) AS m FROM gold_patient) t "
+    "WHERE p.age_years > t.m",
+    "SELECT SUM(n) AS total FROM (SELECT count(*) AS n FROM gold_patient UNION ALL "
+    "SELECT count(*) FROM gold_patient WHERE gender = 'female') x",
+])
+def test_keyed_joins_and_unions_of_counts_still_run(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason

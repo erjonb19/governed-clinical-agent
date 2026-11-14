@@ -1831,6 +1831,198 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
     return out
 
 
+_ROW_MULTIPLIERS = {"unnest", "generate_subscripts", "explode", "posexplode", "explode_outer",
+                    "posexplode_outer", "inline", "json_each", "json_tree"}
+
+
+def _row_multiplier(tree: exp.Expression) -> Optional[str]:
+    """The name of a set-returning function used anywhere but as a FROM / JOIN
+    source, or None (item 71)."""
+    for node in tree.find_all(exp.Explode, exp.Unnest, exp.Anonymous, exp.Func):
+        if isinstance(node, exp.Explode):
+            name = "unnest"
+        elif isinstance(node, exp.Unnest):
+            if isinstance(node.parent, (exp.From, exp.Join, exp.Lateral)) and \
+                    not any(node.find_all(exp.Column)):
+                continue                 # a constant list in FROM: unnest([1, 2])
+            # review of item 71: `FROM gold_patient p, unnest(CASE WHEN
+            # p.patient_id = 'p3' THEN range(1000000) ELSE [1] END)` -- a FROM
+            # unnest is parsed as Unnest, not a table function, so the
+            # constant-arguments rule never saw its column arguments
+            name = "unnest"
+        else:
+            name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+            if name not in _ROW_MULTIPLIERS:
+                continue
+            if isinstance(node.parent, exp.Table) and isinstance(
+                    node.parent.parent, (exp.From, exp.Join, exp.Lateral)):
+                continue
+        return name
+    return None
+
+
+def _source_kind(src: exp.Expression, root: exp.Expression, depth: int = 0) -> str:
+    """'rows' (patient rows, one per record), 'agg' (patient data already
+    aggregated), or 'other' (no patient table: a table function, VALUES,
+    unnest, a public table)."""
+    if depth > 20:
+        return "rows"                                      # fail closed
+    if isinstance(src, exp.Subquery):
+        return _body_kind(src.this, root, depth + 1)
+    if isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier):
+        body = _cte_body(src.name, root)
+        if body is not None:
+            return _body_kind(body, root, depth + 1)
+        return "rows" if (src.name or "").lower() in PROTECTED else "other"
+    return "other"
+
+
+def _body_kind(body: exp.Expression, root: exp.Expression, depth: int) -> str:
+    if isinstance(body, exp.SetOperation):
+        kinds = {_body_kind(body.this, root, depth + 1),
+                 _body_kind(body.expression, root, depth + 1)}
+        return "rows" if "rows" in kinds else ("agg" if "agg" in kinds else "other")
+    if not isinstance(body, exp.Select):
+        return "rows"                                      # fail closed
+    kinds = {_source_kind(x, root, depth + 1) for x in _sources(body)}
+    if not (kinds - {"other"}):
+        return "other"
+    return "agg" if _is_aggregate(body) else "rows"
+
+
+def _key_edges(sel: exp.Select, aliases: set) -> list:
+    """Pairs of source aliases joined by `a.patient_id = b.patient_id` as a
+    top-level AND condition of an ON clause or the WHERE (qualify() has already
+    rewritten USING into ON)."""
+    conds = []
+    for j in sel.args.get("joins") or []:
+        if j.args.get("on") is not None:
+            conds.append(j.args["on"])
+    if sel.args.get("where") is not None:
+        conds.append(sel.args["where"].this)
+    edges = []
+    for cond in conds:
+        for part in cond.flatten() if isinstance(cond, exp.And) else [cond]:
+            if isinstance(part, exp.EQ) and isinstance(part.this, exp.Column) \
+                    and isinstance(part.expression, exp.Column):
+                l, r = part.this, part.expression
+                if l.name.lower() == r.name.lower() == PERSON_KEY and \
+                        l.table.lower() in aliases and r.table.lower() in aliases and \
+                        l.table.lower() != r.table.lower():
+                    edges.append((l.table.lower(), r.table.lower()))
+    return edges
+
+
+def _key_set(setop: exp.SetOperation) -> bool:
+    """A DISTINCT set operation whose every branch selects only patient_id."""
+    if not setop.args.get("distinct"):
+        return False
+    for branch in (setop.this, setop.expression):
+        if isinstance(branch, exp.SetOperation):
+            if not _key_set(branch):
+                return False
+        elif not (isinstance(branch, exp.Select) and len(branch.expressions) == 1
+                  and isinstance(branch.expressions[0].unalias(), exp.Column)
+                  and branch.expressions[0].unalias().name.lower() == PERSON_KEY):
+            return False
+    return True
+
+
+def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
+    """For an aggregated source: None if it yields one row (no GROUP BY),
+    else its GROUP BY column names, ['?'] when not plain columns (fail closed)."""
+    body = src.this if isinstance(src, exp.Subquery) else (
+        _cte_body(src.name, root) if isinstance(src, exp.Table) else None)
+    if not isinstance(body, exp.Select):
+        return ["?"]
+    group = body.args.get("group")
+    if group is None:
+        return None
+    if group.args.get("all") or not group.expressions or \
+            any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets")) or \
+            not all(isinstance(g, exp.Column) for g in group.expressions):
+        return ["?"]
+    return sorted({g.name.lower() for g in group.expressions})
+
+
+def _row_multiplication(q: exp.Expression) -> Optional[str]:
+    """Item 71 (2026-11-11, review of the first fix): one SELECT may not
+    multiply or duplicate patient rows. A cross join with a constant row source
+    (`gold_patient p, range(1000) t WHERE p.gender = 'male' OR t.i = 0`), a
+    self-join with no key (`gold_patient p, gold_patient q WHERE ... OR ...`), or
+    a UNION ALL of differently filtered branches turned a group the HAVING
+    hides, or one person's value, into an aggregate over 11+ people. Fail
+    closed: patient rows sit only beside other patient rows, joined on the
+    patient key."""
+    for sub in q.find_all(exp.Subquery):
+        if not isinstance(sub.this, (exp.Select, exp.SetOperation)):
+            # `FROM (gold_patient p CROSS JOIN range(1000) t)`: a parenthesized
+            # join is a Subquery whose body is a Table carrying joins, which
+            # every source check below would skip (fourth review)
+            return "a parenthesized join; write the joins without parentheses"
+    if any(True for _ in q.find_all(exp.TableSample)):
+        # USING SAMPLE / TABLESAMPLE with a seed keeps a chosen subset: 14 of 15
+        # rows beside the total gave back the one left out (fifth review)
+        return "USING SAMPLE / TABLESAMPLE on patient data"
+    for grp in q.find_all(exp.Group):
+        if any(grp.args.get(k) for k in ("rollup", "cube", "grouping_sets")):
+            # GROUPING SETS / ROLLUP / CUBE add rows the query chooses: as a
+            # "per-patient" source they multiplied one named person's rows
+            # (fourth review). Refused on patient data everywhere.
+            return "GROUPING SETS / ROLLUP / CUBE on patient data"
+    for setop in q.find_all(exp.SetOperation):
+        if setop is q:
+            continue                                       # the result itself
+        if _key_set(setop):
+            # UNION / INTERSECT / EXCEPT (distinct) of patient-key sets: no row
+            # can appear twice, so nothing is multiplied (the shape Groq wrote
+            # for f4_chemoradiation_and_cisplatin); its filtering is a hidden
+            # filter the differencing checks already see
+            continue
+        for branch in (setop.this, setop.expression):
+            if _body_kind(branch, q, 0) == "rows":
+                return "a UNION / EXCEPT / INTERSECT of patient rows used as a source"
+    for sel in q.find_all(exp.Select):
+        srcs = _sources(sel)
+        if len(srcs) < 2:
+            continue
+        kinds = {(x.alias_or_name or "").lower(): _source_kind(x, q) for x in srcs}
+        rows = {n for n, k in kinds.items() if k == "rows"}
+        if not rows:
+            continue
+        if any(k == "other" for k in kinds.values()):
+            return "patient rows joined with a table function, VALUES or another non-patient source"
+        # review of the widened fix (2026-11-11): a GROUPED aggregate source
+        # has one row per group, so beside patient rows it multiplies them
+        # exactly like range() (`gold_patient p, (SELECT patient_id, count(*)
+        # ... GROUP BY patient_id) t WHERE p.gender = 'male' OR t.patient_id =
+        # p.patient_id`). It may stand there only grouped by patient_id and
+        # key-joined like a row source; a one-row aggregate stays free.
+        for x in srcs:
+            n = (x.alias_or_name or "").lower()
+            if kinds[n] != "agg":
+                continue
+            grouping = _group_keys(x, q)
+            if grouping is None:
+                continue                                   # one row: no multiplier
+            if grouping != [PERSON_KEY]:
+                return ("a grouped aggregate beside patient rows (only one grouped by "
+                        "patient_id and joined on it may stand there)")
+            rows.add(n)
+        if len(rows) > 1:
+            parent = {n: n for n in rows}
+
+            def find(n):
+                while parent[n] != n:
+                    n = parent[n]
+                return n
+            for a, b in _key_edges(sel, set(rows)):
+                parent[find(a)] = find(b)
+            if len({find(n) for n in rows}) > 1:
+                return "patient tables joined without a patient_id = patient_id condition"
+    return None
+
+
 def check(tree: exp.Expression) -> PhiDecision:
     """The pre-execution check. `tree` is one parsed SELECT (sql_guard has
     already enforced SELECT-only, the allowlist and the function list)."""
@@ -1872,6 +2064,17 @@ def check(tree: exp.Expression) -> PhiDecision:
         return PhiDecision(False, f"PHI rule: a WITH clause may not reuse the name of a table "
                                   f"({', '.join(shadow)}); give it another name",
                            findings=shadow, protected=True)
+    srf = _row_multiplier(tree)
+    if srf:
+        # backlog item 71 (2026-11-11): unnest() in a projection turns one row
+        # into as many as its argument says, so `unnest(CASE WHEN patient_id =
+        # 'p3' THEN range(1000000) ELSE [1] END)` under sum(age) gave back one
+        # person's exact age, and a count gave their zip -- in ONE scope that
+        # still covers 11 people. Set-returning functions are allowed only as a
+        # FROM source (constant arguments, checked below). Fail closed.
+        return PhiDecision(False, f"PHI rule: {srf}() returns rows, not a value, and is only "
+                                  f"allowed as a FROM source with constant arguments on patient "
+                                  f"data", findings=[srf], protected=True)
     unknown = _unknown_columns_by_alias(tree)
     if unknown:
         return _no_such_column(unknown)
@@ -1881,6 +2084,15 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
+    try:
+        multiplied = _row_multiplication(q)
+    except Exception as e:                                 # fail closed (fifth review)
+        return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
+                                  f"{type(e).__name__}", protected=True)
+    if multiplied:
+        return PhiDecision(False, f"PHI rule: {multiplied}. Rows of patient data may not be "
+                                  f"multiplied or duplicated inside a query (fail closed); join "
+                                  f"patient tables on patient_id", findings=[multiplied], protected=True)
     a = _Analysis(q)
     try:
         a.run()

@@ -746,6 +746,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **No row multipliers on patient data** (item 71): `unnest()` in a projection, a constant row
+  source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
+  each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
+  that still covered 11 people. Patient tables join on `patient_id`.
 - [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
   Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
   dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the
