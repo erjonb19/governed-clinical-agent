@@ -555,8 +555,9 @@ that names it.
 
 ## CI
 
-Thirteen GitHub Actions workflows:
+Fourteen GitHub Actions workflows:
 
+- **The wake-up page** (`pages.yml`, backlog item 9): on a push to `main` that touches `site/`, publishes the static GitHub Pages page that says the free-plan service may be waking up and opens it once it answers. No secrets; it needs Pages set to deploy from GitHub Actions (owner step 6 in `docs/OWNER_STEPS.md`).
 - **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
 - **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
   - **Hospital 6-case and FHIR 13-case subsets, on replayed answers** (`PLANNER_PROVIDER=replay`, `tests/evals/recordings/push_gate.json`). No model is called, so they cost no tokens and none of Gemini's daily quota. They run the real harness, guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns them red. The recorded answers are each case's reference SQL (marked `"authored"`), so these gates **do not measure a model**.

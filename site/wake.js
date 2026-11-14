@@ -3,7 +3,10 @@
    its own "please wait" note, so this static page on GitHub Pages does.
    It pings /v1/health with a no-cors fetch (no CORS change needed on the API:
    the response is opaque, but it resolves once anything answers) and then
-   sends the visitor to /ui. It holds no key and sends none. */
+   sends the visitor to /ui. It holds no key and sends none.
+   Limit of the no-cors design: the status is unreadable, so any HTTP answer
+   counts as awake, a 502/503 from Render's proxy included (on a normal cold
+   start Render holds the request until the service is up). */
 (function () {
   "use strict";
   var SERVICE = "https://governed-clinical-agent.onrender.com";

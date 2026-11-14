@@ -153,4 +153,3 @@ gh api repos/erjonb19/governed-clinical-agent/pages --jq .html_url
 Open that address in a browser: it should say "Waking the service up" and then
 open the service. Tell the agent "step 6 done", and it will point the README's
 links at the page.
-
