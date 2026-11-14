@@ -122,7 +122,10 @@ def test_makes_no_model_call_and_runs_only_the_fixed_hospital_sql(make, monkeypa
     import findings
     import nl_to_sql_planner
 
+    model_calls = []
+
     def forbidden(*a, **k):
+        model_calls.append(1)  # recorded: findings.compute would swallow the raise below
         raise AssertionError("a model entry point was called")
 
     # Class-level, so it holds whether or not a planner was built in this environment.
@@ -141,7 +144,9 @@ def test_makes_no_model_call_and_runs_only_the_fixed_hospital_sql(make, monkeypa
     with TestClient(app_module.app) as c:
         app_module._STATE.pop("findings_cache", None)  # force a real computation
         body = c.get("/public/findings").json()
+    assert model_calls == []
     assert len(body["findings"]) == len(findings.FINDINGS)
+    assert all(f["status"] == "ok" for f in body["findings"]), body["findings"]
     assert seen, "the findings were not computed"
     for sql, backend, dataset in seen:
         assert sql in fixed and backend == "local" and dataset == "hospital"
