@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://governed-clinical-agent.onrender.com; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Clinical Intelligence: waking up</title>
+<link rel="stylesheet" href="wake.css">
+</head>
+<body>
+<main>
+  <h1>Hospital quality, answered</h1>
+  <p class="lead">Medicare's public hospital quality data for 12 Northeast and Mid-Atlantic states, in plain English.</p>
+  <div class="card">
+    <p><b>Waking the service up.</b> It runs on a free hosting plan that sleeps when nobody is using it, so the first visit can take up to a minute. You will be taken there as soon as it answers.</p>
+    <p class="muted"><span id="status" role="status">Waiting for the service…</span> <span class="muted">(<span id="secs">0</span> s)</span></p>
+  </div>
+  <p class="muted">Not moving? <a href="https://governed-clinical-agent.onrender.com/ui">Open the service directly</a>.</p>
+  <noscript><p><a href="https://governed-clinical-agent.onrender.com/ui">Open the service</a> (it can take up to a minute to load).</p></noscript>
+</main>
+<script src="wake.js"></script>
+</body>
+</html>

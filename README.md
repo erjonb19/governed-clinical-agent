@@ -46,6 +46,10 @@ A disallowed query — even one that is perfectly valid SQL — is refused at th
 
 ## Architecture
 
+One-page overview with a diagram, how it scales and where it breaks, and the
+main trade-offs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). A three-minute
+walkthrough script: [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+
 Two layers: a reusable security runtime, and applications built on top of it.
 
 ### The security runtime
@@ -67,7 +71,7 @@ Mediates every tool call an agent makes through a default-deny policy.
 
 ### Service and observability
 
-- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Overview's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/traces` (every run, step by step). API-key auth on the data routes. **Answer cache** (`llm_cache.py`, backlog item 6): a repeated question is answered without calling the model. What is cached is the model's text only (the SQL a plan wrote, the verdict a critic gave), never rows. A hit still runs the guard, the query on today's data and the PHI output check, so a data refresh or a guard change cannot serve a stale answer. The key also includes the data vintage and a hash of the guard's files, so either change starts a cold cache. SQLite lives at `LLM_CACHE_DB` (default `logs/llm_cache.sqlite`); `LLM_CACHE=0` turns it off and `LLM_CACHE_TTL_SEC` (default 1 day) bounds an entry's age. A cached call reports `cached: true` and costs $0. `/metrics` shows `llm_cache.hits`, `misses` and `hit_rate`. **On Render's free plan the store resets with every restart or redeploy**, which only costs a model call. The eval harness and scheduled runs turn it off, so every run asks the model. **Versioned API** (backlog item 5): every path also answers under `/v1` (`/v1/query`, `/v1/health`, ... served by the same routes, so they cannot drift; the old paths keep working for the UI, MCP clients and E2Es), every response carries `API-Version: v1`, and `/health` reports the app `version` (from `VERSION`, semantic) and `git_commit`. Per-API-key rate limiting (slowapi) on every data route.
+- **HTTP service** (`app.py`) — FastAPI. `/health`, `/schema`, `/query` (natural language), `/raw-sql` (guarded SQL), `/metrics` (aggregate cost and latency), `/findings` (the Answers tab's findings: fixed, reviewed SQL through the guard, filled into sentences; no LLM, $0, cached per data vintage), `/public/findings` (the same findings with **no key**, backlog item 9, owner's decision D1a: hospital data only, only those fixed queries, no LLM, no key in or out, rate-limited per client address by `RATE_LIMIT_PUBLIC`, default `60/minute`; on Render all visitors share one address until item 38, so in practice it is one limit for everyone), `/traces` (every run, step by step). API-key auth on the data routes. **Answer cache** (`llm_cache.py`, backlog item 6): a repeated question is answered without calling the model. What is cached is the model's text only (the SQL a plan wrote, the verdict a critic gave), never rows. A hit still runs the guard, the query on today's data and the PHI output check, so a data refresh or a guard change cannot serve a stale answer. The key also includes the data vintage and a hash of the guard's files, so either change starts a cold cache. SQLite lives at `LLM_CACHE_DB` (default `logs/llm_cache.sqlite`); `LLM_CACHE=0` turns it off and `LLM_CACHE_TTL_SEC` (default 1 day) bounds an entry's age. A cached call reports `cached: true` and costs $0. `/metrics` shows `llm_cache.hits`, `misses` and `hit_rate`. **On Render's free plan the store resets with every restart or redeploy**, which only costs a model call. The eval harness and scheduled runs turn it off, so every run asks the model. **Versioned API** (backlog item 5): every path also answers under `/v1` (`/v1/query`, `/v1/health`, ... served by the same routes, so they cannot drift; the old paths keep working for the UI, MCP clients and E2Es), every response carries `API-Version: v1`, and `/health` reports the app `version` (from `VERSION`, semantic) and `git_commit`. Per-API-key rate limiting (slowapi) on every data route.
 - **Tracing** (`tracing.py`) — one trace per run, one span per step (`plan`, `guard`, `execute`, `retry`, `approval.propose`, `approval.decision`, `answer`), with OpenTelemetry-shaped fields in local SQLite (`TRACE_DB`, default `logs/traces.sqlite`, newest `TRACE_MAX_RUNS` kept). Every `/query`, `/raw-sql` and `/propose` response carries a `trace_id`; `GET /traces` lists runs and `GET /traces/{id}` returns the span tree, and the **Traces** view in the UI draws it as a waterfall. For an approval the trace id is the checkpoint thread id, so a decision submitted hours later appends to the same trace. Spans store the question, the SQL, its hash and row **counts**, never result rows (a test pins that). Best effort: a tracer never fails a request. The store sits on the instance disk, so on Render it resets with each deploy.
 - **Cost tracking** (`cost_tracker.py`) — per-call token counts and estimated cost in every response; aggregate totals, averages, and latency p50/p95/p99 at `/metrics`. Percentiles rather than averages, because the average hides the slow tail.
 - **Audit log** — the runtime's `AuditLogger` is attached on the service path (`AUDIT_LOG_DIR`, default `logs`; empty disables), so every policy decision and tool execution the deployed service makes lands in `logs/audit_api_*.jsonl`, which is what the AIOps panel reads.
@@ -551,8 +555,9 @@ that names it.
 
 ## CI
 
-Thirteen GitHub Actions workflows:
+Fourteen GitHub Actions workflows:
 
+- **The wake-up page** (`pages.yml`, backlog item 9): on a push to `main` that touches `site/`, publishes the static GitHub Pages page that says the free-plan service may be waking up and opens it once it answers. No secrets; it needs Pages set to deploy from GitHub Actions (owner step 6 in `docs/OWNER_STEPS.md`).
 - **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
 - **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
   - **Hospital 6-case and FHIR 13-case subsets, on replayed answers** (`PLANNER_PROVIDER=replay`, `tests/evals/recordings/push_gate.json`). No model is called, so they cost no tokens and none of Gemini's daily quota. They run the real harness, guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns them red. The recorded answers are each case's reference SQL (marked `"authored"`), so these gates **do not measure a model**.
@@ -619,11 +624,16 @@ Then open **http://localhost:8000/ui** — a self-contained web UI to ask questi
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
 The API's Swagger docs remain at `/docs`.
 
-The UI has eight views and opens on **Overview**: four plain-English findings about the
-current data for leadership (from `/findings`, each with a "How we know" showing its
-exact query; a finding that cannot be computed says so and shows no number), what
-the measures mean, and the limits. Raw controls (SQL mode, backend, trace links) sit
-behind **Advanced**. Most views are read-only, but **Review** is the human-in-the-loop
+The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
+**About** (backlog item 9). Answers offers four questions as buttons; one click shows
+the answer as a plain sentence with its number and a "How we know" showing the exact
+query, with what the measures mean and the limits on the same screen. It works with
+**no key**: without one the page reads `/public/findings`, with one `/findings` (the
+same fixed findings; a finding that cannot be computed says so and shows no number).
+While the service is slow to answer, a note says the free plan may be waking it up.
+**Advanced** shows the raw controls (SQL mode, backend, trace links) and the other
+views: Review, Data, Usage and Traces; the review queue's count also shows on the
+Advanced button. Most views are read-only, but **Review** is the human-in-the-loop
 surface: it shows the approval queue, drafts a proposal into it (`/propose`), and
 submits any of the four decisions — approve, reject, escalate, approve with edits
 — which **resumes the paused agent** on the server. Queue depth, average wait,
@@ -701,6 +711,19 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   FHIR eval gate on every push, the full evals nightly; a failing test, an eval
   below the gate, or an inconclusive nightly (after one retry) turns the build red
   (see [CI](#ci)).
+- [x] **Architecture page and walkthrough**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+  (diagram, measured limits, trade-offs) and a three-minute script,
+  [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+- [x] **A first visit answers in one click, with no key** (item 9): four question
+  buttons on the first screen, read from a keyless route limited to the fixed
+  hospital findings (no model, rate-limited); definitions on the same screen; a note
+  while the free-plan service wakes. The E2E `test_8` checks the one-click answer
+  with no key and no failed request.
+- [x] **Alerts on a red nightly**: one GitHub issue per kind (`eval-regression`,
+  `provider-outage`) and dataset, closed by the next healthy night; proved by a
+  deliberate drill on 2026-11-13: the regression path, on the 6-case replayed
+  hospital subset; the outage and repeat-comment paths are unit-tested only
+  (see [CI](#ci)).
 - [x] **Tracing of every agent step in a self-hosted trace viewer** (Arize
   Phoenix, local; see [Opening a trace in Arize Phoenix](#opening-a-trace-in-arize-phoenix-self-hosted-local)).
 - [x] **Repeat questions skip the model** (`llm_cache.py`): the model's answer
@@ -724,6 +747,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Security audit against the owner's standard** ([`docs/SECURITY_AUDIT_2026-11-10.md`](docs/SECURITY_AUDIT_2026-11-10.md)):
   no Critical, 2 High, 21 Medium, 17 Low. Each one is an open backlog item, so the gaps
   it lists are **not** fixed yet, except those ticked below.
+- [x] **No row multipliers on patient data** (item 71): `unnest()` in a projection, a constant row
+  source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
+  each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
+  that still covered 11 people. Patient tables join on `patient_id`.
 - [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
   Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
   dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the
@@ -789,7 +816,7 @@ The targets leave about 3-4x headroom over the worse of these, so a miss means a
 
 A working reference implementation, described plainly:
 
-- Single-instance; queries serialized under a lock. Horizontal scaling is future work.
+- Single instance. The global query lock is gone (backlog item 20), but one process caps throughput at about 55 req/s on recorded answers ([`docs/benchmarks.md`](docs/benchmarks.md)); horizontal scaling is future work (items 19 and 21).
 - The service **refuses to start without `API_KEY`** unless `ALLOW_OPEN_ACCESS=true` is set explicitly for local dev (then flagged loudly at startup and in `/health`). Rate limits are per API key (slowapi).
 - The data is public CMS data and **synthetic** Synthea patients. There is no real PHI here, and the system is not hardened for PHI or production load. The PHI-protection design is real and tested; the deployment posture is not production-grade.
 - The **hospital** Gold refreshes monthly in CI; the FHIR Gold is a fixed Sep-2019

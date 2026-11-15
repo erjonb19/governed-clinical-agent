@@ -154,6 +154,10 @@ QUERY_MODE = os.environ.get("QUERY_MODE", "graph").strip().lower()
 if QUERY_MODE not in {"graph", "single"}:
     raise SystemExit(f"QUERY_MODE must be graph or single, not {QUERY_MODE!r}")
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
+# The keyless findings route (backlog item 9, D1a): per client address, never per key.
+# On Render every caller shares the proxy's address until item 38, so this is in
+# effect one limit for all visitors; the answer is cached, so it can be generous.
+RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
@@ -830,7 +834,8 @@ def health() -> dict:
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
         "open_access_override": ALLOW_OPEN_ACCESS,
-        "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ},
+        "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
+                        "public_findings": RATE_LIMIT_PUBLIC},
         "query_mode": "graph" if _STATE.get("graph_agent") is not None else "single",
         "graph_error": _STATE.get("graph_error"),
         "mcp_http": _STATE.get("mcp_http") is not None,
@@ -1135,14 +1140,12 @@ def _vintage() -> tuple[Optional[str], tuple]:
     return vintage, (raw, mtime)
 
 
-@app.get("/findings", dependencies=[Depends(require_api_key)])
-@limiter.limit(RATE_LIMIT_READ)
-def get_findings(request: Request) -> dict:
-    """The Overview's plain-English findings (PLAN v2 item 6, D7).
+def _findings_payload() -> dict:
+    """The fixed findings for the local hospital Gold, cached per data vintage.
 
-    Fixed, reviewed SQL through the guarded path, filled into templates: no LLM,
-    $0. Cached per data vintage; a set with any unavailable finding is not cached,
-    so a transient failure is retried on the next load.
+    Fixed, reviewed SQL (findings.FINDINGS) through the guarded path, filled into
+    templates: no LLM, $0. A set with any unavailable finding is not cached, so a
+    transient failure is retried on the next load.
     """
     import findings
     vintage, key = _vintage()
@@ -1161,6 +1164,38 @@ def get_findings(request: Request) -> dict:
         if all(c["status"] == "ok" for c in cards):
             _STATE["findings_cache"] = (key, out)
         return out
+
+
+@app.get("/findings", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def get_findings(request: Request) -> dict:
+    """The Overview's plain-English findings (PLAN v2 item 6, D7), for key holders."""
+    return _findings_payload()
+
+
+def _public_rate_key(request: Request) -> str:
+    """Per client address only: a caller cannot pick a fresh bucket by sending
+    a made-up X-API-Key, as it could with the default key function."""
+    return f"public:{_client_address(request)}"
+
+
+@app.get("/public/findings")
+@limiter.limit(RATE_LIMIT_PUBLIC, key_func=_public_rate_key)
+def get_public_findings(request: Request) -> dict:
+    """The same findings with no key (backlog item 9, owner's decision D1a, 2026-11-14).
+
+    The owner's conditions, each enforced here rather than by the caller:
+    - hospital data only: `_findings_payload` takes no dataset argument and
+      always reads the local hospital Gold; nothing on this route reaches FHIR;
+    - only the fixed, reviewed findings queries: no request input reaches SQL
+      (the route takes no parameters and no body);
+    - no LLM calls: findings.compute runs fixed SQL through run_governed_sql,
+      which never calls a planner or the critic;
+    - rate-limited per client address (RATE_LIMIT_PUBLIC);
+    - no key exposed to the browser: the route needs none and returns none.
+    The guard still checks every query, as on every other path.
+    """
+    return _findings_payload()
 
 
 @app.get("/metrics")

@@ -2,7 +2,10 @@
 behind Advanced (PLAN v2 item 6, D8)."""
 
 import os
+import sys
 import re
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 HTML = open(os.path.join(os.path.dirname(__file__), "..", "..", "web", "index.html"),
             encoding="utf-8").read()
@@ -40,9 +43,27 @@ def test_advanced_state_survives_unavailable_storage():
         assert before.rfind("try{") > before.rfind("}catch"), block[m.start() - 60:m.end()]
 
 
-def test_findings_are_not_fetched_without_a_key():
-    # an unauthenticated /findings would 401 into the console (the live check fails on it)
+def test_findings_load_without_a_key_from_the_public_route_only():
+    # item 9, D1a: no key -> /public/findings; /findings only with a key (an
+    # unauthenticated /findings would 401 into the console and fail the live check)
+    load = HTML[HTML.index("async function loadOverview(){"):HTML.index("function openDrawer")]
+    assert 'k ? await fetch("/findings",{headers:authHdrs()}) : await fetch("/public/findings")' in load
     startup = HTML[HTML.index("if(!cfg.auth_required)"):HTML.index("/* ---------- nav")]
-    assert "overviewNeedsKey()" in startup
-    i = startup.index("loadOverview()")
-    assert "refreshBadge(); loadOverview()" in startup[i - 20:i + 20]
+    assert "overviewNeedsKey" not in HTML
+    assert startup.count("loadOverview()") == 3   # open access, no or rejected key, good key
+
+
+def test_three_tabs_for_everyone_the_rest_behind_advanced():
+    nav = re.search(r'<nav id="nav">(.*?)</nav>', HTML, re.S).group(1)
+    buttons = re.findall(r'<button data-v="(\w+)"([^>]*)>([^<]*)', nav)
+    plain = [(v, label) for v, attrs, label in buttons if "adv" not in attrs]
+    assert plain == [("overview", "Answers"), ("ask", "Ask"), ("about", "About")]
+    assert {v for v, attrs, _ in buttons if "adv" in attrs} == {"review", "data", "usage", "traces"}
+    assert 'id="advBadge"' in HTML                 # the queue count stays visible
+
+
+def test_the_first_screen_offers_one_click_questions_for_every_finding():
+    import findings
+    ids = set(re.findall(r'<button data-f="(\w+)">', HTML))
+    assert ids == {f["id"] for f in findings.FINDINGS}
+    assert 'id="coldNote"' in HTML and "Waking the service up" in HTML
