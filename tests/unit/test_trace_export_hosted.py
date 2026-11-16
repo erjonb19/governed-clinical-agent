@@ -189,7 +189,11 @@ def test_every_free_text_attribute_is_a_reviewed_one():
                        "by", "decision", "terminal", "committed", "est_cost_usd",
                        "provider", "prompt_tokens", "completion_tokens", "latency_ms",
                        "fallback_from",   # a provider name (item 8), not free text
-                       "cached"}          # a boolean (item 6)
+                       "cached",          # a boolean (item 6)
+                       # item 41's question_screen trace: a route path, a boolean, and
+                       # comma-joined FIXED labels from question_screen._RULES -- never
+                       # the question or the identifier found (privacy-reviewed 2026-11-16)
+                       "path", "refused", "kinds"}
     unreviewed = keys - numeric_or_enum - FREE_TEXT_EXPORTED
     # keyword arguments that are not span attributes (python syntax in the calls)
     # (`read=`/`quoted=` are sqlglot arguments inside node .set(...) calls in phi_guard)
