@@ -1968,7 +1968,10 @@ def _one_to_many(src: exp.Expression, root: exp.Expression) -> bool:
 
 def _distinct_key_select(sel: exp.Select) -> bool:
     """SELECT DISTINCT <x>.patient_id ...: one row per person whatever it joins."""
-    return bool(sel.args.get("distinct")) and len(sel.expressions) == 1 and \
+    d = sel.args.get("distinct")
+    if d is not None and d.args.get("on") is not None:
+        return False        # DISTINCT ON (x): one row per x, not per person (review)
+    return bool(d) and len(sel.expressions) == 1 and \
         isinstance(sel.expressions[0].unalias(), exp.Column) and \
         sel.expressions[0].unalias().name.lower() == PERSON_KEY
 
@@ -1980,7 +1983,10 @@ def _distinct_people_only(sel: exp.Select) -> bool:
     if any(True for _ in sel.find_all(exp.Window)):
         return False
     found = False
-    for agg in sel.find_all(exp.AggFunc):
+    # every aggregate, DuckDB's anonymous ones too (fsum, kahan_sum: review)
+    for agg in sel.find_all(exp.Func):
+        if not (isinstance(agg, exp.AggFunc) or is_agg(agg)):
+            continue
         if agg.find_ancestor(exp.Select) is not sel:
             continue                                   # belongs to a nested query
         if not isinstance(agg, exp.Count):

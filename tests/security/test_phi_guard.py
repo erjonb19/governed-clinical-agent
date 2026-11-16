@@ -2269,6 +2269,18 @@ KEYED_MULTIPLIER_LEAKS = {
     "the key in WHERE instead of ON": (
         "SELECT sum(p.age_years) AS s FROM gold_patient p, gold_condition c1, gold_condition c2 "
         "WHERE p.patient_id = c1.patient_id AND p.patient_id = c2.patient_id"),
+    # review of option 2: DISTINCT ON (x) is one row per x, not per person
+    "DISTINCT ON in a derived table": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c1 ON p.patient_id = c1.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c2 ON p.patient_id = c2.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c3 ON p.patient_id = c3.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c4 ON p.patient_id = c4.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c5 ON p.patient_id = c5.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c6 ON p.patient_id = c6.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c7 ON p.patient_id = c7.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c8 ON p.patient_id = c8.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c9 ON p.patient_id = c9.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c10 ON p.patient_id = c10.patient_id"),
+    "DISTINCT ON in a CTE": (
+        "WITH a AS (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) "
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN a c1 ON p.patient_id = c1.patient_id "
+        "JOIN a c2 ON p.patient_id = c2.patient_id"),
+    # review of option 2: DuckDB aggregates sqlglot parses as anonymous functions
+    "fsum beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, fsum(p.age_years) AS s FROM gold_patient p {_TEN}"),
+    "kahan_sum beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, kahan_sum(p.age_years) AS s FROM gold_patient p {_TEN}"),
     "a window function beside the people count": (
         "SELECT count(DISTINCT p.patient_id) AS n, sum(count(DISTINCT p.patient_id)) OVER () AS w "
         "FROM gold_patient p JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
