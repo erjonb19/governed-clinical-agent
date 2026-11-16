@@ -72,16 +72,32 @@ def check_forwarded_allow_ips() -> None:
     for part in (p.strip() for p in raw.split(",")):
         if not part:
             continue
-        try:
-            net = ipaddress.ip_network(part, strict=False)
-        except ValueError:
-            net = None
-        if net is None or not (net.is_private or net.is_loopback):
+        if not _trustable(part):
             raise SystemExit(
-                f"FORWARDED_ALLOW_IPS entry {part!r} is not a private or loopback "
-                "address: it would let callers set their own client address. List the "
-                "proxy's own addresses instead (backlog item 38)"
+                f"FORWARDED_ALLOW_IPS entry {part!r} is not a private IPv4 or IPv6 "
+                "(fc00::/7) address or network, or loopback: it would let callers set "
+                "their own client address, or be ignored. List the proxy's own "
+                "addresses (backlog item 38)"
             )
+
+
+_ULA = ipaddress.ip_network("fc00::/7")
+
+
+def _trustable(entry: str) -> bool:
+    """Parsed as strictly as uvicorn does (`10.0.0.1/8` is an error, not a
+    quiet literal), and only IPv4 private ranges, IPv6 unique-local ranges or
+    loopback: Python counts IPv4-mapped, Teredo and 6to4 IPv6 ranges as
+    private, yet they hold public clients."""
+    try:
+        net = ipaddress.ip_network(entry, strict=True)
+    except ValueError:
+        return False
+    if net.is_loopback:
+        return True
+    if isinstance(net, ipaddress.IPv4Network):
+        return net.is_private
+    return net.subnet_of(_ULA)
 
 
 def _presented_key(headers: dict[bytes, bytes]) -> str | None:
