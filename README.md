@@ -4,7 +4,7 @@ A governed natural-language analytics agent for healthcare data. You ask a quest
 
 It runs today over two real datasets — CMS hospital quality measures and a 367,000-resource FHIR clinical lakehouse — behind an authenticated HTTP API, with the full authorization decision returned in every response, and a 63-case ground-truth evaluation suite running in CI.
 
-**Live:** https://governed-clinical-agent.onrender.com/docs
+**Live:** https://governed-clinical-agent.onrender.com/ui
 
 ## Why this matters
 
@@ -601,7 +601,7 @@ $env:PLANNER_PROVIDER="gemini"  # what CI and both eval suites run on
 $env:GEMINI_API_KEY="..."       # the planner's model (free key at aistudio.google.com)
 $env:API_KEY="..."              # require a key on the data endpoints
 
-uvicorn app:app --port 8000     # http://localhost:8000/docs
+API_DOCS=1 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
 
 Or in a container (backlog item 17; `Dockerfile`, slim base, pinned requirements, a non-root user, a `HEALTHCHECK` on `/health`):
@@ -621,7 +621,7 @@ The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docke
 
 Then open **http://localhost:8000/ui** — a self-contained web UI to ask questions
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
-The API's Swagger docs remain at `/docs`.
+The API's Swagger docs are at `/docs` when `API_DOCS=1` is set (off on the deploy, audit item 53).
 
 The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
 **About** (backlog item 9). Answers offers four questions as buttons; one click shows
@@ -796,6 +796,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
   proposal, escalated items only by their new owner, edits cannot add figures; names are
   marked self-asserted until per-user keys (item 22).
+- [x] **API docs off in production** (audit item 53): `/docs`, `/redoc` and `/openapi.json`
+  are served only with `API_DOCS=1`.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

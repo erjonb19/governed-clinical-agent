@@ -422,9 +422,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **52. The standalone MCP server writes no audit log** (Medium; security audit finding 23, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: mcp_server.py:131-135, 159-167 (AgentRuntime() without an audit_logger)
   - Done when: Attach an AuditLogger that drops rows in main() / at module start.; a test or check shows it.
-- [ ] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-294; the / route advertises /docs
   - Done when: docs_url/redoc_url/openapi_url=None unless an env flag is set, or behind the key.; a test or check shows it.
+  - Done 2026-11-16: `API_DOCS=1` turns `/docs`, `/redoc` and `/openapi.json` on; unset (production) all three answer 404 and `/` no longer advertises `/docs`. `tests/integration/test_public_findings.py` (the open-route list no longer carries them).
 - [ ] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:595, :849
   - Done when: Require auth on the router and list public routes explicitly (/health, /ui, /ui-config).; a test or check shows it.

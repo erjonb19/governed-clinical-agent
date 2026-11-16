@@ -29,10 +29,6 @@ OPEN_ROUTES = {
     "/health",
     "/datasets",
     "/metrics",
-    "/docs",
-    "/openapi.json",
-    "/docs/oauth2-redirect",
-    "/redoc",
     "/public/findings",
     "/schema",  # table and column names only; open before item 9, unchanged here
 }
@@ -193,6 +189,19 @@ def test_every_other_route_still_needs_the_key(make):
             method = sorted(route.methods - {"HEAD", "OPTIONS"})[0]
             r = c.request(method, path, json={})
             assert r.status_code == 401, (method, route.path, r.status_code)
-    assert OPEN_ROUTES - {"/docs/oauth2-redirect", "/redoc", "/docs", "/openapi.json"} <= paths | {
-        "/"
-    }
+    assert OPEN_ROUTES <= paths | {"/"}
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_api_docs_are_off_by_default(make, path):
+    # backlog item 53: no route map for anyone unless API_DOCS=1
+    app_module = make()
+    with TestClient(app_module.app) as c:
+        assert c.get(path).status_code == 404
+
+
+def test_api_docs_can_be_turned_on(make):
+    app_module = make(API_DOCS="1")
+    with TestClient(app_module.app) as c:
+        assert c.get("/openapi.json").status_code == 200
+        assert c.get("/docs").status_code == 200
