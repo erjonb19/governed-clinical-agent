@@ -153,3 +153,32 @@ gh api repos/erjonb19/governed-clinical-agent/pages --jq .html_url
 Open that address in a browser: it should say "Waking the service up" and then
 open the service. Tell the agent "step 6 done", and it will point the README's
 links at the page.
+
+---
+
+## [x] 7. Get the Synthea zip's SHA-256 (backlog item 51)
+
+**Not needed (2026-11-16):** CI had already printed it (run 43020252795); it is pinned in
+`fetch_synthea.py`.
+
+---
+
+## [ ] 8. Check `docker compose up` with Phoenix (backlog item 17, optional)
+
+**Why:** item 17 is done when `docker compose up` gives a working API with its
+traces in Phoenix. The agent's sandbox has no Docker daemon, so it cannot check
+this. Needs Docker Desktop. Skip it if you don't have Docker; the item then stays
+open with everything else in it done.
+
+```powershell
+gh repo clone erjonb19/governed-clinical-agent; cd governed-clinical-agent
+$env:API_KEY = "local-test-key"
+docker compose up -d
+Start-Sleep 30
+Invoke-RestMethod http://localhost:8000/v1/health
+Invoke-RestMethod -Method Post http://localhost:8000/raw-sql -Headers @{"X-API-Key"="local-test-key"} -ContentType "application/json" -Body '{"sql":"SELECT count(*) AS n FROM gold_hospital_profile"}'
+```
+
+Then open http://localhost:6006 (Phoenix): the `/raw-sql` run should be there with
+its steps. Tell the agent "step 8 done". Stop it with `docker compose down`.
+
