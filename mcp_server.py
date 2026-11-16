@@ -170,6 +170,30 @@ def attach_host(audit_logger=None, lock=None) -> None:
     _EXEC_LOCK = lock
 
 
+def attach_standalone_audit(log_dir: str | None = None):
+    """Give the standalone server (stdio or HTTP) an audit log of its own
+    (backlog item 52). Mounted in the API, `attach_host` has already given it
+    the API's, which is kept. `AUDIT_LOG_DIR` (default `logs`) as in app.py;
+    "" turns it off, with a warning on stderr. Writes `audit_mcp_*.jsonl`, never
+    to stdout (stdio's protocol channel), and never result rows."""
+    if runtime.audit_logger is not None:
+        return runtime.audit_logger
+    log_dir = os.environ.get("AUDIT_LOG_DIR", "logs") if log_dir is None else log_dir
+    if not log_dir:
+        print("WARNING: AUDIT_LOG_DIR is empty -- MCP tool calls are not audited",
+              file=sys.stderr)
+        return None
+    from pathlib import Path
+
+    from src.runtime.audit_logger import RowlessAuditLogger
+    runtime.audit_logger = RowlessAuditLogger(log_dir=Path(log_dir), agent_id="mcp",
+                                              max_buffer_size=1, enable_console=False)
+    from auth_failures import FAILURES      # refused HTTP keys go to the same log
+    if FAILURES.audit is None:
+        FAILURES.audit = runtime.audit_logger
+    return runtime.audit_logger
+
+
 def available_datasets() -> list[str]:
     """Datasets this server can actually serve.
 
@@ -636,6 +660,7 @@ def main(argv=None) -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
+    attach_standalone_audit()
     if args.transport == "stdio":
         mcp.run()
         return

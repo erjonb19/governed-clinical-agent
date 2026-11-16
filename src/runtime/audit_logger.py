@@ -680,3 +680,21 @@ class AuditLogger:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensure buffer is flushed."""
         self.flush()
+
+
+class RowlessAuditLogger(AuditLogger):
+    """Records that a query ran, never what it returned.
+
+    `redact_data` masks secrets, not data values, so a FHIR query's rows would
+    otherwise land in the file verbatim. Drops `rows` from a tool's output;
+    row_count and columns stay. Used by the standalone MCP server (backlog
+    item 52); the API's `_ServiceAuditLogger` does the same.
+    """
+
+    def log_tool_execution(self, capability, parameters, success, execution_time_ms,
+                           result=None, error=None, resource_usage=None):
+        out = result.get("output") if isinstance(result, dict) else None
+        if isinstance(out, dict) and "rows" in out:
+            result = {**result, "output": {k: v for k, v in out.items() if k != "rows"}}
+        return super().log_tool_execution(capability, parameters, success, execution_time_ms,
+                                          result, error, resource_usage)
