@@ -782,6 +782,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (10) a 429 on every request until its window ends; turn it on where addresses are real.
 - [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
   characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
+- [x] **Identifiers kept from the model** (audit item 41): a question with an email, phone,
+  SSN, record number, patient id or full date is refused before any model call; only the
+  kind is logged. Names need an NLP redactor (item 23).
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
