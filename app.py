@@ -18,7 +18,7 @@ Endpoints:
 Run locally:
     pip install fastapi "uvicorn[standard]"
     uvicorn app:app --reload --port 8000
-Then open http://localhost:8000/docs for the interactive API.
+Then, with API_DOCS=1 set, open http://localhost:8000/docs for the interactive API.
 """
 
 from __future__ import annotations
@@ -395,11 +395,18 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
     APP_VERSION = _vf.read().strip()
 API_VERSION = "v1"
 
+# Interactive docs and the OpenAPI schema are off unless API_DOCS=1 (backlog
+# item 53): in production they map every route for anyone, key or not.
+API_DOCS = os.environ.get("API_DOCS", "").strip().lower() in {"1", "true", "yes"}
+
 app = FastAPI(
     title="Security-Constrained Agent Runtime",
     description="Governed natural-language analytics over CMS Medicare data.",
     version=APP_VERSION,
     lifespan=lifespan,
+    docs_url="/docs" if API_DOCS else None,
+    redoc_url="/redoc" if API_DOCS else None,
+    openapi_url="/openapi.json" if API_DOCS else None,
 )
 
 
@@ -555,8 +562,8 @@ class _SecurityHeaders:
     Security Policy: scripts only from this origin plus the page's one inline
     script, by its SHA-256 (computed from the file served, so they cannot
     drift); no inline event handlers; no frames, objects or base-URI changes.
-    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
-    behind a flag is its own item (53)."""
+    /docs (Swagger UI from a CDN; served only with API_DOCS=1, item 53) gets
+    the headers but no CSP."""
 
     COMMON = [
         (b"x-content-type-options", b"nosniff"),
@@ -1355,7 +1362,7 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
 def root() -> dict:
     return {
         "service": "Security-Constrained Agent Runtime",
-        "docs": "/docs",
+        **({"docs": "/docs"} if API_DOCS else {}),
         "endpoints": ["/health", "/schema", "/query", "/raw-sql", "/metrics",
                       "/propose", "/approvals", "/approvals/{id}"],
     }

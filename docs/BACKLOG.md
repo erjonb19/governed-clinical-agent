@@ -425,10 +425,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **52. The standalone MCP server writes no audit log** (Medium; security audit finding 23, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: mcp_server.py:131-135, 159-167 (AgentRuntime() without an audit_logger)
   - Done when: Attach an AuditLogger that drops rows in main() / at module start.; a test or check shows it.
+- [x] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-16: `mcp_server.main()` calls `attach_standalone_audit()` for both transports: a `RowlessAuditLogger` (new in `src/runtime/audit_logger.py`; drops `rows`, keeps row_count and columns) writing `audit_mcp_*.jsonl` under `AUDIT_LOG_DIR` (default `logs`; "" turns it off with a warning on stderr; a directory that cannot be created stops the server with a message naming `AUDIT_LOG_DIR`, so give a stdio client an absolute path), never to stdout (stdio's protocol channel). Refused HTTP keys go to the same log. Mounted in the API, the API's logger from `attach_host` is kept. `tests/unit/test_mcp_standalone_audit.py`.
 - [ ] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-294; the / route advertises /docs
   - Done when: docs_url/redoc_url/openapi_url=None unless an env flag is set, or behind the key.; a test or check shows it.
+  - Done 2026-11-16: `API_DOCS=1` turns `/docs`, `/redoc` and `/openapi.json` on; unset (production) all three answer 404 and `/` no longer advertises `/docs`. `tests/integration/test_public_findings.py` (the open-route list no longer carries them).
 - [ ] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:595, :849
   - Done when: Require auth on the router and list public routes explicitly (/health, /ui, /ui-config).; a test or check shows it.
