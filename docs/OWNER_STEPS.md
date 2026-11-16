@@ -156,21 +156,10 @@ links at the page.
 
 ---
 
-## [ ] 7. Get the Synthea zip's SHA-256 (backlog item 51)
+## [x] 7. Get the Synthea zip's SHA-256 (backlog item 51)
 
-**Why:** the FHIR Gold is built from Synthea's sample zip. `fetch_synthea.py` checks
-its hash before extracting, but no hash is pinned yet: the download host is blocked
-from the agent's session, and every nightly since restored the Gold from cache, so
-none printed it. The hash is public information, not a secret.
-
-```powershell
-$zip = "$env:TEMP\synthea_sep2019.zip"
-Invoke-WebRequest -Uri "https://synthetichealth.github.io/synthea-sample-data/downloads/synthea_sample_data_fhir_r4_sep2019.zip" -OutFile $zip
-(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-```
-
-Paste the printed hash to the agent ("step 7: <hash>"). It pins it in
-`fetch_synthea.py` and ticks item 51.
+**Not needed (2026-11-16):** CI had already printed it (run 43020252795); it is pinned in
+`fetch_synthea.py`.
 
 ---
 

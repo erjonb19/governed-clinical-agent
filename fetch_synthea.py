@@ -47,7 +47,8 @@ ZIP_PATH = os.path.join(DEST_DIR, "synthea_sample_data_fhir_r4_sep2019.zip")
 # the host is unreachable from the session that wrote this check. The next
 # download prints the hash; commit it here (or set SYNTHEA_SHA256), and from
 # then on a different file is refused.
-EXPECTED_SHA256: str | None = None
+EXPECTED_SHA256: str | None = (
+    "a6fc595d9c0f4c646746af42f861b5a12d03c856af158dd837c764dfb81b66f8")  # printed by CI, 2026-11-11
 
 
 def verify(path: str = ZIP_PATH) -> str:

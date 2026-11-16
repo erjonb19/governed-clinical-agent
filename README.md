@@ -717,7 +717,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   releases (v1.1.0), version and commit in `/health`.
 - [x] **Merge bar for guard changes** (item 11): the manual FHIR eval scores a branch beside
   `main` and passes only if it is at least as accurate.
-- [x] **Code quality gates** (item 15): ruff, strict mypy on the first modules, a coverage floor.
+- [x] **Code quality gates** (item 15): ruff, strict mypy on two modules (`critic.py`,
+  `nightly_alerts.py`), a coverage floor.
+- [x] **Checksummed downloads** (audit item 51): the FHIR Gold asset and the Synthea zip are
+  checked against committed SHA-256 hashes.
 - [x] **Supply chain** (item 16): Dependabot, CodeQL, `pip-audit`, protected `main`.
 - [x] **Concurrency and a load test** (item 20): no global lock; measured before and after in
   [`docs/benchmarks.md`](docs/benchmarks.md).
