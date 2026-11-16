@@ -27,6 +27,7 @@ import os
 import sys
 import hmac
 import json
+import logging
 import contextlib
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -976,10 +977,28 @@ def raw_sql(request: Request, req: SqlRequest) -> dict:
 @app.post("/query", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_QUERY)
 def query(request: Request, req: QueryRequest) -> dict:
+    _screen_question(req.question, "/query")      # before any model call (audit item 41)
     with _run_slot(), _model_budget(_STATE.get("planner")) as settle:
         out = _query(req)
         settle(_reported_cost(out))
         return out
+
+
+def _screen_question(question: str, path: str) -> None:
+    """Audit item 41: refuse a question that carries a personal identifier before
+    it reaches a third-party model. Only the kinds found are recorded (a trace
+    event and a log line), never the question text."""
+    import question_screen
+    kinds = question_screen.identifiers_in(question)
+    if not kinds:
+        return
+    logging.getLogger("governed.privacy").warning("question refused before the model: path=%s kinds=%s",
+                                                  path, ",".join(kinds))
+    # its own trace, so it shows in Traces; it carries the kinds, never the question
+    tracer = tracing.get_tracer()
+    with tracer.trace("question_screen", path=path, refused=True, kinds=",".join(kinds)):
+        tracer.event("question_screen", path=path, refused=True, kinds=",".join(kinds))
+    raise HTTPException(status_code=422, detail=question_screen.refusal(kinds))
 
 
 def _query(req: QueryRequest) -> dict:
@@ -1264,6 +1283,7 @@ def get_trace(request: Request, trace_id: str) -> dict:
 @limiter.limit(RATE_LIMIT_QUERY)
 def propose(request: Request, req: ProposeRequest) -> dict:
     """Run the agent until it drafts a consequential action, then pause."""
+    _screen_question(req.question, "/propose")    # before any model call (audit item 41)
     agent = _STATE.get("approval_agent")
     if agent is None:
         raise HTTPException(status_code=503,
