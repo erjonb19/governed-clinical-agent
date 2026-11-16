@@ -325,9 +325,10 @@ What real AI, data and software engineering teams would add, checked against the
     - **Updates:** Dependabot's existing `github-actions` entry updates SHA pins together with their comments.
     - **Test:** `tests/unit/test_workflow_pins.py` fails on any unpinned `uses:`.
 
-- [ ] **32. Reviewer identity is a typed name; anyone can approve anything, including their own proposal** (Medium; security audit finding 3, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **32. Reviewer identity is a typed name; anyone can approve anything, including their own proposal** (Medium; security audit finding 3, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:417 (decided_by: str), app.py:932-966, approval_graph.py:275, web/index.html:1086
   - Done when: Reviewer from the verified key (item 22); until then mark decided_by "self-asserted"; refuse a decision by the proposer's key or by anyone but `assigned_to`; run the groundedness check on edited text.; a test or check shows it.
+  - **Done 2026-11-16 (the interim part; the verified key is item 22):** every decision is stored and returned as `identity: "self-asserted"` (`approval_events.identity`); `/propose` takes `proposed_by`, and a decision by the same name (case and spacing ignored) is refused; an escalated item can be decided only by its `assigned_to`; an `approve_with_edits` whose text has a number not in the evidence rows, the proposal or the question is refused (`groundedness.ungrounded_numbers`). The Review view sends the proposer, shows "proposed by ... (self-asserted)" and says why. `tests/unit/test_approval_identity.py`; E2E test 3 now proposes as one name, is refused approving as the same name, and approves as another. Older databases get the new columns in place.
 - [x] **33. No security headers on any response** (Medium; security audit finding 4, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-335 (middleware), app.py:381-391 (/ui sets only Cache-Control)
   - Done when: A header middleware: CSP `default-src 'self'; script-src 'sha256-<inline>'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`, nosniff, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy, HSTS; a test on /ui.; a test or check shows it.
