@@ -193,7 +193,8 @@ Behind Render's proxy the app sees the proxy's address for every caller until
 uvicorn is told to trust the proxy's `X-Forwarded-For` header. That is an
 environment variable in the Render dashboard (a Render change, so it is yours).
 Trust only the proxy's own addresses: `*` would let any caller choose its own
-address and skip the per-address limits, so the app refuses to start with `*`.
+address and skip the per-address limits, so the app refuses to start with `*` or
+any public network.
 
 1. Render dashboard -> `governed-clinical-agent` -> **Logs**.
 2. Open the UI once (https://governed-clinical-agent.onrender.com/ui) so a few
@@ -211,6 +212,13 @@ address instead of the `10.x` one. From PowerShell, your public address is:
 
 ```powershell
 Invoke-RestMethod https://api.ipify.org
+```
+
+Also check a forged header is ignored (the logged address must still be yours,
+not `1.2.3.4`):
+
+```powershell
+Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health -Headers @{"X-Forwarded-For"="1.2.3.4"}
 ```
 
 Then tell the agent "step 9 done". After this, the failed-key lockout

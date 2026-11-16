@@ -152,12 +152,69 @@ def test_principal_names_the_configured_key_it_matched():
 
 
 @pytest.mark.parametrize(
-    "value, refused", [("*", True), ("10.0.0.1, *", True), ("10.0.0.0/16", False), ("", False)]
+    "value, refused",
+    [
+        ("*", True),
+        ("10.0.0.1, *", True),
+        ("0.0.0.0/0", True),
+        ("::/0", True),
+        ("8.8.8.0/24", True),
+        ("render-proxy", True),
+        ("10.0.0.0/16", False),
+        ("10.0.0.0/8", False),
+        ("127.0.0.1,::1", False),
+        ("", False),
+    ],
 )
-def test_a_wildcard_proxy_trust_list_refuses_to_start(monkeypatch, value, refused):
+def test_a_public_proxy_trust_list_refuses_to_start(monkeypatch, value, refused):
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", value)
     if refused:
         with pytest.raises(SystemExit):
             request_context.check_forwarded_allow_ips()
     else:
         request_context.check_forwarded_allow_ips()
+
+
+def test_a_request_id_with_a_trailing_newline_is_not_kept():
+    assert request_context._SAFE_ID.fullmatch("abcdefgh\n") is None
+    assert request_context._SAFE_ID.fullmatch("abcdefgh") is not None
+
+
+def _proxied_peer(trusted, peer, xff):
+    """What source_ip an audit event gets behind uvicorn's proxy-headers layer."""
+    import asyncio
+
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    seen = {}
+
+    async def inner(scope, receive, send):
+        seen.update(request_context.current())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = ProxyHeadersMiddleware(
+        request_context.RequestContext(inner, keys=dict), trusted_hosts=trusted
+    )
+    scope = {
+        "type": "http",
+        "client": (peer, 1234),
+        "scheme": "http",
+        "headers": [(b"x-forwarded-for", xff.encode())],
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    async def send(message):
+        pass
+
+    asyncio.run(app(scope, receive, send))
+    return seen["source_ip"]
+
+
+def test_forwarded_for_counts_only_from_a_trusted_proxy():
+    # from the trusted proxy: the client it appended, not one the client forged
+    assert _proxied_peer("10.0.0.0/8", "10.1.2.3", "6.6.6.6, 203.0.113.9") == "203.0.113.9"
+    # from anyone else: the header is ignored
+    assert _proxied_peer("10.0.0.0/8", "198.51.100.7", "6.6.6.6") == "198.51.100.7"

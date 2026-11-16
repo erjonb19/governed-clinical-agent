@@ -17,7 +17,7 @@ The client address is the one uvicorn reports. Behind Render's proxy that is
 the proxy's address unless uvicorn is told to trust the proxy's
 X-Forwarded-For: set `FORWARDED_ALLOW_IPS` to the proxy's exact addresses
 (uvicorn reads it; `--proxy-headers` is uvicorn's default). A wildcard is
-refused at startup (`check_forwarded_allow_ips`): it would let any caller name
+refused at startup (`check_forwarded_allow_ips`), and so is any entry that is not a private or loopback address: it would let any caller name
 its own address and step around the per-address limits (/public/findings, the
 auth-failure counter).
 """
@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import uuid
@@ -40,7 +41,7 @@ _CURRENT: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar
 # A caller may pass its own X-Request-ID for correlation, but only a plain token:
 # anything else (long, spaces, control characters) is replaced by a fresh id, so
 # the header can never inject text into a log line.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+_SAFE_ID = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
 
 def current() -> dict[str, str]:
@@ -63,13 +64,24 @@ def principal(presented: str | None, keys: dict[str, str]) -> str:
 
 
 def check_forwarded_allow_ips() -> None:
-    """Refuse to start with a wildcard proxy trust list (fail closed)."""
+    """Refuse to start unless every trusted proxy entry is a private or loopback
+    address or network (fail closed). `*`, `0.0.0.0/0`, `::/0` or any public
+    network would let callers name their own address; a name that is not an
+    address is refused too."""
     raw = os.environ.get("FORWARDED_ALLOW_IPS", "")
-    if any(part.strip() == "*" for part in raw.split(",")):
-        raise SystemExit(
-            "FORWARDED_ALLOW_IPS='*' lets any caller set its own client address; "
-            "list the proxy's exact addresses instead (backlog item 38)"
-        )
+    for part in (p.strip() for p in raw.split(",")):
+        if not part:
+            continue
+        try:
+            net = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            net = None
+        if net is None or not (net.is_private or net.is_loopback):
+            raise SystemExit(
+                f"FORWARDED_ALLOW_IPS entry {part!r} is not a private or loopback "
+                "address: it would let callers set their own client address. List the "
+                "proxy's own addresses instead (backlog item 38)"
+            )
 
 
 def _presented_key(headers: dict[bytes, bytes]) -> str | None:
@@ -95,7 +107,7 @@ class RequestContext:
             return
         headers = dict(scope.get("headers") or [])
         given = headers.get(b"x-request-id", b"").decode("latin-1")
-        request_id = given if _SAFE_ID.match(given) else uuid.uuid4().hex
+        request_id = given if _SAFE_ID.fullmatch(given) else uuid.uuid4().hex
         client = scope.get("client")
         ctx = {
             "request_id": request_id,
