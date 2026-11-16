@@ -83,6 +83,7 @@ class ApprovalState(TypedDict, total=False):
     proposal: Optional[str]      # the draft the human reviews
     approval_id: Optional[str]
     human_decision: Optional[dict]
+    proposed_by: Optional[str]   # the proposer's name (audit item 32)
     committed: bool
     trajectory: list
 
@@ -245,6 +246,7 @@ class GovernedApprovalAgent:
                 question=state["question"],
                 proposal=proposal,
                 evidence=str(rows[:EVIDENCE_ROWS]),
+                proposed_by=state.get("proposed_by"),
             )
             with self._traced(state):
                 # recorded once, when the record is minted; the re-execution on
@@ -335,7 +337,8 @@ class GovernedApprovalAgent:
             "steps": len(values.get("trajectory") or []),
         }
 
-    def start(self, question: str, thread_id: str | None = None) -> dict:
+    def start(self, question: str, thread_id: str | None = None,
+              proposed_by: str | None = None) -> dict:
         """Run until the approval checkpoint. Returns immediately with a pending id."""
         thread_id = thread_id or str(uuid.uuid4())[:8]
         cfg = {"configurable": {"thread_id": thread_id}}
@@ -348,7 +351,7 @@ class GovernedApprovalAgent:
             try:
                 state = self.graph.invoke(
                     {"question": question, "thread_id": thread_id, "attempts": 0,
-                     "trajectory": [], "committed": False}, cfg)
+                     "trajectory": [], "committed": False, "proposed_by": proposed_by}, cfg)
             except BaseException as exc:
                 self.tracer.end_trace(thread_id, status="error",
                                       error=f"{type(exc).__name__}: {exc}"[:500])

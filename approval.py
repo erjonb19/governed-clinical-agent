@@ -58,6 +58,8 @@ Queue latency is a real operations metric, not decoration.
 
 from __future__ import annotations
 
+import unicodedata
+
 import os
 import sqlite3  # noqa: F401  (kept: older callers import approval.sqlite3)
 
@@ -83,6 +85,20 @@ EXECUTES = {APPROVE, APPROVE_WITH_EDITS}
 # a decision ends the graph run should test this, not EXECUTES -- a rejection
 # does not execute but does end it, whereas an escalation does neither.
 TERMINAL = {APPROVE, APPROVE_WITH_EDITS, REJECT}
+
+
+# How a reviewer's name is known. Every caller shares one API key until item 22
+# (per-user keys), so the name is whatever the reviewer typed.
+IDENTITY = "self-asserted"
+
+
+def _same_person(name: Optional[str]) -> str:
+    """Names compared the way a person would: case, spacing and repeated
+    whitespace ignored ("E. Brucaj" == " e.  brucaj"), width and compatibility
+    forms folded (NFKC) and invisible format characters dropped."""
+    s = unicodedata.normalize("NFKC", name or "")
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    return " ".join(s.split()).casefold()
 
 
 class ApprovalStore:
@@ -122,7 +138,8 @@ class ApprovalStore:
                     reason        TEXT,
                     edited_proposal TEXT,
                     escalated_to  TEXT,
-                    queue_seconds REAL
+                    queue_seconds REAL,
+                    proposed_by   TEXT
                 )
             """)
             # The decision CHAIN. A proposal can be escalated several times
@@ -142,6 +159,7 @@ class ApprovalStore:
                     edited_proposal TEXT,
                     escalated_to  TEXT,
                     queue_seconds REAL,              -- wait for THIS hop only
+                    identity      TEXT,              -- how decided_by is known (audit item 32)
                     FOREIGN KEY (approval_id) REFERENCES approvals(approval_id)
                 )
             """)
@@ -162,6 +180,10 @@ class ApprovalStore:
             # Current owner of a PENDING item. NULL means "unassigned" -- the
             # general queue, which is where every proposal starts.
             con.execute("ALTER TABLE approvals ADD COLUMN assigned_to TEXT")
+        if "proposed_by" not in cols:
+            con.execute("ALTER TABLE approvals ADD COLUMN proposed_by TEXT")
+        if "identity" not in state_db.columns(con, "approval_events"):
+            con.execute("ALTER TABLE approval_events ADD COLUMN identity TEXT")
         # Rows closed as 'escalated' by the old behaviour are exactly the items
         # that were dropped on the floor: the action never ran and nobody owned
         # them. Re-open them to the person they named, which is what escalating
@@ -192,14 +214,17 @@ class ApprovalStore:
     # ---- proposing ----
 
     def propose(self, thread_id: str, capability: str, question: str,
-                proposal: str, evidence: str | None = None) -> str:
+                proposal: str, evidence: str | None = None,
+                proposed_by: str | None = None) -> str:
         approval_id = str(uuid.uuid4())[:8]
         with self._conn() as con:
             con.execute(
                 "INSERT INTO approvals (approval_id, thread_id, capability, question, "
-                "proposal, evidence, status, proposed_at) VALUES (?,?,?,?,?,?,?,?)",
+                "proposal, evidence, status, proposed_at, proposed_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (approval_id, thread_id, capability, question, proposal, evidence,
-                 "pending", datetime.now(timezone.utc).isoformat()),
+                 "pending", datetime.now(timezone.utc).isoformat(),
+                 (proposed_by or "").strip() or None),
             )
         return approval_id
 
@@ -248,8 +273,35 @@ class ApprovalStore:
             raise ValueError(f"approval {approval_id} already {item['status']}")
         if decision == APPROVE_WITH_EDITS and not edited_proposal:
             raise ValueError("approve_with_edits requires edited_proposal")
-        if decision == ESCALATE and not escalated_to:
+        if decision == ESCALATE and not _same_person(escalated_to):
             raise ValueError("escalate requires escalated_to")
+        if escalated_to is not None:
+            escalated_to = " ".join(escalated_to.split())
+        # Audit item 32. Until per-user keys (item 22) every caller holds the
+        # same key, so a reviewer is only a typed name: each decision is stored
+        # as "self-asserted". Within that, the rules still hold for the names
+        # given: nobody decides their own proposal, and an escalated item is
+        # decided only by the person it was escalated to.
+        who = _same_person(decided_by)
+        if not who:
+            raise ValueError("decided_by is required")
+        if item.get("proposed_by") and _same_person(item["proposed_by"]) == who:
+            raise ValueError("a proposal cannot be decided by the person who proposed it")
+        if decision == ESCALATE and item.get("proposed_by") and \
+                _same_person(escalated_to) == _same_person(item["proposed_by"]):
+            # they could never decide it, and nobody else could either (review)
+            raise ValueError("an item cannot be escalated to the person who proposed it")
+        if item.get("assigned_to") and _same_person(item["assigned_to"]) != who:
+            raise ValueError(f"this item was escalated to {item['assigned_to']}; "
+                             f"only they can decide it now")
+        if decision == APPROVE_WITH_EDITS:
+            from groundedness import ungrounded_numbers
+            bad = ungrounded_numbers(edited_proposal or "",
+                                     [item.get("evidence"), item.get("proposal"), item.get("question")])
+            if bad:
+                raise ValueError("the edited text has numbers that are not in the evidence ("
+                                 + ", ".join(f"{n:g}" for n in bad[:5])
+                                 + "); an edit may reword the brief, not add figures")
 
         now = datetime.now(timezone.utc)
         proposed = datetime.fromisoformat(item["proposed_at"])
@@ -264,10 +316,10 @@ class ApprovalStore:
         with self._conn() as con:
             con.execute(
                 "INSERT INTO approval_events (approval_id, decision, decided_by, "
-                "decided_at, reason, edited_proposal, escalated_to, queue_seconds) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "decided_at, reason, edited_proposal, escalated_to, queue_seconds, identity) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (approval_id, decision, decided_by, now.isoformat(), reason,
-                 edited_proposal, escalated_to, hop_seconds),
+                 edited_proposal, escalated_to, hop_seconds, IDENTITY),
             )
             if decision == ESCALATE:
                 # A HANDOFF, not a verdict. The item stays pending so it stays
@@ -290,7 +342,10 @@ class ApprovalStore:
                     (status, now.isoformat(), decided_by, decision, reason,
                      edited_proposal, queue_seconds, approval_id),
                 )
-        return self.get(approval_id)
+        out = self.get(approval_id)
+        if out is not None:
+            out["identity"] = IDENTITY
+        return out
 
     def _last_event_at(self, approval_id: str) -> Optional[str]:
         with self._conn() as con:

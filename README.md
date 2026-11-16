@@ -793,6 +793,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (10) a 429 on every request until its window ends; turn it on where addresses are real.
 - [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
   characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
+- [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
+  proposal, escalated items only by their new owner, edits cannot add figures; names are
+  marked self-asserted until per-user keys (item 22).
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

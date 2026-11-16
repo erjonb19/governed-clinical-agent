@@ -944,6 +944,7 @@ function reviewCard(it){
       <span class="pill warn">Awaiting decision</span>
       <small>waiting ${esc(waited(it.proposed_at))}</small>
       ${it.assigned_to?`<small>escalated to <b>${esc(it.assigned_to)}</b></small>`:""}
+      ${it.proposed_by?`<small>proposed by <b>${esc(it.proposed_by)}</b> (self-asserted)</small>`:""}
       <small style="margin-left:auto">capability <code>${esc(it.capability||"—")}</code> &middot; id <code>${id}</code></small>
     </div>
     <div class="pad">
@@ -1060,8 +1061,9 @@ async function loadReview(){
 
     <div class="card pad" style="margin-bottom:16px">
       <div class="eyebrow">Reviewer</div>
-      <label class="f" for="reviewer">Your name &mdash; recorded on every decision you make</label>
+      <label class="f" for="reviewer">Your name &mdash; recorded on every proposal and decision you make</label>
       <input id="reviewer" type="text" placeholder="e.g. e.brucaj" style="width:100%;max-width:320px" />
+      <p class="small muted" style="margin:6px 0 0">Names are self-asserted: everyone shares one access key until per-user keys arrive. You cannot decide a proposal you made, and an escalated item can only be decided by the person it was escalated to.</p>
       <div class="note" style="margin-top:14px">
         <b>Send a draft to the queue.</b> Runs the agent until it drafts a consequential action, then pauses it here.
         <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:10px">
@@ -1089,9 +1091,12 @@ async function loadReview(){
 async function propose(){
   const q=$("propQ").value.trim(); if(!q) return;
   const btn=$("propGo"), msg=$("propMsg");
+  if(!($("reviewer")?.value||"").trim()){
+    msg.innerHTML=`<span style="color:var(--red)">Enter your name above first: the proposer is recorded and cannot also decide it.</span>`;
+    $("reviewer")?.focus(); return; }
   btn.disabled=true; btn.textContent="Drafting…"; msg.textContent="Running the agent to the checkpoint…";
   try{
-    const r=await fetch("/propose",{method:"POST",headers:authHdrs(),body:JSON.stringify({question:q})});
+    const r=await fetch("/propose",{method:"POST",headers:authHdrs(),body:JSON.stringify({question:q,proposed_by:($("reviewer")?.value||"").trim()||null})});
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ msg.innerHTML=`<span style="color:var(--red)">${esc(j.detail||("HTTP "+r.status))}</span>`; return; }
     msg.innerHTML=`<span style="color:var(--green)">✓ Paused and queued${j.approval_id?" as "+esc(j.approval_id):""}.</span>`;
