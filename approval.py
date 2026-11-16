@@ -58,6 +58,8 @@ Queue latency is a real operations metric, not decoration.
 
 from __future__ import annotations
 
+import unicodedata
+
 import os
 import sqlite3  # noqa: F401  (kept: older callers import approval.sqlite3)
 
@@ -92,8 +94,11 @@ IDENTITY = "self-asserted"
 
 def _same_person(name: Optional[str]) -> str:
     """Names compared the way a person would: case, spacing and repeated
-    whitespace ignored ("E. Brucaj" == " e.  brucaj")."""
-    return " ".join((name or "").split()).casefold()
+    whitespace ignored ("E. Brucaj" == " e.  brucaj"), width and compatibility
+    forms folded (NFKC) and invisible format characters dropped."""
+    s = unicodedata.normalize("NFKC", name or "")
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    return " ".join(s.split()).casefold()
 
 
 class ApprovalStore:
@@ -268,8 +273,10 @@ class ApprovalStore:
             raise ValueError(f"approval {approval_id} already {item['status']}")
         if decision == APPROVE_WITH_EDITS and not edited_proposal:
             raise ValueError("approve_with_edits requires edited_proposal")
-        if decision == ESCALATE and not escalated_to:
+        if decision == ESCALATE and not _same_person(escalated_to):
             raise ValueError("escalate requires escalated_to")
+        if escalated_to is not None:
+            escalated_to = " ".join(escalated_to.split())
         # Audit item 32. Until per-user keys (item 22) every caller holds the
         # same key, so a reviewer is only a typed name: each decision is stored
         # as "self-asserted". Within that, the rules still hold for the names
@@ -280,6 +287,10 @@ class ApprovalStore:
             raise ValueError("decided_by is required")
         if item.get("proposed_by") and _same_person(item["proposed_by"]) == who:
             raise ValueError("a proposal cannot be decided by the person who proposed it")
+        if decision == ESCALATE and item.get("proposed_by") and \
+                _same_person(escalated_to) == _same_person(item["proposed_by"]):
+            # they could never decide it, and nobody else could either (review)
+            raise ValueError("an item cannot be escalated to the person who proposed it")
         if item.get("assigned_to") and _same_person(item["assigned_to"]) != who:
             raise ValueError(f"this item was escalated to {item['assigned_to']}; "
                              f"only they can decide it now")

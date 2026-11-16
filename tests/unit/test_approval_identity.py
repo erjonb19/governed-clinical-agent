@@ -117,3 +117,31 @@ def test_an_older_database_gets_the_new_columns(tmp_path, monkeypatch):
 def test_numbers_in_free_text():
     assert ungrounded_numbers("1,250 patients, 22.4%", ["22.4 and 1250"]) == []
     assert ungrounded_numbers("rate 9.9", ["rate 22.4"]) == [9.9]
+
+
+def test_an_item_cannot_be_escalated_to_its_proposer(store):
+    aid = _item(store)
+    with pytest.raises(ValueError, match="escalated to the person who proposed it"):
+        store.decide(aid, "escalate", "B. Reviewer", escalated_to=" a. ANALYST ")
+    assert store.get(aid)["assigned_to"] is None
+
+
+def test_a_blank_escalation_target_is_refused_and_names_are_trimmed(store):
+    aid = _item(store)
+    with pytest.raises(ValueError, match="requires escalated_to"):
+        store.decide(aid, "escalate", "B. Reviewer", escalated_to="   ")
+    store.decide(aid, "escalate", "B. Reviewer", escalated_to="  dr.  oncall ")
+    assert store.get(aid)["assigned_to"] == "dr. oncall"
+
+
+def test_the_proposer_cannot_escalate_either(store):
+    aid = _item(store)
+    with pytest.raises(ValueError, match="person who proposed it"):
+        store.decide(aid, "escalate", "A. Analyst", escalated_to="dr.oncall")
+
+
+def test_lookalike_forms_of_the_proposer_name_are_the_same_person(store):
+    aid = _item(store, proposed_by="alice")
+    for same in ("ＡＬＩＣＥ", "ali\u200bce"):  # full-width, zero-width space
+        with pytest.raises(ValueError, match="person who proposed it"):
+            store.decide(aid, "approve", same)

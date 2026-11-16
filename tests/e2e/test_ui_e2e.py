@@ -171,6 +171,8 @@ def test_3_approval_commits_and_records_the_reviewer(page, server):
 def test_3b_escalation_reassigns_and_stays_pending(page, server):
     _review(page, server, "e2e.nurse")
     card = _propose(page, ESCALATE)
+    page.fill("#reviewer", "e2e.charge")         # the proposer may not decide it (audit item 32)
+    page.dispatch_event("#reviewer", "change")
     card.locator("button[data-act='esc-open']").click()
     card.locator("input[id^='escto-']").fill("dr.oncall")
     card.locator("button[data-act='escalate']").click()

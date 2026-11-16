@@ -1091,6 +1091,9 @@ async function loadReview(){
 async function propose(){
   const q=$("propQ").value.trim(); if(!q) return;
   const btn=$("propGo"), msg=$("propMsg");
+  if(!($("reviewer")?.value||"").trim()){
+    msg.innerHTML=`<span style="color:var(--red)">Enter your name above first: the proposer is recorded and cannot also decide it.</span>`;
+    $("reviewer")?.focus(); return; }
   btn.disabled=true; btn.textContent="Drafting…"; msg.textContent="Running the agent to the checkpoint…";
   try{
     const r=await fetch("/propose",{method:"POST",headers:authHdrs(),body:JSON.stringify({question:q,proposed_by:($("reviewer")?.value||"").trim()||null})});
