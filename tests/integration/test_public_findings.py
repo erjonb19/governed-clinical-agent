@@ -210,3 +210,16 @@ def test_metrics_and_schema_need_the_key(make, path):
         assert c.get(path).status_code == 401
         assert c.get(path, headers={"X-API-Key": KEY}).status_code == 200
         assert c.get("/v1" + path).status_code == 401
+
+
+def test_a_new_route_is_private_unless_listed(make):
+    # the promise of item 54: a route added with no auth of its own still needs the key
+    app_module = make()
+
+    @app_module.app.get("/brand-new-route")
+    def brand_new() -> dict:
+        return {"ok": True}
+
+    with TestClient(app_module.app) as c:
+        assert c.get("/brand-new-route").status_code == 401
+        assert c.get("/brand-new-route", headers={"X-API-Key": KEY}).status_code == 200
