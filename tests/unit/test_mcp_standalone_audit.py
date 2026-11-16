@@ -40,12 +40,20 @@ def _events(d):
     ]
 
 
-def test_main_attaches_an_audit_log(fresh, tmp_path, monkeypatch):
+def test_main_attaches_an_audit_log(fresh, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AUDIT_LOG_DIR", str(tmp_path))
     monkeypatch.setattr(M.mcp, "run", lambda *a, **k: None)  # stdio: do not block
     M.main(["--transport", "stdio"])
     assert M.runtime.audit_logger is not None
     assert auth_failures.FAILURES.audit is M.runtime.audit_logger
+    assert capsys.readouterr().out == ""  # stdout is stdio's protocol channel
+
+
+def test_an_unwritable_log_dir_stops_the_server_with_a_message(fresh, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    with pytest.raises(SystemExit, match="AUDIT_LOG_DIR"):
+        M.attach_standalone_audit(str(blocker / "logs"))
 
 
 def test_tool_calls_are_audited_without_rows(fresh, tmp_path):

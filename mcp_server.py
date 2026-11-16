@@ -186,8 +186,15 @@ def attach_standalone_audit(log_dir: str | None = None):
     from pathlib import Path
 
     from src.runtime.audit_logger import RowlessAuditLogger
-    runtime.audit_logger = RowlessAuditLogger(log_dir=Path(log_dir), agent_id="mcp",
-                                              max_buffer_size=1, enable_console=False)
+    try:
+        runtime.audit_logger = RowlessAuditLogger(log_dir=Path(log_dir), agent_id="mcp",
+                                                  max_buffer_size=1, enable_console=False)
+    except OSError as e:
+        # fail closed, with a message: a stdio client often starts the server in
+        # "/", where the relative default cannot be created
+        raise SystemExit(f"cannot write the MCP audit log under AUDIT_LOG_DIR={log_dir!r} "
+                         f"({type(e).__name__}); set AUDIT_LOG_DIR to an absolute, "
+                         "writable directory") from None
     from auth_failures import FAILURES      # refused HTTP keys go to the same log
     if FAILURES.audit is None:
         FAILURES.audit = runtime.audit_logger
