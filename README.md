@@ -793,6 +793,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   (10) a 429 on every request until its window ends; turn it on where addresses are real.
 - [x] **Request size limits** (audit item 34): over-long fields get 422 (question 2,000
   characters, SQL 20,000, names 200) and any body over 64 KB gets 413 before it is parsed.
+- [x] **Identifiers kept from the model** (audit item 41): a question with an email, phone,
+  SSN, record number, patient id or full date is refused before any model call; only the
+  kind is logged. Names need an NLP redactor (item 23).
 - [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
   proposal, escalated items only by their new owner, edits cannot add figures; names are
   marked self-asserted until per-user keys (item 22).
