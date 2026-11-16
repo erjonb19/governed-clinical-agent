@@ -210,6 +210,23 @@ def require_api_key(
         detail="invalid or missing API key (send header X-API-Key)",
     )
 
+# Deny by default (backlog item 54): every route needs the key unless it is on
+# this list. A new route is private until someone adds it here on purpose;
+# tests/integration/test_public_findings.py pins the list. /datasets stays open
+# (item 36: table names and row counts, cached and rate-limited); /metrics and
+# /schema now need the key.
+PUBLIC_ROUTES = frozenset({"/", "/ui", "/ui-config", "/health", "/public/findings", "/datasets"})
+
+
+def require_key_unless_public(
+    request: Request, provided: Optional[str] = Security(_api_key_header)
+) -> None:
+    route = request.scope.get("route")
+    if getattr(route, "path", None) in PUBLIC_ROUTES:
+        return
+    require_api_key(request, provided)     # unknown route or none: the key (fail closed)
+
+
 # Built once at startup, shared across requests. FastAPI runs sync endpoints in
 # a threadpool. Queries no longer share one lock (backlog item 20): the query
 # tool opens a DuckDB cursor of its own per execution, so /query, /raw-sql and
@@ -407,6 +424,7 @@ app = FastAPI(
     docs_url="/docs" if API_DOCS else None,
     redoc_url="/redoc" if API_DOCS else None,
     openapi_url="/openapi.json" if API_DOCS else None,
+    dependencies=[Depends(require_key_unless_public)],
 )
 
 

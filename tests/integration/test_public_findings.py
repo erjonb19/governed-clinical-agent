@@ -28,9 +28,7 @@ OPEN_ROUTES = {
     "/ui-config",
     "/health",
     "/datasets",
-    "/metrics",
     "/public/findings",
-    "/schema",  # table and column names only; open before item 9, unchanged here
 }
 
 
@@ -205,3 +203,31 @@ def test_api_docs_can_be_turned_on(make):
     with TestClient(app_module.app) as c:
         assert c.get("/openapi.json").status_code == 200
         assert c.get("/docs").status_code == 200
+
+
+def test_the_open_route_list_is_the_app_s_own(make):
+    # backlog item 54: deny by default; the app's list and this test's agree
+    app_module = make()
+    assert set(app_module.PUBLIC_ROUTES) == OPEN_ROUTES
+
+
+@pytest.mark.parametrize("path", ["/metrics", "/schema"])
+def test_metrics_and_schema_need_the_key(make, path):
+    app_module = make()
+    with TestClient(app_module.app) as c:
+        assert c.get(path).status_code == 401
+        assert c.get(path, headers={"X-API-Key": KEY}).status_code == 200
+        assert c.get("/v1" + path).status_code == 401
+
+
+def test_a_new_route_is_private_unless_listed(make):
+    # the promise of item 54: a route added with no auth of its own still needs the key
+    app_module = make()
+
+    @app_module.app.get("/brand-new-route")
+    def brand_new() -> dict:
+        return {"ok": True}
+
+    with TestClient(app_module.app) as c:
+        assert c.get("/brand-new-route").status_code == 401
+        assert c.get("/brand-new-route", headers={"X-API-Key": KEY}).status_code == 200

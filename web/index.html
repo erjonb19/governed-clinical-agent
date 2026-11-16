@@ -821,15 +821,18 @@ async function loadData(){
         </tbody></table></div>
         <details class="audit" style="border-top:none;margin-top:12px"><summary>Full data dictionary</summary><pre id="schemaBox" style="margin:10px 0 0">…</pre></details>
       </div>`;
-    const sc=await (await fetch("/schema"+(DATASET?"?dataset="+encodeURIComponent(DATASET):""))).json();
-    if($("schemaBox")) $("schemaBox").textContent=sc.schema||"(unavailable)";
+    const sr=await fetch("/schema"+(DATASET?"?dataset="+encodeURIComponent(DATASET):""),{headers:authHdrs()});
+    const sc=sr.ok?await sr.json():{};
+    if($("schemaBox")) $("schemaBox").textContent=sr.status===401?"Enter an API key to see the data dictionary.":(sc.schema||"(unavailable)");
   }catch(e){ $("dataBody").innerHTML=`<div class="card pad">Could not load: ${esc(e.message||e)}</div>`; }
 }
 
 /* ---------- usage view ---------- */
 async function loadUsage(){
   try{
-    const m=await (await fetch("/metrics")).json();
+    const mr=await fetch("/metrics",{headers:authHdrs()});
+    if(mr.status===401){ $("usageBody").innerHTML=`<div class="card pad">Enter an API key to see usage.</div>`; return; }
+    const m=await mr.json();
     const g=k=>m[k]??(m.totals&&m.totals[k]);
     const cards=[["requests",g("calls")??g("n")??g("count")],["tokens used",g("total_tokens")],
                  ["estimated cost",g("est_cost_usd")??g("total_cost_usd")],["avg response",g("avg_latency_ms")??g("mean_latency_ms")]]
