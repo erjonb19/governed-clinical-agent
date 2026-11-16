@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, List
 from threading import Lock
 import hashlib
 
+from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
 
 
@@ -52,6 +53,14 @@ class AuditEvent:
     execution_result: Optional[Dict[str, Any]] = None
     performance_metrics: Optional[Dict[str, float]] = None
     context: Optional[Dict[str, Any]] = None
+    # Who asked and from where (backlog item 38): filled from the HTTP request
+    # being served (src/runtime/request_context.py); None outside a request.
+    request_id: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("request_id"))
+    principal: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("principal"))
+    source_ip: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("source_ip"))
     event_id: str = field(default_factory=lambda: hashlib.sha256(
         f"{time.time()}{id(object())}".encode()
     ).hexdigest()[:16])

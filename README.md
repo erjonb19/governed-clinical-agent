@@ -796,6 +796,11 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
   proposal, escalated items only by their new owner, edits cannot add figures; names are
   marked self-asserted until per-user keys (item 22).
+- [x] **Every audit event says who asked and from where** (audit item 38): a request id
+  (also returned as `X-Request-ID`), the key it came with as a short fingerprint (never the
+  key) and the caller's address. On Render the address is the proxy's until
+  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` is
+  refused at startup.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
