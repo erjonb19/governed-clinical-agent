@@ -67,6 +67,7 @@ import llm_budget
 import schema_check
 import tracing
 import versioning
+from src.runtime import request_context
 from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
@@ -156,12 +157,14 @@ if QUERY_MODE not in {"graph", "single"}:
     raise SystemExit(f"QUERY_MODE must be graph or single, not {QUERY_MODE!r}")
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
 # The keyless findings route (backlog item 9, D1a): per client address, never per key.
-# On Render every caller shares the proxy's address until item 38, so this is in
-# effect one limit for all visitors; the answer is cached, so it can be generous.
+# On Render every caller shares the proxy's address until FORWARDED_ALLOW_IPS is
+# set (item 38, OWNER_STEPS step 9), so until then this is in effect one limit for
+# all visitors; the answer is cached, so it can be generous.
 RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
+request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -612,7 +615,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
-app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
+app.add_middleware(_SecurityHeaders)     # every response, /v1 or not, 413s included
+# Outermost (backlog item 38): request id, principal and client address for every
+# audit event written while the request is served, /mcp and refused requests too.
+app.add_middleware(
+    request_context.RequestContext,
+    keys=lambda: {"api": API_KEY or "", "mcp": os.environ.get("MCP_API_KEY", "")},
+)
 
 
 class _MCPEndpoint:

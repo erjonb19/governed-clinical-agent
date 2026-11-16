@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, List
 from threading import Lock
 import hashlib
 
+from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
 
 
@@ -52,6 +53,14 @@ class AuditEvent:
     execution_result: Optional[Dict[str, Any]] = None
     performance_metrics: Optional[Dict[str, float]] = None
     context: Optional[Dict[str, Any]] = None
+    # Who asked and from where (backlog item 38): filled from the HTTP request
+    # being served (src/runtime/request_context.py); None outside a request.
+    request_id: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("request_id"))
+    principal: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("principal"))
+    source_ip: Optional[str] = field(
+        default_factory=lambda: request_context.current().get("source_ip"))
     event_id: str = field(default_factory=lambda: hashlib.sha256(
         f"{time.time()}{id(object())}".encode()
     ).hexdigest()[:16])
@@ -680,3 +689,21 @@ class AuditLogger:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensure buffer is flushed."""
         self.flush()
+
+
+class RowlessAuditLogger(AuditLogger):
+    """Records that a query ran, never what it returned.
+
+    `redact_data` masks secrets, not data values, so a FHIR query's rows would
+    otherwise land in the file verbatim. Drops `rows` from a tool's output;
+    row_count and columns stay. Used by the standalone MCP server (backlog
+    item 52); the API's `_ServiceAuditLogger` does the same.
+    """
+
+    def log_tool_execution(self, capability, parameters, success, execution_time_ms,
+                           result=None, error=None, resource_usage=None):
+        out = result.get("output") if isinstance(result, dict) else None
+        if isinstance(out, dict) and "rows" in out:
+            result = {**result, "output": {k: v for k, v in out.items() if k != "rows"}}
+        return super().log_tool_execution(capability, parameters, success, execution_time_ms,
+                                          result, error, resource_usage)

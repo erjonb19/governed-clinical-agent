@@ -801,6 +801,13 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   marked self-asserted until per-user keys (item 22).
 - [x] **API docs off in production** (audit item 53): `/docs`, `/redoc` and `/openapi.json`
   are served only with `API_DOCS=1`.
+- [x] **The standalone MCP server keeps an audit log** (audit item 52): every tool call and
+  refused key over stdio or HTTP goes to `logs/audit_mcp_*.jsonl`, without result rows.
+- [x] **Every audit event says who asked and from where** (audit item 38): a request id
+  (also returned as `X-Request-ID`), the key it came with as a short fingerprint (never the
+  key) and the caller's address. On Render the address is the proxy's until
+  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` or any
+  public network is refused at startup.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
