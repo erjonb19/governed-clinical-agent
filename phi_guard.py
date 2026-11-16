@@ -2008,6 +2008,12 @@ def _one_to_many(src: exp.Expression, root: exp.Expression) -> bool:
     return True
 
 
+def _base_table(src: exp.Expression, root: exp.Expression) -> bool:
+    """A patient table read directly: not a derived table and not a CTE."""
+    return isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier) and \
+        _cte_body(src.name, root) is None
+
+
 def _distinct_key_select(sel: exp.Select) -> bool:
     """SELECT DISTINCT <x>.patient_id ...: one row per person whatever it joins."""
     d = sel.args.get("distinct")
@@ -2135,7 +2141,14 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
             # source (p JOIN c1 JOIN c2, o JOIN c JOIN e). FHIR comparison of the
             # stricter first version: f4_avg_glucose_prediabetic's o JOIN c with
             # AVG went from 3/3 to 0/3 (2026-11-16).
-            if len(many) > 1 and len(rows) > 2 and \
+            # The two-source allowance holds only for BASE tables: a derived
+            # table or CTE (a per-patient grouped wrapper above all) can carry
+            # a value already multiplied below it, so chaining wrappers each
+            # joined to one more table reached count^10 with two sources per
+            # SELECT (fifth review, 2026-11-16).
+            derived = any(not _base_table(next(
+                x for x in srcs if (x.alias_or_name or "").lower() == n), q) for n in many)
+            if len(many) > 1 and (len(rows) > 2 or derived) and \
                     not (_distinct_people_only(sel) or _distinct_key_select(sel)):
                 return ("a second one-to-many patient table joined on patient_id multiplies each "
                         "person's rows; over such a join only count(DISTINCT patient_id) is allowed")
