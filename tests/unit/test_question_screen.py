@@ -76,31 +76,51 @@ def test_query_and_propose_refuse_before_any_model_call(tmp_path, monkeypatch, c
     }.items():
         monkeypatch.setenv(k, str(v))
     import src.tools.base as tool_base
+    import tracing
 
     saved = dict(tool_base._TOOL_REGISTRY)
     tool_base._TOOL_REGISTRY.pop("analytics.query_aggregate", None)
-    request_cleanup = lambda: (
-        tool_base._TOOL_REGISTRY.clear(),
-        tool_base._TOOL_REGISTRY.update(saved),
-    )  # noqa: E731
-    import app as app_module
-
+    tracing.set_tracer(None)
+    importlib.reload(tracing)
     try:
+        import app as app_module
+
         importlib.reload(app_module)
-    except Exception:
-        request_cleanup()
-        raise
-    import nl_to_sql_planner
+        reserved = []
+        monkeypatch.setattr(
+            app_module.llm_budget.BUDGET, "reserve", lambda *a, **k: reserved.append(1)
+        )
+        with TestClient(app_module.app) as c, caplog.at_level("WARNING", logger="governed.privacy"):
+            for path in ("/query", "/propose", "/v1/query"):
+                r = c.post(
+                    path, headers={"X-API-Key": "k"}, json={"question": PLANTED["phone number"]}
+                )
+                assert r.status_code == 422, (path, r.text)
+                assert "phone number" in r.json()["detail"] and "555-0134" not in r.text
+            traces = c.get("/traces", headers={"X-API-Key": "k"}).json()["traces"]
+        assert reserved == []  # refused before the model budget, so before any model
+        assert "555-0134" not in caplog.text and "kinds=phone number" in caplog.text
+        screened = [t for t in traces if t["name"] == "question_screen"]
+        assert len(screened) == 3 and all(
+            t["attrs"].get("kinds") == "phone number" for t in screened
+        )
+        assert "555-0134" not in str(traces)
+    finally:
+        tracing.set_tracer(None)
+        tool_base._TOOL_REGISTRY.clear()
+        tool_base._TOOL_REGISTRY.update(saved)
 
-    def forbidden(*a, **k):
-        raise AssertionError("a model was called")
 
-    for name in ("generate_sql", "generate_sql_with_metrics", "critique"):
-        monkeypatch.setattr(nl_to_sql_planner.NLToSQLPlanner, name, forbidden, raising=True)
-    with TestClient(app_module.app) as c, caplog.at_level("WARNING", logger="governed.privacy"):
-        for path in ("/query", "/propose"):
-            r = c.post(path, headers={"X-API-Key": "k"}, json={"question": PLANTED["phone number"]})
-            assert r.status_code == 422, (path, r.text)
-            assert "phone number" in r.json()["detail"] and "555-0134" not in r.text
-    assert "555-0134" not in caplog.text and "kinds=phone number" in caplog.text
-    request_cleanup()
+@pytest.mark.parametrize(
+    "q",
+    [
+        "Call (718)555-0134",
+        "+1 718 555 0134",
+        "SSN 123456789",
+        "born 14 Mar 1961",
+        "born March 14th, 1961",
+        "seen 14.03.1961",
+    ],
+)
+def test_more_formats_are_found(q):
+    assert question_screen.identifiers_in(q), q

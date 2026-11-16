@@ -983,7 +983,10 @@ def _screen_question(question: str, path: str) -> None:
         return
     logging.getLogger("governed.privacy").warning("question refused before the model: path=%s kinds=%s",
                                                   path, ",".join(kinds))
-    tracing.get_tracer().event("question_screen", path=path, refused=True, kinds=",".join(kinds))
+    # its own trace, so it shows in Traces; it carries the kinds, never the question
+    tracer = tracing.get_tracer()
+    with tracer.trace("question_screen", path=path, refused=True, kinds=",".join(kinds)):
+        tracer.event("question_screen", path=path, refused=True, kinds=",".join(kinds))
     raise HTTPException(status_code=422, detail=question_screen.refusal(kinds))
 
 
