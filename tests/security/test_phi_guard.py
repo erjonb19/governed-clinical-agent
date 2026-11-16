@@ -402,6 +402,16 @@ def test_an_escape_route_is_blocked(name):
         assert "PHI" in d.reason
 
 
+# Owner's decision 2026-11-16 (item 71, option 2): two one-to-many patient row
+# sources joined on patient_id may sit under count(DISTINCT patient_id) only.
+# These shapes were allowed before; each joins two one-to-many sources under
+# another aggregate (count(*) of encounter PAIRS is n^2 per person, the same
+# multiplier with exponent 2), so they are refused now and pinned at the end of
+# this file. The people-count form of each question still runs.
+REFUSED_BY_OPTION_2 = {}
+REFUSED_BY_OPTION_2['per-patient join of two tables on the key'] = ALLOWED.pop('per-patient join of two tables on the key')
+
+
 @pytest.mark.parametrize("name", sorted(ALLOWED))
 def test_a_legitimate_shape_still_passes(name):
     d = validate_query(ALLOWED[name])
@@ -766,6 +776,10 @@ EIGHTH_REVIEW_ALLOWED = {
 }
 
 
+REFUSED_BY_OPTION_2['date + 30 (days)'] = EIGHTH_REVIEW_ALLOWED.pop('date + 30 (days)')
+REFUSED_BY_OPTION_2['date + to_days(30)'] = EIGHTH_REVIEW_ALLOWED.pop('date + to_days(30)')
+
+
 @pytest.mark.parametrize("name", list(EIGHTH_REVIEW_ALLOWED))
 def test_eighth_review_legitimate_shapes_still_pass(name):
     d = validate_query(EIGHTH_REVIEW_ALLOWED[name])
@@ -848,6 +862,9 @@ NINTH_REVIEW_ALLOWED = {
         "SELECT count(*) AS n FROM gold_patient WHERE patient_id IN (SELECT patient_id "
         "FROM gold_encounter GROUP BY patient_id HAVING count(*) >= 5)"),
 }
+
+
+REFUSED_BY_OPTION_2['readmission measured start to start'] = NINTH_REVIEW_ALLOWED.pop('readmission measured start to start')
 
 
 @pytest.mark.parametrize("name", list(NINTH_REVIEW_ALLOWED))
@@ -980,6 +997,9 @@ ELEVENTH_REVIEW_ALLOWED = {
         "SELECT avg(t.n) AS v FROM (SELECT p.patient_id, count(*) AS n FROM gold_patient p "
         "JOIN gold_condition c ON c.patient_id = p.patient_id GROUP BY p.patient_id) t"),
 }
+
+
+REFUSED_BY_OPTION_2['readmission rate with FILTER (WHERE b.key IS NOT NULL)'] = ELEVENTH_REVIEW_ALLOWED.pop('readmission rate with FILTER (WHERE b.key IS NOT NULL)')
 
 
 @pytest.mark.parametrize("name", list(ELEVENTH_REVIEW_ALLOWED))
@@ -2205,5 +2225,94 @@ def test_patient_rows_cannot_be_multiplied_by_a_join_or_a_union(tool, name):
     "SELECT count(*) FROM gold_patient WHERE gender = 'female') x",
 ])
 def test_keyed_joins_and_unions_of_counts_still_run(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+
+
+# Item 71, owner's decision 2026-11-16 (option 2): every join above is keyed,
+# yet two one-to-many patient tables joined on patient_id still repeat each
+# person's rows (count_a x count_b) times. Ten joins of gold_condition weighted
+# each person by count^10, and sum(age_years) split exactly into the summed ages
+# of the people with 1 row and with 2 rows (166 for 4 people on the fixture,
+# fourth review). Only count(DISTINCT patient_id), or a DISTINCT set of patient
+# keys, may sit over such a join.
+_TEN = " ".join(f"JOIN gold_condition c{i} ON p.patient_id = c{i}.patient_id" for i in range(1, 11))
+KEYED_MULTIPLIER_LEAKS = {
+    "ten key joins of one table (the fourth review's leak)": (
+        f"SELECT sum(p.age_years) AS s FROM gold_patient p {_TEN}"),
+    "two key joins of one table": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
+    "two different one-to-many tables": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p "
+        "JOIN gold_condition c ON p.patient_id = c.patient_id "
+        "JOIN gold_encounter e ON p.patient_id = e.patient_id"),
+    "a row count over two one-to-many tables": (
+        "SELECT count(*) AS n FROM gold_condition c JOIN gold_encounter e ON c.patient_id = e.patient_id"),
+    "a count(DISTINCT) of something other than the person": (
+        "SELECT count(DISTINCT c1.condition_name) AS n FROM gold_condition c1 "
+        "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id"),
+    "people counted, but a sum in HAVING": (
+        "SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id "
+        "GROUP BY p.gender HAVING sum(p.age_years) > 100"),
+    "the join hidden in a derived table": (
+        "SELECT sum(t.age_years) AS s FROM (SELECT p.age_years FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id) t"),
+    "the join hidden in a CTE": (
+        "WITH t AS (SELECT p.age_years FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id) SELECT sum(age_years) AS s FROM t"),
+    "the key in WHERE instead of ON": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p, gold_condition c1, gold_condition c2 "
+        "WHERE p.patient_id = c1.patient_id AND p.patient_id = c2.patient_id"),
+    "a window function beside the people count": (
+        "SELECT count(DISTINCT p.patient_id) AS n, sum(count(DISTINCT p.patient_id)) OVER () AS w "
+        "FROM gold_patient p JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
+}
+
+
+@pytest.mark.parametrize("name", list(KEYED_MULTIPLIER_LEAKS))
+def test_two_one_to_many_tables_cannot_weight_people_by_their_row_counts(tool, name):
+    r = tool.execute({"sql": KEYED_MULTIPLIER_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+@pytest.mark.parametrize("sql", [
+    # "patients with both A and B": the shape option 2 keeps (f4_htn_and_obesity's reference)
+    "SELECT count(DISTINCT c1.patient_id) AS n FROM gold_condition c1 "
+    "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id "
+    "WHERE c1.condition_name = 'Hypertension' AND c2.condition_name = 'Prediabetes'",
+    "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_observation o "
+    "ON c.patient_id = o.patient_id WHERE c.condition_name = 'Hypertension' "
+    "AND o.measure_name = 'Body Mass Index'",
+    "SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+    "JOIN gold_condition c ON p.patient_id = c.patient_id "
+    "JOIN gold_encounter e ON p.patient_id = e.patient_id GROUP BY p.gender",
+    # one one-to-many table beside gold_patient is unchanged by this rule
+    "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON p.patient_id = c.patient_id",
+])
+def test_people_counts_over_several_one_to_many_tables_still_run(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+
+
+@pytest.mark.parametrize("name", list(REFUSED_BY_OPTION_2))
+def test_shapes_refused_since_option_2(name):
+    d = validate_query(REFUSED_BY_OPTION_2[name])
+    assert not d.allowed and "one-to-many" in d.reason, (name, d.reason)
+
+
+@pytest.mark.parametrize("sql", [
+    # "how many patients were readmitted within 30 days": the people count still runs
+    "SELECT count(DISTINCT a.patient_id) AS n FROM gold_encounter a JOIN gold_encounter b "
+    "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+    "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30",
+])
+def test_the_people_count_form_still_runs(sql):
     d = validate_query(sql)
     assert d.allowed, d.reason

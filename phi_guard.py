@@ -1945,6 +1945,56 @@ def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
     return sorted({g.name.lower() for g in group.expressions})
 
 
+_ONE_PER_PERSON = {"gold_patient"}
+
+
+def _one_to_many(src: exp.Expression, root: exp.Expression) -> bool:
+    """A row source that can hold several rows per person. Only gold_patient
+    itself and a DISTINCT set of patient keys are known to hold one; anything
+    else (another patient table, a derived table, a CTE) counts as many (fail
+    closed)."""
+    if isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier):
+        body = _cte_body(src.name, root)
+        if body is None:
+            return (src.name or "").lower() not in _ONE_PER_PERSON
+    else:
+        body = src.this if isinstance(src, exp.Subquery) else None
+    if isinstance(body, exp.Select) and _distinct_key_select(body):
+        return False
+    if isinstance(body, exp.SetOperation) and _key_set(body):
+        return False
+    return True
+
+
+def _distinct_key_select(sel: exp.Select) -> bool:
+    """SELECT DISTINCT <x>.patient_id ...: one row per person whatever it joins."""
+    return bool(sel.args.get("distinct")) and len(sel.expressions) == 1 and \
+        isinstance(sel.expressions[0].unalias(), exp.Column) and \
+        sel.expressions[0].unalias().name.lower() == PERSON_KEY
+
+
+def _distinct_people_only(sel: exp.Select) -> bool:
+    """Every aggregate in this SELECT (projection, HAVING, QUALIFY, ORDER BY) is
+    count(DISTINCT <alias>.patient_id), there is at least one, and there is no
+    window function: a count of people cannot see how often a row repeats."""
+    if any(True for _ in sel.find_all(exp.Window)):
+        return False
+    found = False
+    for agg in sel.find_all(exp.AggFunc):
+        if agg.find_ancestor(exp.Select) is not sel:
+            continue                                   # belongs to a nested query
+        if not isinstance(agg, exp.Count):
+            return False
+        arg = agg.this
+        if not isinstance(arg, exp.Distinct) or len(arg.expressions) != 1:
+            return False
+        col = arg.expressions[0]
+        if not (isinstance(col, exp.Column) and col.name.lower() == PERSON_KEY):
+            return False
+        found = True
+    return found
+
+
 def _row_multiplication(q: exp.Expression) -> Optional[str]:
     """Item 71 (2026-11-11, review of the first fix): one SELECT may not
     multiply or duplicate patient rows. A cross join with a constant row source
@@ -2020,6 +2070,19 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
                 parent[find(a)] = find(b)
             if len({find(n) for n in rows}) > 1:
                 return "patient tables joined without a patient_id = patient_id condition"
+            # Owner's decision 2026-11-16 (item 71, option 2): key-joined rows
+            # still multiply. Each person's rows from two one-to-many sources
+            # appear (count_a x count_b) times -- ten joins of gold_condition
+            # weight them by count^10 -- so sum(age) split exactly into groups
+            # defined by row count, under 11 (fourth review). Two or more
+            # one-to-many row sources may share a SELECT only when every
+            # aggregate in it is count(DISTINCT <alias>.patient_id), or when it
+            # is a DISTINCT set of patient keys: neither can see a multiplicity.
+            many = [n for n in rows if _one_to_many(next(
+                x for x in srcs if (x.alias_or_name or "").lower() == n), q)]
+            if len(many) > 1 and not (_distinct_people_only(sel) or _distinct_key_select(sel)):
+                return ("a second one-to-many patient table joined on patient_id multiplies each "
+                        "person's rows; over such a join only count(DISTINCT patient_id) is allowed")
     return None
 
 
