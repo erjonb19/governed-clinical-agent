@@ -750,9 +750,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
   each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
   that still covered 11 people. Patient tables join on `patient_id`, and two one-to-many patient
-  tables joined that way sit only under `count(DISTINCT patient_id)` ("patients with both A and B"),
-  since any other aggregate sees each person's rows multiplied by their row counts (owner's
-  decision 2026-11-16).
+  tables joined that way beside a third row source sit only under `count(DISTINCT patient_id)`
+  ("patients with both A and B"), since any other aggregate sees some rows multiplied twice
+  (owner's decision 2026-11-16). An aggregate that reads an outer query's columns is refused.
 - [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
   Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
   dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the

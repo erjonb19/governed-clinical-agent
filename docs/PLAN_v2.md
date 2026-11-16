@@ -726,7 +726,7 @@ decisions taken inside one piece of work.
 
 | Date | Decision |
 |---|---|
-| 2026-11-16 | **Item 71, key-joined multipliers: option 2.** Refuse a second key join to a one-to-many table unless the outer aggregate is `count(DISTINCT patient_id)`. Keeps "patients with both A and B" working and closes the exact-value leak. Merge after the FHIR comparison. |
+| 2026-11-16 | **Item 71, key-joined multipliers: option 2.** Refuse a second key join to a one-to-many table unless the outer aggregate is `count(DISTINCT patient_id)`. Keeps "patients with both A and B" working and closes the exact-value leak. Merge after the FHIR comparison. Built as: two or more one-to-many sources plus a third row source; a stricter first version (any two one-to-many sources) cost f4_avg_glucose_prediabetic 0/3 vs 3/3 in the comparison. |
 | 2026-11-16 | **#124 (LIMIT-15 prompt fix): close it if it cannot reach main's accuracy.** It could not (targeted re-check: f5_emer_rate_by_gender 1/5 vs 5/5); closed. |
 | 2026-11-14 | **Item 9 UI plan (`docs/UI_PLAN.md`) approved: D1a, D2a, D3a.** D1a, a keyless findings route, only on these conditions: hospital data only; only the fixed, reviewed findings queries (`findings.py`); no LLM calls; rate-limited; no key exposed to the browser. D2a: a GitHub Pages wake-up page. D3a: three tabs (Answers, Ask, About), the rest behind Advanced. Build in the plan's order. |
 | 2026-11-14 | **#116 first.** "Finish #116 first under rule 0" (so its FHIR comparison must pass before it merges). |

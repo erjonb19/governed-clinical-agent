@@ -2128,7 +2128,15 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
             # is a DISTINCT set of patient keys: neither can see a multiplicity.
             many = [n for n in rows if _one_to_many(next(
                 x for x in srcs if (x.alias_or_name or "").lower() == n), q)]
-            if len(many) > 1 and not (_distinct_people_only(sel) or _distinct_key_select(sel)):
+            # One key join between two one-to-many tables multiplies each one's
+            # rows ONCE -- the single multiplier already accepted for
+            # gold_patient JOIN gold_condition. The exponent needs some source's
+            # rows multiplied twice: two one-to-many sources plus a third row
+            # source (p JOIN c1 JOIN c2, o JOIN c JOIN e). FHIR comparison of the
+            # stricter first version: f4_avg_glucose_prediabetic's o JOIN c with
+            # AVG went from 3/3 to 0/3 (2026-11-16).
+            if len(many) > 1 and len(rows) > 2 and \
+                    not (_distinct_people_only(sel) or _distinct_key_select(sel)):
                 return ("a second one-to-many patient table joined on patient_id multiplies each "
                         "person's rows; over such a join only count(DISTINCT patient_id) is allowed")
     return None

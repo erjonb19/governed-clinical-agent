@@ -402,14 +402,6 @@ def test_an_escape_route_is_blocked(name):
         assert "PHI" in d.reason
 
 
-# Owner's decision 2026-11-16 (item 71, option 2): two one-to-many patient row
-# sources joined on patient_id may sit under count(DISTINCT patient_id) only.
-# These shapes were allowed before; each joins two one-to-many sources under
-# another aggregate (count(*) of encounter PAIRS is n^2 per person, the same
-# multiplier with exponent 2), so they are refused now and pinned at the end of
-# this file. The people-count form of each question still runs.
-REFUSED_BY_OPTION_2 = {}
-REFUSED_BY_OPTION_2['per-patient join of two tables on the key'] = ALLOWED.pop('per-patient join of two tables on the key')
 
 
 @pytest.mark.parametrize("name", sorted(ALLOWED))
@@ -776,8 +768,6 @@ EIGHTH_REVIEW_ALLOWED = {
 }
 
 
-REFUSED_BY_OPTION_2['date + 30 (days)'] = EIGHTH_REVIEW_ALLOWED.pop('date + 30 (days)')
-REFUSED_BY_OPTION_2['date + to_days(30)'] = EIGHTH_REVIEW_ALLOWED.pop('date + to_days(30)')
 
 
 @pytest.mark.parametrize("name", list(EIGHTH_REVIEW_ALLOWED))
@@ -864,7 +854,6 @@ NINTH_REVIEW_ALLOWED = {
 }
 
 
-REFUSED_BY_OPTION_2['readmission measured start to start'] = NINTH_REVIEW_ALLOWED.pop('readmission measured start to start')
 
 
 @pytest.mark.parametrize("name", list(NINTH_REVIEW_ALLOWED))
@@ -999,7 +988,6 @@ ELEVENTH_REVIEW_ALLOWED = {
 }
 
 
-REFUSED_BY_OPTION_2['readmission rate with FILTER (WHERE b.key IS NOT NULL)'] = ELEVENTH_REVIEW_ALLOWED.pop('readmission rate with FILTER (WHERE b.key IS NOT NULL)')
 
 
 @pytest.mark.parametrize("name", list(ELEVENTH_REVIEW_ALLOWED))
@@ -2248,11 +2236,16 @@ KEYED_MULTIPLIER_LEAKS = {
         "SELECT sum(p.age_years) AS s FROM gold_patient p "
         "JOIN gold_condition c ON p.patient_id = c.patient_id "
         "JOIN gold_encounter e ON p.patient_id = e.patient_id"),
-    "a row count over two one-to-many tables": (
-        "SELECT count(*) AS n FROM gold_condition c JOIN gold_encounter e ON c.patient_id = e.patient_id"),
-    "a count(DISTINCT) of something other than the person": (
-        "SELECT count(DISTINCT c1.condition_name) AS n FROM gold_condition c1 "
-        "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id"),
+    "a row count over three one-to-many tables": (
+        "SELECT count(*) AS n FROM gold_condition c JOIN gold_encounter e ON c.patient_id = e.patient_id "
+        "JOIN gold_observation o ON c.patient_id = o.patient_id"),
+    "the patient table joined last": (
+        "SELECT sum(p.age_years) AS s FROM gold_condition c1 JOIN gold_condition c2 "
+        "ON c1.patient_id = c2.patient_id JOIN gold_patient p ON p.patient_id = c1.patient_id"),
+    "a count(DISTINCT) of something other than the person, three sources": (
+        "SELECT count(DISTINCT p.age_years) AS n FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
     "people counted, but a sum in HAVING": (
         "SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
         "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
@@ -2307,16 +2300,14 @@ def test_two_one_to_many_tables_cannot_weight_people_by_their_row_counts(tool, n
     "JOIN gold_encounter e ON p.patient_id = e.patient_id GROUP BY p.gender",
     # one one-to-many table beside gold_patient is unchanged by this rule
     "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON p.patient_id = c.patient_id",
+    # one key join between two one-to-many tables: each is multiplied once (the
+    # model's f4_avg_glucose_prediabetic shape, 3/3 on main)
+    "SELECT round(avg(o.value_num), 2) AS v FROM gold_observation o JOIN gold_condition c "
+    "ON o.patient_id = c.patient_id WHERE c.condition_name = 'Prediabetes' AND o.measure_name = 'Glucose'",
 ])
 def test_people_counts_over_several_one_to_many_tables_still_run(sql):
     d = validate_query(sql)
     assert d.allowed, d.reason
-
-
-@pytest.mark.parametrize("name", list(REFUSED_BY_OPTION_2))
-def test_shapes_refused_since_option_2(name):
-    d = validate_query(REFUSED_BY_OPTION_2[name])
-    assert not d.allowed and "one-to-many" in d.reason, (name, d.reason)
 
 
 @pytest.mark.parametrize("sql", [

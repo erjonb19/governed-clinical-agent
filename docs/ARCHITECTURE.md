@@ -79,9 +79,10 @@ Where it breaks, in the order you would hit it:
   joins, duplicating unions) and seeded sampling were closed by
   [#116](https://github.com/erjonb19/governed-clinical-agent/pull/116) on
   2026-11-14; key-joined multipliers (each person weighted by their row count to
-  the power of the number of joins) by the owner's option 2 on 2026-11-16: two
-  one-to-many patient tables share a query only under `count(DISTINCT
-  patient_id)` (backlog item 71). The planned
+  the power of the number of joins) by the owner's option 2 on 2026-11-16: a
+  second key join to a one-to-many table is allowed only under `count(DISTINCT
+  patient_id)` (backlog item 71). One key join between two one-to-many tables
+  remains, the same single multiplier as `gold_patient JOIN gold_condition`. The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 
