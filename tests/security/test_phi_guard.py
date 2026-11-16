@@ -2328,3 +2328,34 @@ def test_shapes_refused_since_option_2(name):
 def test_the_people_count_form_still_runs(sql):
     d = validate_query(sql)
     assert d.allowed, d.reason
+
+
+# Review of option 2 (2026-11-16): an aggregate in a scalar subquery that reads
+# the outer query's columns is computed over the OUTER rows, out of every check's
+# sight. (c) was live on main with no join at all.
+OUTER_AGGREGATE_LEAKS = {
+    "(a) a count of multiplied rows beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, (SELECT count(p.patient_id)) AS r "
+        f"FROM gold_patient p {_TEN}"),
+    "(b) a sum tested in HAVING": (
+        f"SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p {_TEN} "
+        f"HAVING (SELECT sum(p.age_years)) >= 170523"),
+    "(c) a small cell confirmed in HAVING, no join": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT count(p.patient_id) FILTER (WHERE p.gender = 'male')) = 3"),
+    "a string_agg of an outer column": (
+        "SELECT count(DISTINCT p.patient_id) AS n, (SELECT string_agg(p.gender, ',')) AS g "
+        "FROM gold_patient p"),
+}
+
+
+@pytest.mark.parametrize("name", list(OUTER_AGGREGATE_LEAKS))
+def test_an_aggregate_cannot_read_the_outer_query_rows(tool, name):
+    r = tool.execute({"sql": OUTER_AGGREGATE_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+def test_an_aggregate_over_its_own_from_inside_a_subquery_still_runs():
+    d = validate_query("SELECT count(*) AS n FROM gold_patient p WHERE p.age_years > "
+                       "(SELECT avg(LEAST(q.age_years, 90)) FROM gold_patient q)")
+    assert d.allowed, d.reason

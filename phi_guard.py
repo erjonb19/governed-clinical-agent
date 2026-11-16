@@ -1945,6 +1945,32 @@ def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
     return sorted({g.name.lower() for g in group.expressions})
 
 
+def _outer_aggregate(q: exp.Expression) -> Optional[str]:
+    """The name of an aggregate that reads a column of an enclosing query, or None.
+
+    Review of item 71 option 2 (2026-11-16): `(SELECT count(p.patient_id))` in
+    a projection or HAVING is computed by DuckDB over the OUTER query's rows,
+    but every PHI check treats it as belonging to the inner SELECT and skips it.
+    `HAVING (SELECT count(p.patient_id) FILTER (WHERE p.gender = 'male')) = 3`
+    confirmed a 3-person cell on main, and over ten key joins it gave back the
+    exact summed age of 4 people. An aggregate may use only its own SELECT's
+    sources (columns are qualified by now). Fail closed."""
+    for node in q.find_all(exp.Func):
+        if not (isinstance(node, exp.AggFunc) or is_agg(node)):
+            continue
+        sel = node.find_ancestor(exp.Select)
+        if sel is None:
+            continue
+        own = {(x.alias_or_name or "").lower() for x in _sources(sel)}
+        for col in node.find_all(exp.Column):
+            if col.find_ancestor(exp.Select) is not sel:
+                continue                                   # a query nested in the argument
+            t = (col.table or "").lower()
+            if (t and t not in own) or (not t and not own):
+                return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+    return None
+
+
 _ONE_PER_PERSON = {"gold_patient"}
 
 
@@ -2158,6 +2184,16 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:                                 # fail closed (fifth review)
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
+    try:
+        outer = _outer_aggregate(q)
+    except Exception as e:                                 # fail closed
+        return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
+                                  f"{type(e).__name__}", protected=True)
+    if outer:
+        return PhiDecision(False, f"PHI rule: the aggregate {outer}() uses columns of an outer "
+                                  f"query, so it is computed over that query's rows where no check "
+                                  f"sees it; write each aggregate over its own FROM",
+                           findings=[f"outer aggregate {outer}"], protected=True)
     if multiplied:
         return PhiDecision(False, f"PHI rule: {multiplied}. Rows of patient data may not be "
                                   f"multiplied or duplicated inside a query (fail closed); join "
