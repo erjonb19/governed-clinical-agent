@@ -4,7 +4,7 @@ A governed natural-language analytics agent for healthcare data. You ask a quest
 
 It runs today over two real datasets — CMS hospital quality measures and a 367,000-resource FHIR clinical lakehouse — behind an authenticated HTTP API, with the full authorization decision returned in every response, and a 63-case ground-truth evaluation suite running in CI.
 
-**Live:** https://governed-clinical-agent.onrender.com/docs
+**Live:** https://governed-clinical-agent.onrender.com/ui
 
 ## Why this matters
 
@@ -601,7 +601,7 @@ $env:PLANNER_PROVIDER="gemini"  # what CI and both eval suites run on
 $env:GEMINI_API_KEY="..."       # the planner's model (free key at aistudio.google.com)
 $env:API_KEY="..."              # require a key on the data endpoints
 
-uvicorn app:app --port 8000     # http://localhost:8000/docs
+API_DOCS=1 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
 
 Or in a container (backlog item 17; `Dockerfile`, slim base, pinned requirements, a non-root user, a `HEALTHCHECK` on `/health`):
@@ -621,7 +621,7 @@ The image measured **109 MiB idle and 118 MiB after 30 guarded queries** (`docke
 
 Then open **http://localhost:8000/ui** — a self-contained web UI to ask questions
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
-The API's Swagger docs remain at `/docs`.
+The API's Swagger docs are at `/docs` when `API_DOCS=1` is set (off on the deploy, audit item 53).
 
 The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
 **About** (backlog item 9). Answers offers four questions as buttons; one click shows
@@ -802,6 +802,15 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Deny-by-default auth** (audit item 54): every route needs the API key unless it is on
   one public list (`/`, `/ui`, `/ui-config`, `/health`, `/public/findings`, `/datasets`);
   `/metrics` and `/schema` now need it.
+- [x] **API docs off in production** (audit item 53): `/docs`, `/redoc` and `/openapi.json`
+  are served only with `API_DOCS=1`.
+- [x] **The standalone MCP server keeps an audit log** (audit item 52): every tool call and
+  refused key over stdio or HTTP goes to `logs/audit_mcp_*.jsonl`, without result rows.
+- [x] **Every audit event says who asked and from where** (audit item 38): a request id
+  (also returned as `X-Request-ID`), the key it came with as a short fingerprint (never the
+  key) and the caller's address. On Render the address is the proxy's until
+  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` or any
+  public network is refused at startup.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

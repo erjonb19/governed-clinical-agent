@@ -62,7 +62,7 @@ def test_health_reports_version_and_commit(client):
     body = c.get("/health").json()
     assert body["version"] == app_module.APP_VERSION and body["api_version"] == "v1"
     assert body["git_commit"]
-    assert c.get("/openapi.json").json()["info"]["version"] == app_module.APP_VERSION
+    assert app_module.app.openapi()["info"]["version"] == app_module.APP_VERSION
 
 
 def test_v1_and_the_old_path_give_the_same_answer(client):

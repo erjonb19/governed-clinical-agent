@@ -18,7 +18,7 @@ Endpoints:
 Run locally:
     pip install fastapi "uvicorn[standard]"
     uvicorn app:app --reload --port 8000
-Then open http://localhost:8000/docs for the interactive API.
+Then, with API_DOCS=1 set, open http://localhost:8000/docs for the interactive API.
 """
 
 from __future__ import annotations
@@ -67,6 +67,7 @@ import llm_budget
 import schema_check
 import tracing
 import versioning
+from src.runtime import request_context
 from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
@@ -156,12 +157,14 @@ if QUERY_MODE not in {"graph", "single"}:
     raise SystemExit(f"QUERY_MODE must be graph or single, not {QUERY_MODE!r}")
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
 # The keyless findings route (backlog item 9, D1a): per client address, never per key.
-# On Render every caller shares the proxy's address until item 38, so this is in
-# effect one limit for all visitors; the answer is cached, so it can be generous.
+# On Render every caller shares the proxy's address until FORWARDED_ALLOW_IPS is
+# set (item 38, OWNER_STEPS step 9), so until then this is in effect one limit for
+# all visitors; the answer is cached, so it can be generous.
 RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
+request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -409,11 +412,18 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
     APP_VERSION = _vf.read().strip()
 API_VERSION = "v1"
 
+# Interactive docs and the OpenAPI schema are off unless API_DOCS=1 (backlog
+# item 53): in production they map every route for anyone, key or not.
+API_DOCS = os.environ.get("API_DOCS", "").strip().lower() in {"1", "true", "yes"}
+
 app = FastAPI(
     title="Security-Constrained Agent Runtime",
     description="Governed natural-language analytics over CMS Medicare data.",
     version=APP_VERSION,
     lifespan=lifespan,
+    docs_url="/docs" if API_DOCS else None,
+    redoc_url="/redoc" if API_DOCS else None,
+    openapi_url="/openapi.json" if API_DOCS else None,
     dependencies=[Depends(require_key_unless_public)],
 )
 
@@ -570,8 +580,8 @@ class _SecurityHeaders:
     Security Policy: scripts only from this origin plus the page's one inline
     script, by its SHA-256 (computed from the file served, so they cannot
     drift); no inline event handlers; no frames, objects or base-URI changes.
-    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
-    behind a flag is its own item (53)."""
+    /docs (Swagger UI from a CDN; served only with API_DOCS=1, item 53) gets
+    the headers but no CSP."""
 
     COMMON = [
         (b"x-content-type-options", b"nosniff"),
@@ -623,7 +633,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
-app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
+app.add_middleware(_SecurityHeaders)     # every response, /v1 or not, 413s included
+# Outermost (backlog item 38): request id, principal and client address for every
+# audit event written while the request is served, /mcp and refused requests too.
+app.add_middleware(
+    request_context.RequestContext,
+    keys=lambda: {"api": API_KEY or "", "mcp": os.environ.get("MCP_API_KEY", "")},
+)
 
 
 class _MCPEndpoint:
@@ -1364,7 +1380,7 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
 def root() -> dict:
     return {
         "service": "Security-Constrained Agent Runtime",
-        "docs": "/docs",
+        **({"docs": "/docs"} if API_DOCS else {}),
         "endpoints": ["/health", "/schema", "/query", "/raw-sql", "/metrics",
                       "/propose", "/approvals", "/approvals/{id}"],
     }
