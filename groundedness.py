@@ -18,6 +18,8 @@ prose is a data point or a hallucination. Each claim names its own evidence.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -109,6 +111,24 @@ def _row_supports(claim: Claim, row: Dict[str, Any]) -> bool:
     if not _num_match(claim.value, float(cell)):
         return False
     return _dims_match(claim.dims, row)
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:,\d{3})*(?:\.\d+)?")
+
+
+def numbers_in(text: Optional[str]) -> List[float]:
+    """Every number written in free text (thousands separators allowed)."""
+    return [float(m.group(0).replace(",", "")) for m in _NUMBER.finditer(text or "")]
+
+
+def ungrounded_numbers(edited: str, sources: List[Optional[str]]) -> List[float]:
+    """Audit item 32: numbers in a reviewer's edited text that appear in none of
+    the sources (the evidence rows, the original proposal, the question). An
+    edit may reword a brief; it may not introduce a figure nobody retrieved.
+    Limits: it checks numbers, not which metric each is attached to, and it does
+    not read numbers written as words ("thirty-one percent")."""
+    known = [n for s in sources for n in numbers_in(s)]
+    return [n for n in numbers_in(edited) if not any(_num_match(n, k) for k in known)]
 
 
 def check_claims(claims: List[Claim], ledger: QueryLedger) -> GroundednessResult:

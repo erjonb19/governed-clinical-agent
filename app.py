@@ -688,6 +688,8 @@ class ProposeRequest(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals have the worst heart failure readmission rates?"])
     capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
+    proposed_by: Optional[str] = Field(None, max_length=MAX_NAME_CHARS, examples=["a.analyst"],
+                                       description="who proposes it; they cannot also decide it")
 
 
 class DecisionRequest(BaseModel):
@@ -1279,7 +1281,7 @@ def propose(request: Request, req: ProposeRequest) -> dict:
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
     with _run_slot(), _model_budget(getattr(agent, "planner", None) or _STATE.get("planner")), \
             _APPROVAL_LOCK:
-        return agent.start(req.question)   # its cost is not reported: it keeps the worst case
+        return agent.start(req.question, proposed_by=req.proposed_by)   # its cost is not reported: it keeps the worst case
 
 
 @app.get("/approvals", dependencies=[Depends(require_api_key)])
