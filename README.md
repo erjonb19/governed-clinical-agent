@@ -796,6 +796,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
   proposal, escalated items only by their new owner, edits cannot add figures; names are
   marked self-asserted until per-user keys (item 22).
+- [x] **Deny-by-default auth** (audit item 54): every route needs the API key unless it is on
+  one public list (`/`, `/ui`, `/ui-config`, `/health`, `/public/findings`, `/datasets`);
+  `/metrics` and `/schema` now need it.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

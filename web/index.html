@@ -816,7 +816,7 @@ async function loadData(){
         </tbody></table></div>
         <details class="audit" style="border-top:none;margin-top:12px"><summary>Full data dictionary</summary><pre id="schemaBox" style="margin:10px 0 0">…</pre></details>
       </div>`;
-    const sc=await (await fetch("/schema"+(DATASET?"?dataset="+encodeURIComponent(DATASET):""))).json();
+    const sc=await (await fetch("/schema"+(DATASET?"?dataset="+encodeURIComponent(DATASET):""),{headers:authHdrs()})).json();
     if($("schemaBox")) $("schemaBox").textContent=sc.schema||"(unavailable)";
   }catch(e){ $("dataBody").innerHTML=`<div class="card pad">Could not load: ${esc(e.message||e)}</div>`; }
 }
@@ -824,7 +824,7 @@ async function loadData(){
 /* ---------- usage view ---------- */
 async function loadUsage(){
   try{
-    const m=await (await fetch("/metrics")).json();
+    const m=await (await fetch("/metrics",{headers:authHdrs()})).json();
     const g=k=>m[k]??(m.totals&&m.totals[k]);
     const cards=[["requests",g("calls")??g("n")??g("count")],["tokens used",g("total_tokens")],
                  ["estimated cost",g("est_cost_usd")??g("total_cost_usd")],["avg response",g("avg_latency_ms")??g("mean_latency_ms")]]

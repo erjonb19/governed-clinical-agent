@@ -425,9 +425,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-294; the / route advertises /docs
   - Done when: docs_url/redoc_url/openapi_url=None unless an env flag is set, or behind the key.; a test or check shows it.
-- [ ] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:595, :849
   - Done when: Require auth on the router and list public routes explicitly (/health, /ui, /ui-config).; a test or check shows it.
+  - Done 2026-11-16: an app-level dependency (`require_key_unless_public`) asks for the key on every route except `PUBLIC_ROUTES` in `app.py`: `/`, `/ui`, `/ui-config`, `/health`, `/public/findings` and `/datasets` (open by item 36's decision: table names and row counts, cached and rate-limited). A new route is private unless added there; a request with no matched route also needs the key. `/metrics` and `/schema` now need it, and the UI's Usage and Data views send it. The per-route checks stay as a second layer. `tests/integration/test_public_findings.py` pins the list against the app's own and checks every other route answers 401.
 - [ ] **55. Request models accept unknown fields; most routes have no response_model** (Low; security audit finding 26, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423
   - Done when: model_config = ConfigDict(extra="forbid"); response models.; a test or check shows it.
