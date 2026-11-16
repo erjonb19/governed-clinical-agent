@@ -2343,6 +2343,18 @@ OUTER_AGGREGATE_LEAKS = {
     "(c) a small cell confirmed in HAVING, no join": (
         "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
         "HAVING (SELECT count(p.patient_id) FILTER (WHERE p.gender = 'male')) = 3"),
+    # third review: the outer column sits in a wrapper above the aggregate
+    "(A) the outer column only in FILTER": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT count(*) FILTER (WHERE p.gender = 'male')) = 3"),
+    "(B) the outer column only in WITHIN GROUP": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY p.age_years) "
+        "FILTER (WHERE p.gender = 'male')) = 53"),
+    # third review: a bare table alias counts the outer rows as structs
+    "(C) count(alias) over the outer rows": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, (SELECT count(p) FROM (SELECT 1 AS z) t) AS r "
+        f"FROM gold_patient p {_TEN}"),
     "a string_agg of an outer column": (
         "SELECT count(DISTINCT p.patient_id) AS n, (SELECT string_agg(p.gender, ',')) AS g "
         "FROM gold_patient p"),

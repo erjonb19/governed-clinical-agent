@@ -1955,18 +1955,34 @@ def _outer_aggregate(q: exp.Expression) -> Optional[str]:
     confirmed a 3-person cell on main, and over ten key joins it gave back the
     exact summed age of 4 people. An aggregate may use only its own SELECT's
     sources (columns are qualified by now). Fail closed."""
+    aliases = {(x.alias_or_name or "").lower() for s in q.find_all(exp.Select) for x in _sources(s)}
     for node in q.find_all(exp.Func):
         if not (isinstance(node, exp.AggFunc) or is_agg(node)):
             continue
         sel = node.find_ancestor(exp.Select)
         if sel is None:
             continue
+        # third review: FILTER (WHERE ...) and WITHIN GROUP (ORDER BY ...) are
+        # parsed as nodes ABOVE the aggregate, so their outer columns were never
+        # seen (`(SELECT count(*) FILTER (WHERE p.gender = 'male'))`). Scan the
+        # aggregate with every wrapper it carries.
+        top = node
+        while isinstance(top.parent, (exp.Filter, exp.WithinGroup,
+                                      exp.IgnoreNulls, exp.RespectNulls)):
+            top = top.parent
         own = {(x.alias_or_name or "").lower() for x in _sources(sel)}
-        for col in node.find_all(exp.Column):
+        for col in top.find_all(exp.Column):
             if col.find_ancestor(exp.Select) is not sel:
                 continue                                   # a query nested in the argument
             t = (col.table or "").lower()
-            if (t and t not in own) or (not t and not own):
+            if not t:
+                # every real column is qualified by now; a bare table alias is a
+                # whole row (`count(p)` counted the outer rows as structs, third
+                # review). Other unknown names are left to the no-such-column check.
+                if (col.name or "").lower() in aliases:
+                    return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+                continue
+            if t not in own:
                 return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
     return None
 
