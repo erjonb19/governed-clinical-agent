@@ -402,6 +402,8 @@ def test_an_escape_route_is_blocked(name):
         assert "PHI" in d.reason
 
 
+
+
 @pytest.mark.parametrize("name", sorted(ALLOWED))
 def test_a_legitimate_shape_still_passes(name):
     d = validate_query(ALLOWED[name])
@@ -766,6 +768,8 @@ EIGHTH_REVIEW_ALLOWED = {
 }
 
 
+
+
 @pytest.mark.parametrize("name", list(EIGHTH_REVIEW_ALLOWED))
 def test_eighth_review_legitimate_shapes_still_pass(name):
     d = validate_query(EIGHTH_REVIEW_ALLOWED[name])
@@ -848,6 +852,8 @@ NINTH_REVIEW_ALLOWED = {
         "SELECT count(*) AS n FROM gold_patient WHERE patient_id IN (SELECT patient_id "
         "FROM gold_encounter GROUP BY patient_id HAVING count(*) >= 5)"),
 }
+
+
 
 
 @pytest.mark.parametrize("name", list(NINTH_REVIEW_ALLOWED))
@@ -980,6 +986,8 @@ ELEVENTH_REVIEW_ALLOWED = {
         "SELECT avg(t.n) AS v FROM (SELECT p.patient_id, count(*) AS n FROM gold_patient p "
         "JOIN gold_condition c ON c.patient_id = p.patient_id GROUP BY p.patient_id) t"),
 }
+
+
 
 
 @pytest.mark.parametrize("name", list(ELEVENTH_REVIEW_ALLOWED))
@@ -2206,4 +2214,162 @@ def test_patient_rows_cannot_be_multiplied_by_a_join_or_a_union(tool, name):
 ])
 def test_keyed_joins_and_unions_of_counts_still_run(sql):
     d = validate_query(sql)
+    assert d.allowed, d.reason
+
+
+# Item 71, owner's decision 2026-11-16 (option 2): every join above is keyed,
+# yet two one-to-many patient tables joined on patient_id still repeat each
+# person's rows (count_a x count_b) times. Ten joins of gold_condition weighted
+# each person by count^10, and sum(age_years) split exactly into the summed ages
+# of the people with 1 row and with 2 rows (166 for 4 people on the fixture,
+# fourth review). Only count(DISTINCT patient_id), or a DISTINCT set of patient
+# keys, may sit over such a join.
+_TEN = " ".join(f"JOIN gold_condition c{i} ON p.patient_id = c{i}.patient_id" for i in range(1, 11))
+KEYED_MULTIPLIER_LEAKS = {
+    # fifth review: per-patient grouped wrappers chained, each joined to one
+    # more table, keep two sources per SELECT yet reach count^10 (170523 =
+    # 166*1024 + 539 decoded a 4-person group's summed age)
+    "chained per-patient wrappers (grouped_chain_2)": (
+        "SELECT sum(t.s) AS s FROM (SELECT x1.patient_id, sum(x1.s) AS s FROM (SELECT p.patient_id, sum(LEAST(p.age_years, 90)) AS s FROM gold_patient p JOIN gold_condition c0 ON p.patient_id = c0.patient_id GROUP BY p.patient_id) x1 JOIN gold_condition c1 ON x1.patient_id = c1.patient_id GROUP BY x1.patient_id) t"),
+    "chained per-patient wrappers (grouped_chain_10)": (
+        "SELECT sum(t.s) AS s FROM (SELECT x9.patient_id, sum(x9.s) AS s FROM (SELECT x8.patient_id, sum(x8.s) AS s FROM (SELECT x7.patient_id, sum(x7.s) AS s FROM (SELECT x6.patient_id, sum(x6.s) AS s FROM (SELECT x5.patient_id, sum(x5.s) AS s FROM (SELECT x4.patient_id, sum(x4.s) AS s FROM (SELECT x3.patient_id, sum(x3.s) AS s FROM (SELECT x2.patient_id, sum(x2.s) AS s FROM (SELECT x1.patient_id, sum(x1.s) AS s FROM (SELECT p.patient_id, sum(LEAST(p.age_years, 90)) AS s FROM gold_patient p JOIN gold_condition c0 ON p.patient_id = c0.patient_id GROUP BY p.patient_id) x1 JOIN gold_condition c1 ON x1.patient_id = c1.patient_id GROUP BY x1.patient_id) x2 JOIN gold_condition c2 ON x2.patient_id = c2.patient_id GROUP BY x2.patient_id) x3 JOIN gold_condition c3 ON x3.patient_id = c3.patient_id GROUP BY x3.patient_id) x4 JOIN gold_condition c4 ON x4.patient_id = c4.patient_id GROUP BY x4.patient_id) x5 JOIN gold_condition c5 ON x5.patient_id = c5.patient_id GROUP BY x5.patient_id) x6 JOIN gold_condition c6 ON x6.patient_id = c6.patient_id GROUP BY x6.patient_id) x7 JOIN gold_condition c7 ON x7.patient_id = c7.patient_id GROUP BY x7.patient_id) x8 JOIN gold_condition c8 ON x8.patient_id = c8.patient_id GROUP BY x8.patient_id) x9 JOIN gold_condition c9 ON x9.patient_id = c9.patient_id GROUP BY x9.patient_id) t"),
+    "chained per-patient wrappers (grouped_cte_chain_10)": (
+        "WITH g1 AS (SELECT p.patient_id, sum(LEAST(p.age_years, 90)) AS s FROM gold_patient p JOIN gold_condition c ON p.patient_id = c.patient_id GROUP BY p.patient_id), g2 AS (SELECT g1.patient_id, sum(g1.s) AS s FROM g1 JOIN gold_condition c ON g1.patient_id = c.patient_id GROUP BY g1.patient_id), g3 AS (SELECT g2.patient_id, sum(g2.s) AS s FROM g2 JOIN gold_condition c ON g2.patient_id = c.patient_id GROUP BY g2.patient_id), g4 AS (SELECT g3.patient_id, sum(g3.s) AS s FROM g3 JOIN gold_condition c ON g3.patient_id = c.patient_id GROUP BY g3.patient_id), g5 AS (SELECT g4.patient_id, sum(g4.s) AS s FROM g4 JOIN gold_condition c ON g4.patient_id = c.patient_id GROUP BY g4.patient_id), g6 AS (SELECT g5.patient_id, sum(g5.s) AS s FROM g5 JOIN gold_condition c ON g5.patient_id = c.patient_id GROUP BY g5.patient_id), g7 AS (SELECT g6.patient_id, sum(g6.s) AS s FROM g6 JOIN gold_condition c ON g6.patient_id = c.patient_id GROUP BY g6.patient_id), g8 AS (SELECT g7.patient_id, sum(g7.s) AS s FROM g7 JOIN gold_condition c ON g7.patient_id = c.patient_id GROUP BY g7.patient_id), g9 AS (SELECT g8.patient_id, sum(g8.s) AS s FROM g8 JOIN gold_condition c ON g8.patient_id = c.patient_id GROUP BY g8.patient_id), g10 AS (SELECT g9.patient_id, sum(g9.s) AS s FROM g9 JOIN gold_condition c ON g9.patient_id = c.patient_id GROUP BY g9.patient_id) SELECT sum(g10.s) AS s FROM g10"),
+    "chained per-patient wrappers (count_chain_10)": (
+        "WITH g1 AS (SELECT c.patient_id, count(*) AS m FROM gold_condition c GROUP BY c.patient_id), g2 AS (SELECT g1.patient_id, sum(g1.m) AS m FROM g1 JOIN gold_condition c ON g1.patient_id = c.patient_id GROUP BY g1.patient_id), g3 AS (SELECT g2.patient_id, sum(g2.m) AS m FROM g2 JOIN gold_condition c ON g2.patient_id = c.patient_id GROUP BY g2.patient_id), g4 AS (SELECT g3.patient_id, sum(g3.m) AS m FROM g3 JOIN gold_condition c ON g3.patient_id = c.patient_id GROUP BY g3.patient_id), g5 AS (SELECT g4.patient_id, sum(g4.m) AS m FROM g4 JOIN gold_condition c ON g4.patient_id = c.patient_id GROUP BY g4.patient_id), g6 AS (SELECT g5.patient_id, sum(g5.m) AS m FROM g5 JOIN gold_condition c ON g5.patient_id = c.patient_id GROUP BY g5.patient_id), g7 AS (SELECT g6.patient_id, sum(g6.m) AS m FROM g6 JOIN gold_condition c ON g6.patient_id = c.patient_id GROUP BY g6.patient_id), g8 AS (SELECT g7.patient_id, sum(g7.m) AS m FROM g7 JOIN gold_condition c ON g7.patient_id = c.patient_id GROUP BY g7.patient_id), g9 AS (SELECT g8.patient_id, sum(g8.m) AS m FROM g8 JOIN gold_condition c ON g8.patient_id = c.patient_id GROUP BY g8.patient_id), g10 AS (SELECT g9.patient_id, sum(g9.m) AS m FROM g9 JOIN gold_condition c ON g9.patient_id = c.patient_id GROUP BY g9.patient_id) SELECT sum(g10.m) AS s FROM g10"),
+    "ten key joins of one table (the fourth review's leak)": (
+        f"SELECT sum(p.age_years) AS s FROM gold_patient p {_TEN}"),
+    "two key joins of one table": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
+    "two different one-to-many tables": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p "
+        "JOIN gold_condition c ON p.patient_id = c.patient_id "
+        "JOIN gold_encounter e ON p.patient_id = e.patient_id"),
+    "a row count over three one-to-many tables": (
+        "SELECT count(*) AS n FROM gold_condition c JOIN gold_encounter e ON c.patient_id = e.patient_id "
+        "JOIN gold_observation o ON c.patient_id = o.patient_id"),
+    "the patient table joined last": (
+        "SELECT sum(p.age_years) AS s FROM gold_condition c1 JOIN gold_condition c2 "
+        "ON c1.patient_id = c2.patient_id JOIN gold_patient p ON p.patient_id = c1.patient_id"),
+    "a count(DISTINCT) of something other than the person, three sources": (
+        "SELECT count(DISTINCT p.age_years) AS n FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
+    "people counted, but a sum in HAVING": (
+        "SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id "
+        "GROUP BY p.gender HAVING sum(p.age_years) > 100"),
+    "the join hidden in a derived table": (
+        "SELECT sum(t.age_years) AS s FROM (SELECT p.age_years FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id) t"),
+    "the join hidden in a CTE": (
+        "WITH t AS (SELECT p.age_years FROM gold_patient p "
+        "JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id) SELECT sum(age_years) AS s FROM t"),
+    "the key in WHERE instead of ON": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p, gold_condition c1, gold_condition c2 "
+        "WHERE p.patient_id = c1.patient_id AND p.patient_id = c2.patient_id"),
+    # review of option 2: DISTINCT ON (x) is one row per x, not per person
+    "DISTINCT ON in a derived table": (
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c1 ON p.patient_id = c1.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c2 ON p.patient_id = c2.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c3 ON p.patient_id = c3.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c4 ON p.patient_id = c4.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c5 ON p.patient_id = c5.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c6 ON p.patient_id = c6.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c7 ON p.patient_id = c7.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c8 ON p.patient_id = c8.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c9 ON p.patient_id = c9.patient_id JOIN (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) c10 ON p.patient_id = c10.patient_id"),
+    "DISTINCT ON in a CTE": (
+        "WITH a AS (SELECT DISTINCT ON (condition_id) patient_id FROM gold_condition) "
+        "SELECT sum(p.age_years) AS s FROM gold_patient p JOIN a c1 ON p.patient_id = c1.patient_id "
+        "JOIN a c2 ON p.patient_id = c2.patient_id"),
+    # review of option 2: DuckDB aggregates sqlglot parses as anonymous functions
+    "fsum beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, fsum(p.age_years) AS s FROM gold_patient p {_TEN}"),
+    "kahan_sum beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, kahan_sum(p.age_years) AS s FROM gold_patient p {_TEN}"),
+    "a window function beside the people count": (
+        "SELECT count(DISTINCT p.patient_id) AS n, sum(count(DISTINCT p.patient_id)) OVER () AS w "
+        "FROM gold_patient p JOIN gold_condition c1 ON p.patient_id = c1.patient_id "
+        "JOIN gold_condition c2 ON p.patient_id = c2.patient_id"),
+}
+
+
+@pytest.mark.parametrize("name", list(KEYED_MULTIPLIER_LEAKS))
+def test_two_one_to_many_tables_cannot_weight_people_by_their_row_counts(tool, name):
+    r = tool.execute({"sql": KEYED_MULTIPLIER_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+@pytest.mark.parametrize("sql", [
+    # "patients with both A and B": the shape option 2 keeps (f4_htn_and_obesity's reference)
+    "SELECT count(DISTINCT c1.patient_id) AS n FROM gold_condition c1 "
+    "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id "
+    "WHERE c1.condition_name = 'Hypertension' AND c2.condition_name = 'Prediabetes'",
+    "SELECT count(DISTINCT c.patient_id) AS n FROM gold_condition c JOIN gold_observation o "
+    "ON c.patient_id = o.patient_id WHERE c.condition_name = 'Hypertension' "
+    "AND o.measure_name = 'Body Mass Index'",
+    "SELECT p.gender, count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+    "JOIN gold_condition c ON p.patient_id = c.patient_id "
+    "JOIN gold_encounter e ON p.patient_id = e.patient_id GROUP BY p.gender",
+    # one one-to-many table beside gold_patient is unchanged by this rule
+    "SELECT count(*) AS n FROM gold_patient p JOIN gold_condition c ON p.patient_id = c.patient_id",
+    # one key join between two one-to-many tables: each is multiplied once (the
+    # model's f4_avg_glucose_prediabetic shape, 3/3 on main)
+    "SELECT round(avg(o.value_num), 2) AS v FROM gold_observation o JOIN gold_condition c "
+    "ON o.patient_id = c.patient_id WHERE c.condition_name = 'Prediabetes' AND o.measure_name = 'Glucose'",
+])
+def test_people_counts_over_several_one_to_many_tables_still_run(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+
+
+@pytest.mark.parametrize("sql", [
+    # "how many patients were readmitted within 30 days": the people count still runs
+    "SELECT count(DISTINCT a.patient_id) AS n FROM gold_encounter a JOIN gold_encounter b "
+    "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+    "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30",
+])
+def test_the_people_count_form_still_runs(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+
+
+# Review of option 2 (2026-11-16): an aggregate in a scalar subquery that reads
+# the outer query's columns is computed over the OUTER rows, out of every check's
+# sight. (c) was live on main with no join at all.
+OUTER_AGGREGATE_LEAKS = {
+    "(a) a count of multiplied rows beside the people count": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, (SELECT count(p.patient_id)) AS r "
+        f"FROM gold_patient p {_TEN}"),
+    "(b) a sum tested in HAVING": (
+        f"SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p {_TEN} "
+        f"HAVING (SELECT sum(p.age_years)) >= 170523"),
+    "(c) a small cell confirmed in HAVING, no join": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT count(p.patient_id) FILTER (WHERE p.gender = 'male')) = 3"),
+    # third review: the outer column sits in a wrapper above the aggregate
+    "(A) the outer column only in FILTER": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT count(*) FILTER (WHERE p.gender = 'male')) = 3"),
+    "(B) the outer column only in WITHIN GROUP": (
+        "SELECT count(DISTINCT p.patient_id) AS n FROM gold_patient p "
+        "HAVING (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY p.age_years) "
+        "FILTER (WHERE p.gender = 'male')) = 53"),
+    # third review: a bare table alias counts the outer rows as structs
+    "(C) count(alias) over the outer rows": (
+        f"SELECT count(DISTINCT p.patient_id) AS n, (SELECT count(p) FROM (SELECT 1 AS z) t) AS r "
+        f"FROM gold_patient p {_TEN}"),
+    "a string_agg of an outer column": (
+        "SELECT count(DISTINCT p.patient_id) AS n, (SELECT string_agg(p.gender, ',')) AS g "
+        "FROM gold_patient p"),
+}
+
+
+@pytest.mark.parametrize("name", list(OUTER_AGGREGATE_LEAKS))
+def test_an_aggregate_cannot_read_the_outer_query_rows(tool, name):
+    r = tool.execute({"sql": OUTER_AGGREGATE_LEAKS[name]})
+    assert not r.success, (name, r.output)
+
+
+def test_an_aggregate_over_its_own_from_inside_a_subquery_still_runs():
+    d = validate_query("SELECT count(*) AS n FROM gold_patient p WHERE p.age_years > "
+                       "(SELECT avg(LEAST(q.age_years, 90)) FROM gold_patient q)")
     assert d.allowed, d.reason
