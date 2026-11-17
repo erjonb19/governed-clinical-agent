@@ -519,4 +519,23 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **Real users:** the owner will find three to five. Add a README section where their feedback is recorded.
   - Done when: the README has a "User feedback" section with one entry per user (date, role, what they tried, what they said).
 
+Saved ideas. *From the "Portfolio project upgrade stages" chat (Oct 25 to Nov 3, 2026), saved by the owner on 2026-11-17 before that chat was deleted. Ideas, not commitments: none is in the Order of work, and each needs the owner's OK before it starts.*
+
+- [ ] **Code runner and file tools for the agent** (Phase 2 of the owner's Oct 25 four-phase plan).
+  - Today: `src/runtime/sandbox.py` is the optional Docker sandbox from Milestone 1
+    (`AGENT_RUNTIME_USE_DOCKER_SANDBOX=1`). It is not exposed to the planner as a tool.
+  - Done when: the agent can run one sandboxed Python step over a query result and read one
+    allowlisted file, both through the policy engine and the audit log, with tests that a
+    denied call is refused and that no PHI leaves through either tool.
+- [ ] **MCP resources and prompts, plus a recorded client demo** (from the Oct 5 enterprise MCP plan).
+  - The schema and data dictionary as MCP resources, a few MCP prompts, and a short recording
+    in Claude Desktop that includes one blocked call. Role-scoped tools ride on item 22; OAuth
+    stays in the MCP item above.
+- [ ] **Shared governance gateway across projects** (proposed Oct 5 and Oct 14, never decided).
+  - One governed MCP gateway, with a shared eval harness, tracing and cost tracking, in front of
+    this agent, Reckoner and the RAG servers. Needs an owner decision before any work.
+- [ ] **RL fine-tuning of a small open model on the SQL evals** (Phase 4 of the four-phase plan).
+  - Waits on a local GPU machine. Done when: the tuned model is scored on both banks beside the
+    current provider, under the same gate.
+
 - [ ] **72. Strict mypy on the guard modules** (follow-up from item 15, 2026-11-16). `sql_guard.py` (8 errors) and `phi_guard.py` (62) under `mypy --strict` in `tests.yml`. Edits the guard files, so it needs its own FHIR comparison.
