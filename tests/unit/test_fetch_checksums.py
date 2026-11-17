@@ -94,8 +94,15 @@ def test_the_synthea_zip_is_verified_before_extraction(tmp_path, monkeypatch, ca
     z = tmp_path / "s.zip"
     z.write_bytes(b"not the real zip")
     digest = hashlib.sha256(b"not the real zip").hexdigest()
+    # the committed pin refuses any other zip
+    monkeypatch.delenv("SYNTHEA_SHA256", raising=False)
+    assert fetch_synthea.EXPECTED_SHA256 and len(fetch_synthea.EXPECTED_SHA256) == 64
+    with pytest.raises(SystemExit):
+        fetch_synthea.verify(str(z))
+    # with no pin at all it prints the hash to pin
+    monkeypatch.setattr(fetch_synthea, "EXPECTED_SHA256", None)
     assert fetch_synthea.verify(str(z)) == digest
-    assert digest in capsys.readouterr().out  # unpinned: prints the hash to pin
+    assert digest in capsys.readouterr().out
     monkeypatch.setenv("SYNTHEA_SHA256", "0" * 64)
     with pytest.raises(SystemExit):
         fetch_synthea.verify(str(z))

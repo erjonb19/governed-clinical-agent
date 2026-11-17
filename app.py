@@ -18,7 +18,7 @@ Endpoints:
 Run locally:
     pip install fastapi "uvicorn[standard]"
     uvicorn app:app --reload --port 8000
-Then open http://localhost:8000/docs for the interactive API.
+Then, with API_DOCS=1 set, open http://localhost:8000/docs for the interactive API.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import os
 import sys
 import hmac
 import json
+import logging
 import contextlib
 import threading
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -66,6 +67,7 @@ import llm_budget
 import schema_check
 import tracing
 import versioning
+from src.runtime import request_context
 from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
@@ -155,12 +157,14 @@ if QUERY_MODE not in {"graph", "single"}:
     raise SystemExit(f"QUERY_MODE must be graph or single, not {QUERY_MODE!r}")
 RATE_LIMIT_READ = os.environ.get("RATE_LIMIT_READ", "60/minute")     # cheap reads
 # The keyless findings route (backlog item 9, D1a): per client address, never per key.
-# On Render every caller shares the proxy's address until item 38, so this is in
-# effect one limit for all visitors; the answer is cached, so it can be generous.
+# On Render every caller shares the proxy's address until FORWARDED_ALLOW_IPS is
+# set (item 38, OWNER_STEPS step 9), so until then this is in effect one limit for
+# all visitors; the answer is cached, so it can be generous.
 RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
+request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -205,6 +209,23 @@ def require_api_key(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="invalid or missing API key (send header X-API-Key)",
     )
+
+# Deny by default (backlog item 54): every route needs the key unless it is on
+# this list. A new route is private until someone adds it here on purpose;
+# tests/integration/test_public_findings.py pins the list. /datasets stays open
+# (item 36: table names and row counts, cached and rate-limited); /metrics and
+# /schema now need the key.
+PUBLIC_ROUTES = frozenset({"/", "/ui", "/ui-config", "/health", "/public/findings", "/datasets"})
+
+
+def require_key_unless_public(
+    request: Request, provided: Optional[str] = Security(_api_key_header)
+) -> None:
+    route = request.scope.get("route")
+    if getattr(route, "path", None) in PUBLIC_ROUTES:
+        return
+    require_api_key(request, provided)     # unknown route or none: the key (fail closed)
+
 
 # Built once at startup, shared across requests. FastAPI runs sync endpoints in
 # a threadpool. Queries no longer share one lock (backlog item 20): the query
@@ -391,11 +412,19 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
     APP_VERSION = _vf.read().strip()
 API_VERSION = "v1"
 
+# Interactive docs and the OpenAPI schema are off unless API_DOCS=1 (backlog
+# item 53): in production they map every route for anyone, key or not.
+API_DOCS = os.environ.get("API_DOCS", "").strip().lower() in {"1", "true", "yes"}
+
 app = FastAPI(
     title="Security-Constrained Agent Runtime",
     description="Governed natural-language analytics over CMS Medicare data.",
     version=APP_VERSION,
     lifespan=lifespan,
+    docs_url="/docs" if API_DOCS else None,
+    redoc_url="/redoc" if API_DOCS else None,
+    openapi_url="/openapi.json" if API_DOCS else None,
+    dependencies=[Depends(require_key_unless_public)],
 )
 
 
@@ -551,8 +580,8 @@ class _SecurityHeaders:
     Security Policy: scripts only from this origin plus the page's one inline
     script, by its SHA-256 (computed from the file served, so they cannot
     drift); no inline event handlers; no frames, objects or base-URI changes.
-    /docs (Swagger UI from a CDN) gets the headers but no CSP: putting the docs
-    behind a flag is its own item (53)."""
+    /docs (Swagger UI from a CDN; served only with API_DOCS=1, item 53) gets
+    the headers but no CSP."""
 
     COMMON = [
         (b"x-content-type-options", b"nosniff"),
@@ -604,7 +633,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
-app.add_middleware(_SecurityHeaders)     # outermost: every response, /v1 or not, 413s included
+app.add_middleware(_SecurityHeaders)     # every response, /v1 or not, 413s included
+# Outermost (backlog item 38): request id, principal and client address for every
+# audit event written while the request is served, /mcp and refused requests too.
+app.add_middleware(
+    request_context.RequestContext,
+    keys=lambda: {"api": API_KEY or "", "mcp": os.environ.get("MCP_API_KEY", "")},
+)
 
 
 class _MCPEndpoint:
@@ -687,6 +722,8 @@ class ProposeRequest(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals have the worst heart failure readmission rates?"])
     capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
+    proposed_by: Optional[str] = Field(None, max_length=MAX_NAME_CHARS, examples=["a.analyst"],
+                                       description="who proposes it; they cannot also decide it")
 
 
 class DecisionRequest(BaseModel):
@@ -965,10 +1002,28 @@ def raw_sql(request: Request, req: SqlRequest) -> dict:
 @app.post("/query", response_model=GovernedResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_QUERY)
 def query(request: Request, req: QueryRequest) -> dict:
+    _screen_question(req.question, "/query")      # before any model call (audit item 41)
     with _run_slot(), _model_budget(_STATE.get("planner")) as settle:
         out = _query(req)
         settle(_reported_cost(out))
         return out
+
+
+def _screen_question(question: str, path: str) -> None:
+    """Audit item 41: refuse a question that carries a personal identifier before
+    it reaches a third-party model. Only the kinds found are recorded (a trace
+    event and a log line), never the question text."""
+    import question_screen
+    kinds = question_screen.identifiers_in(question)
+    if not kinds:
+        return
+    logging.getLogger("governed.privacy").warning("question refused before the model: path=%s kinds=%s",
+                                                  path, ",".join(kinds))
+    # its own trace, so it shows in Traces; it carries the kinds, never the question
+    tracer = tracing.get_tracer()
+    with tracer.trace("question_screen", path=path, refused=True, kinds=",".join(kinds)):
+        tracer.event("question_screen", path=path, refused=True, kinds=",".join(kinds))
+    raise HTTPException(status_code=422, detail=question_screen.refusal(kinds))
 
 
 def _query(req: QueryRequest) -> dict:
@@ -1253,13 +1308,14 @@ def get_trace(request: Request, trace_id: str) -> dict:
 @limiter.limit(RATE_LIMIT_QUERY)
 def propose(request: Request, req: ProposeRequest) -> dict:
     """Run the agent until it drafts a consequential action, then pause."""
+    _screen_question(req.question, "/propose")    # before any model call (audit item 41)
     agent = _STATE.get("approval_agent")
     if agent is None:
         raise HTTPException(status_code=503,
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
     with _run_slot(), _model_budget(getattr(agent, "planner", None) or _STATE.get("planner")), \
             _APPROVAL_LOCK:
-        return agent.start(req.question)   # its cost is not reported: it keeps the worst case
+        return agent.start(req.question, proposed_by=req.proposed_by)   # its cost is not reported: it keeps the worst case
 
 
 @app.get("/approvals", dependencies=[Depends(require_api_key)])
@@ -1324,7 +1380,7 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
 def root() -> dict:
     return {
         "service": "Security-Constrained Agent Runtime",
-        "docs": "/docs",
+        **({"docs": "/docs"} if API_DOCS else {}),
         "endpoints": ["/health", "/schema", "/query", "/raw-sql", "/metrics",
                       "/propose", "/approvals", "/approvals/{id}"],
     }

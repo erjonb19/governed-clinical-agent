@@ -62,7 +62,7 @@ def test_health_reports_version_and_commit(client):
     body = c.get("/health").json()
     assert body["version"] == app_module.APP_VERSION and body["api_version"] == "v1"
     assert body["git_commit"]
-    assert c.get("/openapi.json").json()["info"]["version"] == app_module.APP_VERSION
+    assert app_module.app.openapi()["info"]["version"] == app_module.APP_VERSION
 
 
 def test_v1_and_the_old_path_give_the_same_answer(client):
@@ -117,5 +117,5 @@ def test_the_prefix_is_stripped_from_the_raw_bytes_too():
 def test_metrics_shows_the_answer_cache_hit_rate(client):
     # backlog item 6
     c, _ = client
-    stats = c.get("/v1/metrics").json()["llm_cache"]
+    stats = c.get("/v1/metrics", headers=H).json()["llm_cache"]
     assert {"enabled", "hits", "misses", "hit_rate", "entries", "ttl_sec"} <= set(stats)

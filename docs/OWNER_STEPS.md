@@ -153,3 +153,74 @@ gh api repos/erjonb19/governed-clinical-agent/pages --jq .html_url
 Open that address in a browser: it should say "Waking the service up" and then
 open the service. Tell the agent "step 6 done", and it will point the README's
 links at the page.
+
+---
+
+## [x] 7. Get the Synthea zip's SHA-256 (backlog item 51)
+
+**Not needed (2026-11-16):** CI had already printed it (run 43020252795); it is pinned in
+`fetch_synthea.py`.
+
+---
+
+## [ ] 8. Check `docker compose up` with Phoenix (backlog item 17, optional)
+
+**Why:** item 17 is done when `docker compose up` gives a working API with its
+traces in Phoenix. The agent's sandbox has no Docker daemon, so it cannot check
+this. Needs Docker Desktop. Skip it if you don't have Docker; the item then stays
+open with everything else in it done.
+
+```powershell
+gh repo clone erjonb19/governed-clinical-agent; cd governed-clinical-agent
+$env:API_KEY = "local-test-key"
+docker compose up -d
+Start-Sleep 30
+Invoke-RestMethod http://localhost:8000/v1/health
+Invoke-RestMethod -Method Post http://localhost:8000/raw-sql -Headers @{"X-API-Key"="local-test-key"} -ContentType "application/json" -Body '{"sql":"SELECT count(*) AS n FROM gold_hospital_profile"}'
+```
+
+Then open http://localhost:6006 (Phoenix): the `/raw-sql` run should be there with
+its steps. Tell the agent "step 8 done". Stop it with `docker compose down`.
+
+
+---
+
+## [ ] 9. Trust Render's proxy for client addresses (backlog item 38)
+
+**Why:** every audit event now records the caller's address (`source_ip`), and the
+keyless `/public/findings` limit and the failed-key counter are kept per address.
+Behind Render's proxy the app sees the proxy's address for every caller until
+uvicorn is told to trust the proxy's `X-Forwarded-For` header. That is an
+environment variable in the Render dashboard (a Render change, so it is yours).
+Trust only the proxy's own addresses: `*` would let any caller choose its own
+address and skip the per-address limits, so the app refuses to start with `*` or
+any public network.
+
+1. Render dashboard -> `governed-clinical-agent` -> **Logs**.
+2. Open the UI once (https://governed-clinical-agent.onrender.com/ui) so a few
+   requests are logged. Each uvicorn access line starts with the client address,
+   e.g. `10.201.33.4:45678 - "GET /ui HTTP/1.1" 200`. With nothing trusted yet, that
+   is Render's proxy. Note the first part of several of them.
+3. If they are all private addresses (`10.x.x.x`), go to **Environment** -> Add
+   Environment Variable: key `FORWARDED_ALLOW_IPS`, value `10.0.0.0/8`. (Only
+   Render's own network can reach the app from a private address.) If they are not
+   `10.x`, do not guess: tell the agent what you saw.
+4. Save; Render redeploys.
+
+Check: after the redeploy, the access lines in **Logs** should show your own public
+address instead of the `10.x` one. From PowerShell, your public address is:
+
+```powershell
+Invoke-RestMethod https://api.ipify.org
+```
+
+Also check a forged header is ignored (the logged address must still be yours,
+not `1.2.3.4`):
+
+```powershell
+Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health -Headers @{"X-Forwarded-For"="1.2.3.4"}
+```
+
+Then tell the agent "step 9 done". After this, the failed-key lockout
+(`AUTH_FAILURE_LOCKOUT=1`, backlog item 35) can be turned on safely; that is a
+separate decision.
