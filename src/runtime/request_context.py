@@ -26,8 +26,9 @@ the chain is client -> Cloudflare -> Render (10.x) -> 127.0.0.1 -> app, so the
 first untrusted hop uvicorn finds is a Cloudflare edge, not the client. When that
 hop is in Cloudflare's published ranges (pinned in CLOUDFLARE_RANGES below,
 fetched 2026-11-18 from cloudflare.com/ips-v4 and /ips-v6), `resolve_client`
-takes EXACTLY ONE more step left in X-Forwarded-For: the entry Cloudflare itself
-appended for the connecting client. Anything a client forges sits further left
+uses `CF-Connecting-IP` (Cloudflare overwrites it on every request through its
+edge), or failing that takes EXACTLY ONE more step left in X-Forwarded-For: the
+entry Cloudflare itself appended for the connecting client. Anything a client forges sits further left
 and is never read; a client whose own address is a Cloudflare one (Workers,
 WARP) is reported as that address, never as what it wrote. No proxy setting is
 needed for this. `CLOUDFLARE_CLIENT_IP=0` turns it off.
@@ -130,18 +131,46 @@ def is_cloudflare(addr: str) -> bool:
     return ip is not None and any(ip in n for n in CLOUDFLARE_RANGES)
 
 
-def resolve_client(uvicorn_host: str, forwarded_for: str, cloudflare: bool = True) -> str:
+def _host(value: str) -> str:
+    """The host of one X-Forwarded-For entry, parsed as uvicorn 0.54 parses it
+    (`ip:port`, `[v6]:port`): the match must land on the exact hop uvicorn
+    chose, not on a look-alike an attacker wrote further left (review, PR 150)."""
+    value = value.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        if end == -1:
+            return value
+        rest = value[end + 1 :]
+        return value[1:end] if (not rest or rest.startswith(":")) else value
+    if value.count(":") == 1:
+        host, port = value.rsplit(":", 1)
+        return host if port.isdigit() else value
+    return value
+
+
+def resolve_client(
+    uvicorn_host: str, forwarded_for: str, cloudflare: bool = True, cf_connecting_ip: str = ""
+) -> str:
     """The caller's address. `uvicorn_host` is the first hop uvicorn did not
     trust; `forwarded_for` the raw X-Forwarded-For. Only when that hop is a
-    Cloudflare edge, the entry just left of its rightmost occurrence (the one
-    Cloudflare appended) is taken -- one step, never more."""
+    Cloudflare edge:
+      1. `CF-Connecting-IP`, which Cloudflare sets on every request through its
+         edge, overwriting any a client sent (a Worker cannot set it either);
+      2. failing that, the X-Forwarded-For entry just left of the hop uvicorn
+         chose (the one Cloudflare appended) -- one step, never more.
+    Anything else keeps uvicorn's answer."""
     if not cloudflare or not is_cloudflare(uvicorn_host):
         return uvicorn_host
+    cf = _ip(cf_connecting_ip) if cf_connecting_ip else None
+    if cf is not None:
+        return str(cf)
     hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+    # entries right of uvicorn's hop are trusted proxies, so the rightmost entry
+    # whose HOST equals uvicorn's answer is exactly the hop it chose
     for i in range(len(hops) - 1, 0, -1):
-        if hops[i] == uvicorn_host:
-            left = hops[i - 1]
-            return left if _ip(left) is not None else uvicorn_host
+        if _host(hops[i]) == uvicorn_host:
+            left = _ip(_host(hops[i - 1]))
+            return str(left) if left is not None else uvicorn_host
     return uvicorn_host
 
 
@@ -219,6 +248,7 @@ class RequestContext:
                 client[0],
                 xff.decode("latin-1"),
                 os.environ.get("CLOUDFLARE_CLIENT_IP", "1").strip() != "0",
+                headers.get(b"cf-connecting-ip", b"").decode("latin-1"),
             )
         else:
             host = "unknown"

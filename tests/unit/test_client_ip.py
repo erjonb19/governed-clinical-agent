@@ -45,11 +45,34 @@ def test_garbage_or_a_missing_entry_keeps_the_edge():
     assert rc.resolve_client(EDGE, "") == EDGE
 
 
+def test_cf_connecting_ip_is_preferred_behind_cloudflare():
+    assert rc.resolve_client(EDGE, f"1.2.3.4, {EDGE}", cf_connecting_ip=OWNER) == OWNER
+    # a bogus value falls back to the one-step rule
+    assert rc.resolve_client(EDGE, f"{OWNER}, {EDGE}", cf_connecting_ip="evil") == OWNER
+
+
+def test_cf_connecting_ip_is_ignored_when_the_hop_is_not_cloudflare():
+    assert rc.resolve_client(OWNER, OWNER, cf_connecting_ip="1.2.3.4") == OWNER
+
+
+def test_an_edge_written_with_a_port_cannot_walk_into_forged_entries():
+    # review of PR 150: a bare look-alike further left must not be matched
+    xff = f"9.9.9.9, {EDGE}, {OWNER}, {EDGE}:443"
+    assert rc.resolve_client(EDGE, xff) == OWNER
+    v6 = "2606:4700::6812:1"
+    assert rc.resolve_client(v6, f"9.9.9.9, {v6}, {OWNER}, [{v6}]:443") == OWNER
+
+
+def test_an_ipv6_edge_and_client():
+    v6edge, v6client = "2606:4700::6812:1", "2001:db8::42"
+    assert rc.resolve_client(v6edge, f"{v6client}, {v6edge}") == v6client
+
+
 def test_it_can_be_turned_off():
     assert rc.resolve_client(EDGE, f"{OWNER}, {EDGE}", cloudflare=False) == EDGE
 
 
-def _through_the_stack(xff, peer="127.0.0.1", trusted="127.0.0.1,10.0.0.0/8"):
+def _through_the_stack(xff, peer="127.0.0.1", trusted="127.0.0.1,10.0.0.0/8", extra=()):
     """What the app sees behind uvicorn's real proxy-headers layer."""
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -66,7 +89,7 @@ def _through_the_stack(xff, peer="127.0.0.1", trusted="127.0.0.1,10.0.0.0/8"):
         "type": "http",
         "client": (peer, 1234),
         "scheme": "http",
-        "headers": [(b"x-forwarded-for", xff.encode())],
+        "headers": [(b"x-forwarded-for", x.strip().encode()) for x in xff.split("|")] + list(extra),
     }
 
     async def receive():
@@ -118,3 +141,20 @@ def test_the_pinned_ranges_match_cloudflare_s_published_list():
         with urllib.request.urlopen(url, timeout=20) as r:  # noqa: S310
             live |= {line.strip() for line in r.read().decode().splitlines() if line.strip()}
     assert live == {str(n) for n in rc.CLOUDFLARE_RANGES}
+
+
+def test_several_header_lines_and_cf_connecting_ip_through_the_stack(monkeypatch):
+    monkeypatch.setattr(rc, "TRUST_OK", True)
+    # two X-Forwarded-For lines, joined as one list by both uvicorn and the app
+    seen = _through_the_stack(f"1.2.3.4, {OWNER} | {EDGE}, 10.201.33.4")
+    assert seen["client"] == OWNER
+    seen = _through_the_stack(
+        f"1.2.3.4, {EDGE}, 10.201.33.4", extra=[(b"cf-connecting-ip", OWNER.encode())]
+    )
+    assert seen["client"] == OWNER
+
+
+def test_turned_off_through_the_stack(monkeypatch):
+    monkeypatch.setattr(rc, "TRUST_OK", True)
+    monkeypatch.setenv("CLOUDFLARE_CLIENT_IP", "0")
+    assert _through_the_stack(f"{OWNER}, {EDGE}, 10.201.33.4")["client"] == EDGE
