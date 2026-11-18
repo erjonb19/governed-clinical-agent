@@ -439,16 +439,20 @@ SCHEMA_DOC = _SCHEMAS.get(os.environ.get("PLANNER_SCHEMA", "hospital").lower(),
 
 # Item 67 (audit finding 38): every piece of untrusted text the model reads --
 # the question, a rejection reason fed back on a retry, the SQL the critic
-# reviews -- goes inside its own labelled tags, and a tag look-alike inside the
-# text is removed so it cannot close its own section early.
+# reviews -- goes inside its own labelled tags, and the "<" of anything inside
+# the text that starts like one of those tags becomes "‹", so the text cannot
+# close its own section. Nothing is removed: removing a tag can join the text
+# around it into a new one ("</ques</question>tion>").
 _UNTRUSTED_TAGS = ("question", "rejection_reason", "proposed_sql")
-_TAG_LOOKALIKE = re.compile(r"<\s*/?\s*(?:" + "|".join(_UNTRUSTED_TAGS) + r")\b[^>]*>", re.I)
+_TAG_START = re.compile(
+    r"<(?=\s*/?\s*(?:question|rejection[_\s-]*reason|proposed[_\s-]*sql))", re.I)
 
 
 def delimit(label: str, text: str) -> str:
-    """`text` inside <label> ... </label>, with any of our tags in it removed."""
-    assert label in _UNTRUSTED_TAGS
-    clean = _TAG_LOOKALIKE.sub("", str(text))
+    """`text` inside <label> ... </label>; no tag of ours can start inside it."""
+    if label not in _UNTRUSTED_TAGS:
+        raise ValueError(f"unknown prompt section {label!r}")
+    clean = _TAG_START.sub("‹", str(text))
     return f"<{label}>\n{clean}\n</{label}>"
 
 
