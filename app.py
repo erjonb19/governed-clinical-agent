@@ -164,7 +164,10 @@ RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
-request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
+# Item 57: the UI is handed the API key only when this is set AND the browser is on
+# this machine. Never set it on a deploy.
+UI_PREFILL_KEY = os.environ.get("UI_PREFILL_KEY", "").strip().lower() in {"1", "true", "yes"}
+request_context.check_forwarded_allow_ips()   # a bad trust list logs an error and fails closed
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -889,6 +892,7 @@ def health() -> dict:
         "planner_enabled": _STATE.get("planner") is not None,
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
+        "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
                         "public_findings": RATE_LIMIT_PUBLIC},
@@ -906,17 +910,20 @@ def health() -> dict:
 def ui_config(request: Request) -> dict:
     """Bootstrap config for the web UI.
 
-    When the browser is on THIS machine (loopback), hand it the API key so local
-    use needs no setup. That leaks nothing: anyone on the host can already read
-    .env. Remote callers (e.g. the public deploy) never receive it and must enter
-    a key, so the data endpoints stay protected.
+    With UI_PREFILL_KEY=1 AND a browser on THIS machine (loopback), hand it the
+    API key so local use needs no setup. Off by default (audit item 57): behind
+    a proxy on the same host, or with a trusted proxy list that maps a caller to
+    127.0.0.1, "loopback" can be anyone, and an accidental prefill on a deploy
+    would hand its key to the internet.
+    Remote callers never receive it and must enter a key.
     """
     client = request.client
     is_local = bool(client) and client.host in {"127.0.0.1", "::1", "localhost"}
+    prefill = UI_PREFILL_KEY and is_local and bool(API_KEY)
     return {
         "auth_required": bool(API_KEY),
         "is_local": is_local,
-        "prefill_key": API_KEY if (is_local and API_KEY) else None,
+        "prefill_key": API_KEY if prefill else None,
         "datasets": [{"id": k, "label": v["label"],
                       "available": os.path.exists(v["db"])} for k, v in DATASETS.items()],
         "default_dataset": DEFAULT_DATASET,
