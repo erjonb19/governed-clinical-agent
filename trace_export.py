@@ -131,12 +131,64 @@ def is_hosted(endpoint: str) -> bool:
     return host not in _LOCAL_HOSTS
 
 
+_DOLLAR_TAG = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
 def _mask_sql_literals(sql: str) -> str:
-    # the existing literal redaction (the one used for SQL error messages):
-    # every single-quoted literal becomes '<value>', so text a person typed
-    # into the question cannot ride out inside a WHERE clause
-    from analytics_query_tool import redact_values
-    return redact_values(sql)
+    """The SQL a hosted backend gets (item 64): comments dropped, every string
+    literal -- '...' (with '' escapes, so also E'...'), $$...$$ and $tag$...$tag$
+    -- replaced by '<value>'. Text a person typed can ride out in a WHERE
+    clause or in a comment the model copied; neither leaves this machine.
+    Double-quoted names are identifiers and stay. Fail closed: an unterminated
+    literal or comment masks everything after it."""
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    break
+                j += 1
+            out.append("'<value>'")
+            i = j + 1  # past the closing quote, or past the end when unterminated
+        elif c == "$" and (m := _DOLLAR_TAG.match(sql, i)) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+            end = sql.find(m.group(0), m.end())
+            out.append("'<value>'")
+            i = n if end < 0 else end + len(m.group(0))
+        elif c == '"':
+            j = sql.find('"', i + 1)
+            j = n if j < 0 else j + 1
+            out.append(sql[i:j])
+            i = j
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            out.append(" ")
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if sql.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif sql.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            out.append(" ")
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _digest(value: Any) -> tuple[str, int]:
+    text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], len(text)
 
 
 def hosted_attributes(name: str, attrs: dict) -> dict:
@@ -145,7 +197,10 @@ def hosted_attributes(name: str, attrs: dict) -> dict:
     - the visitor's question is replaced by its hash and length: the codebase
       has no free-text PHI redactor (the guard works on SQL), so the question
       is withheld until one is approved;
-    - SQL string literals are masked;
+    - SQL comments are dropped and SQL string literals masked;
+    - the critic's reason and issues (model text that can quote the question)
+      are replaced by their hash and length, on the critic span and wherever
+      a `critic: ...` reason is carried on (item 64);
     - an approval decision's reason and the reviewer identity, and every
       escalation target, are dropped."""
     out = dict(attrs)
@@ -155,6 +210,10 @@ def hosted_attributes(name: str, attrs: dict) -> dict:
         out["question_chars"] = len(str(q))
     if out.get("sql"):
         out["sql"] = _mask_sql_literals(str(out["sql"]))
+    for key in ("reason", "issues"):
+        v = out.get(key)
+        if v and (name == "critic" or (isinstance(v, str) and v.startswith("critic:"))):
+            out[f"{key}_sha256"], out[f"{key}_chars"] = _digest(out.pop(key))
     out.pop("escalated_to", None)
     if name == "approval.decision":
         out.pop("reason", None)

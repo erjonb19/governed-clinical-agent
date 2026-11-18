@@ -258,3 +258,52 @@ def test_a_local_phoenix_still_gets_the_full_record(tmp_path):
     ("http://phoenix.internal:6006/v1/traces", True)])
 def test_anything_off_this_machine_counts_as_hosted(url, hosted):
     assert trace_export.is_hosted(url) is hosted
+
+
+# Item 64: comments and every literal form are masked; the critic's text is hashed.
+DOLLARS = "$" + "$"
+@pytest.mark.parametrize("sql", [
+    f"SELECT count(*) FROM gold_encounter -- {PERSON}",
+    f"SELECT count(*) /* asked about {PERSON} */ FROM gold_encounter",
+    f"SELECT 1 /* outer /* {PERSON} */ still a comment */ FROM t",
+    f"SELECT count(*) FROM t WHERE x = E'{PERSON}'",
+    f"SELECT count(*) FROM t WHERE x = {DOLLARS}{PERSON}{DOLLARS}",
+    f"SELECT count(*) FROM t WHERE x = $q${PERSON}$q$",
+    f"SELECT count(*) FROM t WHERE x = 'O''Brien {PERSON}'",
+    f"SELECT count(*) FROM t WHERE x = '{PERSON}",            # unterminated: fail closed
+    f"SELECT 1 /* {PERSON}",                                  # unterminated comment
+    f"SELECT 1 -- it's {PERSON}\nFROM t",                     # a quote inside a comment
+])
+def test_hosted_sql_carries_no_comment_or_literal_text(sql):
+    masked = trace_export._mask_sql_literals(sql)
+    assert "Jane" not in masked and "02134" not in masked, masked
+
+
+def test_hosted_sql_keeps_the_query_shape():
+    sql = ("SELECT \"gender\", count(*) FROM gold_patient /* c */ WHERE state = 'MA' "
+           f"AND x = {DOLLARS}y{DOLLARS} -- note\nGROUP BY 1")
+    assert trace_export._mask_sql_literals(sql) == (
+        "SELECT \"gender\", count(*) FROM gold_patient   WHERE state = '<value>' "
+        "AND x = '<value>'  \nGROUP BY 1")
+
+
+def test_a_hosted_backend_gets_the_critic_text_only_as_a_hash(tmp_path):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    mem = InMemorySpanExporter()
+    exp = trace_export.OTLPExporter(HOSTED_URL, processor=SimpleSpanProcessor(mem))
+    t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
+    with t.trace("run", question="q") as tid:
+        with t.span("critic", verdict="revise", reason=f"the question names {PERSON}",
+                    issues=[f"filter on {PERSON}"]):
+            pass
+        t.event("retry", by="critic", reason=f"critic: the question names {PERSON}")
+        t.event("guard", allowed=False, decided_by="guard", reason="table not allowed")
+    spans = {s.name: dict(s.attributes) for s in mem.get_finished_spans()}
+    assert "Jane" not in repr(spans)
+    assert spans["critic"]["agent.verdict"] == "revise"
+    assert len(spans["critic"]["agent.reason_sha256"]) == 16
+    assert spans["critic"]["agent.issues_chars"] > 0
+    assert "agent.reason_sha256" in spans["retry"]
+    assert spans["guard"]["agent.reason"] == "table not allowed"   # not the critic's: kept
+    assert PERSON in repr(t.get_trace(tid))                          # the local record keeps it
