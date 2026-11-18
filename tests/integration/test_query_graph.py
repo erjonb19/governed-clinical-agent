@@ -33,7 +33,7 @@ def _planner_class(script):
             self.provider, self._model = "gemini", "stub"
 
         def _next(self, question):
-            key = next(k for k in script if question.startswith(k))
+            key = next(k for k in script if k in question)  # prompts are delimited (item 67)
             kind, value = script[key].pop(0)
             if kind == "raise":
                 raise value

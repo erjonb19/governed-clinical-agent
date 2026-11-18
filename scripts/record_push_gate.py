@@ -47,10 +47,11 @@ def _record_one(dataset: str, live: str | None) -> int:
     sys.path.insert(0, ROOT)
     os.chdir(ROOT)
     import eval_harness as eh   # sets PLANNER_SCHEMA for the dataset, then imports the planner
-    from nl_to_sql_planner import CallMetrics, NLToSQLPlanner
+    from nl_to_sql_planner import CallMetrics, NLToSQLPlanner, plan_prompt
 
     cases = [c for c in eh.CASES if c["id"] in eh.SUBSET_IDS]
-    by_question = {c["question"]: c for c in cases}
+    # keyed on the exact user message the planner sends (delimited, item 67)
+    by_question = {plan_prompt(c["question"]): c for c in cases}
     planner = NLToSQLPlanner(provider="replay")
 
     class Authored:

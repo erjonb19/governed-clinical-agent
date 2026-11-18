@@ -21,7 +21,7 @@ sys.path.insert(0, ROOT)
 import eval_bank
 import eval_bank_fhir
 import replay
-from nl_to_sql_planner import SCHEMA_DOC_FHIR, SCHEMA_DOC_HOSPITAL, build_system_prompt
+from nl_to_sql_planner import SCHEMA_DOC_FHIR, SCHEMA_DOC_HOSPITAL, build_system_prompt, plan_prompt
 
 STORE = os.path.join(ROOT, "tests", "evals", "recordings", "push_gate.json")
 BANKS = {
@@ -39,7 +39,7 @@ def _entries():
 def _expected_keys(dataset):
     bank, schema = BANKS[dataset]
     system = build_system_prompt(schema)
-    return {c["id"]: replay.request_key("plan", system, c["question"])
+    return {c["id"]: replay.request_key("plan", system, plan_prompt(c["question"]))
             for c in bank.CASES if c["id"] in bank.SUBSET_IDS}
 
 
@@ -74,7 +74,7 @@ def test_a_changed_prompt_is_a_miss_not_a_silent_pass():
     changed = build_system_prompt(schema + "\n- a new note")
     store = replay.ReplayStore(STORE)
     with pytest.raises(replay.ReplayMiss):
-        store.lookup("plan", changed, case["question"])
+        store.lookup("plan", changed, plan_prompt(case["question"]))
 
 
 def test_recordings_hold_sql_and_counts_only():

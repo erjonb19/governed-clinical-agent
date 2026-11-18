@@ -481,9 +481,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **66. SQL comments are allowed and kept in the executed SQL** (Low; security audit finding 37, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: sql_guard.py:186-198 (verified: /* */ and -- pass into safe_sql, which the critic reads)
   - Done when: Deny statements with comments, or emit with comments=False.; a test or check shows it.
-- [ ] **67. Retry and critic prompts do not delimit untrusted text** (Low; security audit finding 38, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **67. Retry and critic prompts do not delimit untrusted text** (Low; security audit finding 38, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: agent_graph.py:205-211; nl_to_sql_planner.py:439-466, :613
   - Done when: Labelled delimiters around question, error and SQL; an "untrusted text" rule in the planner's system prompt (as the critic already has). Changes prompts: re-record replays.; a test or check shows it.
+  - Done 2026-11-18: every plan request is built by `nl_to_sql_planner.plan_prompt` (the graphs pass the rejection reason to it; a bare string handed to the planner is wrapped the same way), so the question sits in `<question>` tags and a retry's reason in `<rejection_reason>` tags; the critic reads `<question>` and `<proposed_sql>`. A tag look-alike inside the text (any case, any spacing) is removed so it cannot close its section. The planner's system prompt gains the critic's "untrusted data" rule. Prompts changed, so the push-gate and UI E2E recordings were re-authored (`scripts/record_push_gate.py`, `tests/e2e/author_recordings.py`). `tests/unit/test_prompt_delimiters.py`. Merge bar: the FHIR comparison (a planner change).
 - [ ] **68. Adversarial evals are not a CI gate; no file/network-exfiltration case** (Low; security audit finding 39, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: eval_bank_adversarial.py (13 cases), no workflow runs it
   - Done when: A replayed adversarial run in eval-on-push (push_gate pattern); add read_text, ATTACH and URL cases.; a test or check shows it.
