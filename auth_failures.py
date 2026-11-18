@@ -115,8 +115,10 @@ class AuthFailures:
                     failures_in_window=n,
                     throttled=throttled,
                 )
-            except Exception:  # noqa: BLE001 -- auditing must never break a refusal
-                log.exception("auth_failure audit write failed")
+            except Exception as e:  # noqa: BLE001 -- auditing must never break a refusal
+                from src.runtime.audit_logger import record_failure
+
+                record_failure("auth_failure", e)  # the type only, no traceback (item 63)
         return n
 
     def summary(self) -> dict:
