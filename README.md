@@ -813,8 +813,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Every audit event says who asked and from where** (audit item 38): a request id
   (also returned as `X-Request-ID`), the key it came with as a short fingerprint (never the
   key) and the caller's address. On Render the address is the proxy's until
-  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` or any
-  public network is refused at startup.
+  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); behind
+  Cloudflare, the address Cloudflare appended is used, so a forged `X-Forwarded-For` cannot
+  choose it. A trust list with `*` or a public network logs an error and fails closed
+  (`/health` shows `proxy_trust: invalid`).
 - [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
   findings and approval-queue routes declare their responses.
 - [x] **The UI escapes all five HTML-special characters** (audit item 58), the single quote

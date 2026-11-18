@@ -161,3 +161,12 @@ def test_a_failed_load_still_screenshots_and_keeps_the_console(monkeypatch):
     assert page.shots == ["shot.png"]
     assert found[0].startswith("/ui did not load: TimeoutError")
     assert "console error: Failed to load resource: 502" in found
+
+
+def test_an_invalid_proxy_trust_list_fails_the_live_check():
+    # the deploy no longer stops on a bad FORWARDED_ALLOW_IPS (step 9), so the
+    # nightly check must notice it instead
+    bad = {**GOOD, "health_body": {"status": "ok", "proxy_trust": "invalid"}}
+    assert any("proxy_trust" in p for p in lc.problems(**bad))
+    ok = {**GOOD, "health_body": {"status": "ok", "proxy_trust": "ok"}}
+    assert lc.problems(**ok) == []
