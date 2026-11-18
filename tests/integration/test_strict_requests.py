@@ -74,3 +74,11 @@ def test_findings_and_queue_declare_their_responses(client):
     routes = {r.path: r for r in app_module.app.routes if hasattr(r, "response_model")}
     for path in ("/findings", "/public/findings", "/approvals", "/raw-sql", "/query"):
         assert routes[path].response_model is not None, path
+
+
+def test_the_queue_still_returns_its_keys(client):
+    r = client.get("/approvals", headers=H)
+    if r.status_code == 503:
+        pytest.skip("approvals unavailable here")
+    assert r.status_code == 200, r.text
+    assert set(r.json()) == {"pending", "metrics"}
