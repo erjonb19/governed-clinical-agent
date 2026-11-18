@@ -89,9 +89,17 @@ def main() -> int:
     age_min = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 60
     grace = float(os.environ.get("DEPLOY_LAG_GRACE_MIN", "60") or 60)
     verdict = classify(live, main_sha, age_min, grace)
+    if verdict == UNKNOWN:
+        print(
+            f"::warning::/v1/health reports git_commit {live[:40]!r}, not a commit: "
+            "the deploy cannot be compared with main (is RENDER_GIT_COMMIT set?)"
+        )
     detail = ""
     if verdict == LAGGING:
-        cmp = json.loads(_gh("api", f"repos/{REPO}/compare/{live}...{main_sha}"))
+        try:
+            cmp = json.loads(_gh("api", f"repos/{REPO}/compare/{live}...{main_sha}"))
+        except Exception:  # noqa: BLE001 -- GitHub may not know the live commit; still alert
+            cmp = {"status": "unknown to GitHub", "ahead_by": "?"}
         detail = (
             f"The deploy serves `{live[:7]}`; main is `{main_sha[:7]}` "
             f"({cmp.get('status')}, {cmp.get('ahead_by')} commit(s) ahead of the deploy), "
