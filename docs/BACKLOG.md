@@ -461,9 +461,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **61. The Postgres connection does not require TLS** (Low; security audit finding 32, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: state_db.py:80
   - Done when: sslmode=require (or verify-full) unless the URL sets one.; a test or check shows it.
-- [ ] **62. Secret redaction misses this repo's own key formats** (Low; security audit finding 33, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **62. Secret redaction misses this repo's own key formats** (Low; security audit finding 33, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: src/utils/redaction.py:36-37 (sk-, ghp_, Bearer only)
   - Done when: Patterns for AIza (Gemini), gsk_ (Groq), xai- (xAI), sk-ant- (Anthropic), with tests.; a test or check shows it.
+  - Done 2026-11-18: `src/utils/redaction.py` masks Gemini/Google (`AIza...`), Groq (`gsk_...`), xAI (`xai-...`), Anthropic (`sk-ant-...`), OpenAI project/service keys (`sk-proj-`, `sk-svcacct-`, `sk-admin-`), Langfuse (`pk-lf-`/`sk-lf-`, item 12's hosted traces) and Databricks (`dapi` + 32 hex) keys anywhere in free text, so they never reach an audit line, an error or a trace through `redact_text`/`redact_data`. `tests/unit/test_redaction_provider_keys.py` (sample keys built at run time, so the secret scanner has nothing to flag).
 - [ ] **63. Audit failures are swallowed silently** (Low; security audit finding 34, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:727-728 (except: pass), app.py:214-215
   - Done when: Warn on stderr with the exception type; /health shows audit_enabled.; a test or check shows it.
