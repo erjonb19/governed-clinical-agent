@@ -426,14 +426,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **52. The standalone MCP server writes no audit log** (Medium; security audit finding 23, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: mcp_server.py:131-135, 159-167 (AgentRuntime() without an audit_logger)
   - Done when: Attach an AuditLogger that drops rows in main() / at module start.; a test or check shows it.
-- [x] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-16: `mcp_server.main()` calls `attach_standalone_audit()` for both transports: a `RowlessAuditLogger` (new in `src/runtime/audit_logger.py`; drops `rows`, keeps row_count and columns) writing `audit_mcp_*.jsonl` under `AUDIT_LOG_DIR` (default `logs`; "" turns it off with a warning on stderr; a directory that cannot be created stops the server with a message naming `AUDIT_LOG_DIR`, so give a stdio client an absolute path), never to stdout (stdio's protocol channel). Refused HTTP keys go to the same log. Mounted in the API, the API's logger from `attach_host` is kept. `tests/unit/test_mcp_standalone_audit.py`.
-- [ ] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **53. /docs, /redoc and /openapi.json are public in production** (Low; security audit finding 24, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:289-294; the / route advertises /docs
   - Done when: docs_url/redoc_url/openapi_url=None unless an env flag is set, or behind the key.; a test or check shows it.
-- [x] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-16: `API_DOCS=1` turns `/docs`, `/redoc` and `/openapi.json` on; unset (production) all three answer 404 and `/` no longer advertises `/docs`. `tests/integration/test_public_findings.py` (the open-route list no longer carries them).
-- [ ] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **54. Auth is per route instead of deny-by-default; /metrics and /schema are public** (Low; security audit finding 25, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:595, :849
   - Done when: Require auth on the router and list public routes explicitly (/health, /ui, /ui-config).; a test or check shows it.
   - Done 2026-11-16: an app-level dependency (`require_key_unless_public`) asks for the key on every route except `PUBLIC_ROUTES` in `app.py`: `/`, `/ui`, `/ui-config`, `/health`, `/public/findings` and `/datasets` (open by item 36's decision: table names and row counts, cached and rate-limited). A new route is private unless added there; a request with no matched route also needs the key. `/metrics` and `/schema` now need it, and the UI's Usage and Data views send it. The per-route checks stay as a second layer. `tests/integration/test_public_findings.py` pins the list against the app's own and checks every other route answers 401.
@@ -447,14 +445,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **57. /ui-config prefills the API key for any loopback-looking client** (Low; security audit finding 28, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:567-585
   - Done when: Prefill only with an explicit UI_PREFILL_KEY=1.; a test or check shows it.
-- [x] **58. esc() does not escape the single quote** (Low; security audit finding 29, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-18: `/ui-config` returns the key only when `UI_PREFILL_KEY=1` (also `true`/`yes`) AND the client is loopback; unset (the default, and Render), never. The UI E2E sets it for its local server; README's local-run block shows it. `tests/integration/test_ui_prefill.py`.
-- [ ] **58. esc() does not escape the single quote** (Low; security audit finding 29, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **58. esc() does not escape the single quote** (Low; security audit finding 29, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: web/index.html:428
   - Done when: Add ' -> &#39;. Not exploitable today (all dynamic attributes are double-quoted).; a test or check shows it.
-- [x] **59. No error tracking or security alerts** (Low; security audit finding 30, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-18: `esc()` in `web/index.html` maps `'` to `&#39;` beside `& < > "`. The CSP hash is computed from the served file at startup, so it follows. `tests/unit/test_ui_escape.py` runs the real function under Node (skipped without Node).
-- [ ] **59. No error tracking or security alerts** (Low; security audit finding 30, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **59. No error tracking or security alerts** (Low; security audit finding 30, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: repository-wide (eval, uptime and SLO alerts exist)
   - Done when: Alert on auth-failure and spend thresholds through a GitHub issue (nightly_alerts pattern); optional free Sentry with send_default_pii=False and a scrubber (new dependency: owner's OK).; a test or check shows it.
   - Done 2026-11-18 (the issue half; Sentry, a new dependency, not added): `/metrics` now carries `auth_failures` (total, clients over the limit, the limit; never an address). `security_alerts.py` (standard library) reads the deploy's `/v1/metrics` with the repo secret `ALERT_API_KEY` nightly (`security-alerts.yml`, 23:30 UTC, late in the budget day) and opens one `security-alert` issue per kind -- refused keys (a client over the limit, or `SECURITY_ALERT_AUTH_TOTAL`=50 since the last restart) and model spend (runs or estimated USD at `SECURITY_ALERT_BUDGET_FRACTION`=0.8 of `llm_budget`'s caps) -- comments on a repeat and closes it on a quiet night. The counters are in memory, so they cover the time since the last restart, and "over the limit" is the current 5-minute window: a coarse check, not monitoring. Without the secret, or with the service unreachable, it warns and files nothing. **Owner:** add the secret (`docs/OWNER_STEPS.md` step 10). `tests/unit/test_security_alerts.py`.
