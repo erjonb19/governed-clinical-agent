@@ -83,13 +83,17 @@ def test_old_decided_items_are_purged_and_pending_ones_kept(tmp_path, monkeypatc
     old = s.propose("t1", "brief.commit", QUESTION, "p", proposed_by="a")
     new = s.propose("t2", "brief.commit", QUESTION, "p", proposed_by="a")
     waiting = s.propose("t3", "brief.commit", QUESTION, "p", proposed_by="a")
+    escalated = s.propose("t4", "brief.commit", QUESTION, "p", proposed_by="a")
     for a in (old, new):
         s.decide(a, "reject", decided_by="b", reason="no")
+    s.decide(escalated, "escalate", decided_by="b", reason="later", escalated_to="c")
     _age(s, old, 120)
+    _age(s, escalated, 120)  # an old escalation is still pending: it must stay
     # a store opened with a 90-day retention purges at start
     s2 = _store(tmp_path, monkeypatch, 90)
     assert s2.get(old) is None and s2.history(old) == []
     assert s2.get(new) is not None and s2.get(waiting)["status"] == "pending"
+    assert s2.get(escalated)["status"] == "pending" and s2.history(escalated)
 
 
 def test_retention_zero_keeps_everything(tmp_path, monkeypatch):
