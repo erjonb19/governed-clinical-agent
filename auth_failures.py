@@ -119,6 +119,20 @@ class AuthFailures:
                 log.exception("auth_failure audit write failed")
         return n
 
+    def summary(self) -> dict:
+        """Counts only, never client addresses (backlog item 59: /metrics and
+        the nightly security alert read this)."""
+        with self._lock:
+            now = self.clock()
+            over = sum(1 for c in self._counts if self._current(c, now)[1] >= self.per_window)
+            return {
+                "total": self.total,
+                "clients_over_limit": over,
+                "per_window": self.per_window,
+                "window_sec": self.window_sec,
+                "lockout": self.lockout,
+            }
+
     def reset(self) -> None:
         with self._lock:
             self._counts.clear()

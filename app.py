@@ -1287,6 +1287,7 @@ def metrics() -> dict:
     out = cost_tracker.summarize()
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
+    out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
     return out
 
 
