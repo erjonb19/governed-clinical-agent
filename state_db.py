@@ -37,6 +37,28 @@ def is_postgres(u: Optional[str] = None) -> bool:
     return u.startswith(("postgres://", "postgresql://"))
 
 
+_LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
+
+
+def tls_kwargs(u: Optional[str] = None) -> dict[str, str]:
+    """Backlog item 61: require TLS to a Postgres that is not on this machine.
+
+    `sslmode=require` is added unless the URL already names an `sslmode`, or
+    libpq's own PGSSLMODE is set, or the host is local (a unix socket,
+    localhost, 127.0.0.1 or ::1: CI's service container). STATE_DB_SSLMODE
+    changes the mode added (e.g. `verify-full` with a root certificate);
+    anything weaker than `require` for a remote host is the URL's to state."""
+    from urllib.parse import parse_qs, urlparse
+
+    u = url() if u is None else u
+    parsed = urlparse(u)
+    if "sslmode" in parse_qs(parsed.query) or os.environ.get("PGSSLMODE"):
+        return {}
+    if (parsed.hostname or "") in _LOCAL_HOSTS:
+        return {}
+    return {"sslmode": os.environ.get("STATE_DB_SSLMODE", "require").strip() or "require"}
+
+
 def describe() -> str:
     """For /health: which store, without the credentials in the URL."""
     # /health is unauthenticated: name the kind of store, not its host
@@ -77,7 +99,7 @@ def connect(sqlite_path: str) -> Iterator[Any]:
     if is_postgres():
         import psycopg
 
-        pg = psycopg.connect(url())
+        pg = psycopg.connect(url(), **tls_kwargs())
         try:
             yield _PGConn(pg)
             pg.commit()
@@ -139,7 +161,12 @@ def checkpointer(sqlite_path: str) -> Any:
                 url(),
                 min_size=1,
                 max_size=4,
-                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+                kwargs={
+                    "autocommit": True,
+                    "prepare_threshold": 0,
+                    "row_factory": dict_row,
+                    **tls_kwargs(),
+                },
                 check=ConnectionPool.check_connection,
                 open=True,
             )

@@ -457,9 +457,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **60. No retention limit on logs holding free text** (Low; security audit finding 31, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: cost_tracker.py:30-31 (question[:200], forever); audit JSONL (never rotated); approval.py (questions and proposals kept forever)
   - Done when: Store a hash and length in the metrics log; rotate and cap JSONL; a retention period and purge for approvals.; a test or check shows it.
-- [ ] **61. The Postgres connection does not require TLS** (Low; security audit finding 32, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **61. The Postgres connection does not require TLS** (Low; security audit finding 32, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: state_db.py:80
   - Done when: sslmode=require (or verify-full) unless the URL sets one.; a test or check shows it.
+  - Done 2026-11-18: `state_db.tls_kwargs()` adds `sslmode=require` to every Postgres connection (the store and the LangGraph checkpointer's pool) unless the URL names an `sslmode`, libpq's `PGSSLMODE` is set, or the host is local (a unix socket, localhost, 127.0.0.1, ::1 -- CI's service container). `STATE_DB_SSLMODE` picks a stronger mode (e.g. `verify-full`). `tests/unit/test_state_db_tls.py`.
 - [ ] **62. Secret redaction misses this repo's own key formats** (Low; security audit finding 33, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: src/utils/redaction.py:36-37 (sk-, ghp_, Bearer only)
   - Done when: Patterns for AIza (Gemini), gsk_ (Groq), xai- (xAI), sk-ant- (Anthropic), with tests.; a test or check shows it.
