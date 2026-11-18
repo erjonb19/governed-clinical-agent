@@ -12,7 +12,7 @@ import re
 
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 HEAD = re.compile(r"^- \[([ x])\] \*\*(\d+)\.")
-DONE = re.compile(r"^\s+- Done 20\d\d-")
+DONE = re.compile(r"^\s+- (?:\*\*)?Done 20\d\d-")
 
 
 def _read(name):
@@ -36,17 +36,25 @@ def _items():
     return out
 
 
-def test_every_item_is_listed_once_with_no_gaps():
+def test_every_item_is_listed_once():
+    # (A number may be skipped on purpose -- item 29 once was -- so gaps are fine.)
     numbers = [n for n, _, _ in _items()]
     dupes = sorted({n for n in numbers if numbers.count(n) > 1})
     assert not dupes, f"items listed more than once: {dupes}"
-    assert sorted(numbers) == list(range(1, max(numbers) + 1)), "an item number is missing"
+
+
+def test_no_conflict_markers_are_left():
+    for name in ("docs/BACKLOG.md", "docs/PROGRESS.md"):
+        bad = [l for l in _read(name) if re.match(r"^(<{7}|={7}|>{7})( |$)", l)]
+        assert not bad, f"{name} has merge conflict markers"
 
 
 def test_done_notes_sit_under_their_own_ticked_item():
     for n, ticked, body in _items():
         done = [i for i, l in enumerate(body) if DONE.match(l)]
-        assert ticked or not done, f"item {n} is unticked but has a Done note"
+        # An open item may record partial progress as "Done <date> (code part)".
+        full = [i for i in done if "part)" not in body[i]]
+        assert ticked or not full, f"item {n} is unticked but has a Done note"
         assert len(done) <= 1, f"item {n} has {len(done)} Done notes"
         # Items written in the Where / Done when / Done form keep that order:
         # a Done note above its own "Done when" was shifted in from another item.
