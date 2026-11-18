@@ -24,4 +24,6 @@ def test_the_base_image_stays_on_python_3_11():
         config = yaml.safe_load(f)
     docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker")
     rules = {i["dependency-name"]: set(i.get("update-types", [])) for i in docker.get("ignore", [])}
-    assert {"version-update:semver-major", "version-update:semver-minor"} <= rules.get("python", set())
+    assert {"version-update:semver-major", "version-update:semver-minor"} <= rules.get(
+        "python", set()
+    )
