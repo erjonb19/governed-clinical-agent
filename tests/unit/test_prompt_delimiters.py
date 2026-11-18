@@ -111,4 +111,5 @@ def test_both_system_prompts_say_the_tagged_text_is_data():
 
 
 def test_text_that_only_mentions_a_word_is_left_alone():
-    assert nlp.delimit("question", "is a < b in the question?").count("<") == 2
+    out = nlp.delimit("question", "is a < b in the question?")
+    assert "is a < b in the question?" in out  # not a tag start: unchanged
