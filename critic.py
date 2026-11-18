@@ -112,5 +112,6 @@ def audit(runtime: Any, capability: str, verdict: dict[str, Any], sql_sha256: Op
     try:
         logger.log_critic_review(capability=capability, verdict=verdict["verdict"],
                                  reason=verdict.get("reason") or "", sql_sha256=sql_sha256)
-    except Exception:
-        pass   # the audit line is best effort, like the tracer
+    except Exception as e:  # noqa: BLE001 -- best effort, but never silent (item 63)
+        from src.runtime.audit_logger import record_failure
+        record_failure("critic_review", e)

@@ -1132,15 +1132,11 @@ def _audit_answer(allowed: bool, decided_by: Optional[str], version: dict,
         _audit_failed("answer", e)
 
 
-_audit_log = logging.getLogger("governed.audit")
-
-
 def _audit_failed(where: str, exc: BaseException) -> None:
-    """Item 63: a failed audit write is never silent. One warning on stderr with
-    the exception TYPE (its message can carry a path or a value), and a count
-    that /health reports."""
-    _STATE["audit_failures"] = _STATE.get("audit_failures", 0) + 1
-    _audit_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
+    """Item 63: a failed audit write is never silent (shared counter in
+    audit_logger, which the critic and refused-key paths use too)."""
+    from src.runtime.audit_logger import record_failure
+    record_failure(where, exc)
 
 
 def _query_graph(req: QueryRequest, ds: str) -> dict:
@@ -1303,7 +1299,9 @@ def metrics() -> dict:
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
     out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
-    out["audit_failures"] = _STATE.get("audit_failures", 0)   # item 63
+    from src.runtime.audit_logger import failure_count
+    out["audit_failures"] = failure_count()   # item 63
+    out["audit_error"] = _STATE.get("audit_error")   # item 63: why auditing is off, type only
     return out
 
 

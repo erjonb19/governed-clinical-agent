@@ -33,8 +33,10 @@ def app_module(tmp_path, monkeypatch):
     tool_base._TOOL_REGISTRY.pop("analytics.query_aggregate", None)
     tracing.set_tracer(None)
     import app as m
+    from src.runtime import audit_logger
 
     importlib.reload(m)
+    audit_logger.reset_failures()
     try:
         yield m
     finally:
@@ -60,7 +62,7 @@ def test_a_failed_audit_write_warns_and_is_counted(app_module, caplog):
         with caplog.at_level(logging.WARNING, logger="governed.audit"):
             app_module._audit_answer(True, "executed", {}, "t1")  # must not raise
         m = c.get("/metrics", headers={"X-API-Key": "test-key"}).json()
-    assert m["audit_failures"] == 1
+    assert m["audit_failures"] == 1 and m["audit_error"] is None
     assert "audit write failed (answer): OSError" in caplog.text
     assert "/secret/path" not in caplog.text  # the type only, never the message
 
@@ -91,9 +93,52 @@ def test_an_unwritable_audit_dir_says_so(tmp_path, monkeypatch, capsys):
     try:
         with TestClient(m.app) as c:
             h = c.get("/health").json()
+            m2 = c.get("/metrics", headers={"X-API-Key": "test-key"}).json()
         assert h["audit_enabled"] is False
+        assert m2["audit_error"] in {"NotADirectoryError", "FileExistsError", "OSError"}
         assert "audit log disabled" in capsys.readouterr().err
     finally:
         tracing.set_tracer(None)
         tool_base._TOOL_REGISTRY.clear()
         tool_base._TOOL_REGISTRY.update(saved)
+
+
+def _boom(**kw):
+    raise OSError("disk full at /secret/path")
+
+
+def test_a_failed_critic_audit_is_counted(caplog):
+    import critic
+    from src.runtime import audit_logger
+
+    audit_logger.reset_failures()
+
+    class Logger:
+        log_critic_review = staticmethod(_boom)
+
+    class Runtime:
+        audit_logger = Logger()
+
+    with caplog.at_level(logging.WARNING, logger="governed.audit"):
+        critic.audit(Runtime(), "cap", {"verdict": "approve"}, None)  # must not raise
+    assert audit_logger.failure_count() == 1
+    assert "audit write failed (critic_review): OSError" in caplog.text
+    assert "/secret/path" not in caplog.text
+
+
+def test_a_failed_refused_key_audit_is_counted_without_a_traceback(caplog):
+    import auth_failures
+    from src.runtime import audit_logger
+
+    audit_logger.reset_failures()
+
+    class Logger:
+        log_auth_failure = staticmethod(_boom)
+
+    f = auth_failures.AuthFailures(per_window=10, window_sec=60, lockout=False)
+    f.audit = Logger()
+    with caplog.at_level(logging.WARNING):
+        assert f.record("203.0.113.9", "/query", "api") == 1  # the refusal still counts
+    assert audit_logger.failure_count() == 1
+    assert "audit write failed (auth_failure): OSError" in caplog.text
+    assert "/secret/path" not in caplog.text and "Traceback" not in caplog.text
