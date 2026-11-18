@@ -5,6 +5,7 @@
 # Render's free tier sleeps, so live_check.py retries (3 attempts, 90s each,
 # 30s apart) and only an all-attempts failure counts. A failure opens ONE issue
 # labelled `live-check`, or comments on the open one; the next pass closes it.
+# Then deploy_lag.py checks the deploy serves main's head (issue `deploy-lag`).
 
 name: live check (deployed service)
 
@@ -48,6 +49,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python live_check.py --file-issue --screenshot-dir live-check-shots
+
+      - name: Is the deploy on main? (deploy_lag.py)
+        if: ${{ !cancelled() }}
+        continue-on-error: true   # a GitHub API hiccup must not turn the live check red
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python deploy_lag.py
 
       - name: Upload screenshots
         if: failure()
