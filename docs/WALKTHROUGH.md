@@ -5,7 +5,7 @@ trace. It uses today's UI (`/ui`); it will be updated when item 9 reworks the
 first screen. Times are targets.
 
 **Before recording:** run locally so there is no cold start and the key is
-prefilled (`uvicorn app:app`, open `http://localhost:8000/ui`), or open the
+prefilled (`UI_PREFILL_KEY=1 uvicorn app:app`; PowerShell: `$env:UI_PREFILL_KEY="1"` first; open `http://localhost:8000/ui`), or open the
 deployed site a minute early to wake it, with your key entered. Do not show
 the key on screen.
 
