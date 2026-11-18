@@ -239,6 +239,31 @@ done". After that, the failed-key lockout (`AUTH_FAILURE_LOCKOUT=1`, backlog ite
 
 ---
 
+## [ ] 10. Give the security-alert job a key (backlog item 59)
+
+**Why:** the nightly `security alerts` job reads the deploy's `/v1/metrics`, which
+needs the API key since item 54. Without the repo secret `ALERT_API_KEY` the job
+only prints a warning, so refused-key and spend alerts never fire. The secret is
+stored encrypted by GitHub and never appears in logs or issues.
+
+1. Use the same value as the deploy's `API_KEY` (Render dashboard -> Environment).
+2. From the repo folder, paste the key when `gh` prompts for it (it is not echoed):
+
+```powershell
+gh secret set ALERT_API_KEY --repo erjonb19/governed-clinical-agent
+```
+
+3. Run the job once by hand and check its log says `firing: none` (or opens an issue):
+
+```powershell
+gh workflow run security-alerts.yml --repo erjonb19/governed-clinical-agent
+```
+
+Then tell the agent "step 10 done". If you rotate `API_KEY` on Render, set this
+secret again.
+
+---
+
 ## [ ] 11. Delete the stray branch `claude/jolly-hopper-8ly9iq-41`
 
 **Why:** an agent pushed a merge to this misnamed branch on 2026-11-16 (the real

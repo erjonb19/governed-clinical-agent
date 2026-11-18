@@ -170,13 +170,13 @@ def test_principal_names_the_configured_key_it_matched():
         ("", False),
     ],
 )
-def test_a_public_proxy_trust_list_refuses_to_start(monkeypatch, value, refused):
+def test_a_public_proxy_trust_list_is_flagged_not_fatal(monkeypatch, value, refused):
+    # owner, 2026-11-18: a bad list logs an error and fails closed instead of
+    # stopping the deploy (tests/unit/test_client_ip.py checks the closed state)
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", value)
-    if refused:
-        with pytest.raises(SystemExit):
-            request_context.check_forwarded_allow_ips()
-    else:
-        request_context.check_forwarded_allow_ips()
+    monkeypatch.setattr(request_context, "TRUST_OK", True)
+    assert request_context.check_forwarded_allow_ips() is (not refused)
+    assert request_context.TRUST_OK is (not refused)
 
 
 def test_a_request_id_with_a_trailing_newline_is_not_kept():

@@ -167,7 +167,7 @@ RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
 # Item 57: the UI is handed the API key only when this is set AND the browser is on
 # this machine. Never set it on a deploy.
 UI_PREFILL_KEY = os.environ.get("UI_PREFILL_KEY", "").strip().lower() in {"1", "true", "yes"}
-request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
+request_context.check_forwarded_allow_ips()   # a bad trust list logs an error and fails closed
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -892,6 +892,7 @@ def health() -> dict:
         "planner_enabled": _STATE.get("planner") is not None,
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
+        "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
                         "public_findings": RATE_LIMIT_PUBLIC},
@@ -1286,6 +1287,7 @@ def metrics() -> dict:
     out = cost_tracker.summarize()
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
+    out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
     return out
 
 
