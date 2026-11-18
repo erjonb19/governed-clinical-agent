@@ -281,6 +281,15 @@ DOLLARS = "$" + "$"
     f"SELECT $é1$it is {PERSON}$é1$",
     f'SELECT count(*) AS "{PERSON} diabetes" FROM t',
     f"SELECT \"a, '{PERSON}'",
+    # second review: where a literal starts follows DuckDB's lexer, not Python's
+    f"SELECT $١${PERSON}$١$",
+    f"SELECT $٣a${PERSON}$٣a$ AS v",
+    f"SELECT x$E'\\', '{PERSON}'",
+    f"SELECT €E'\\', '{PERSON}'",
+    f"SELECT 1 FROM t WHERE c = x$E'\\' AND d = ' {PERSON} '",
+    f"SELECT 1 AS €$t$, $t${PERSON}$t$ AS v",
+    f"SELECT 1E'x\\' {PERSON} '",
+    f"SELECT 1$t${PERSON}$t$",
 ])
 def test_hosted_sql_carries_no_comment_or_literal_text(sql):
     masked = trace_export._mask_sql_literals(sql)
@@ -291,8 +300,8 @@ def test_hosted_sql_keeps_the_query_shape():
     sql = ("SELECT \"gender\", count(*) FROM gold_patient /* c */ WHERE state = 'MA' "
            f"AND x = {DOLLARS}y{DOLLARS} -- note\nGROUP BY 1")
     assert trace_export._mask_sql_literals(sql) == (
-        "SELECT \"gender\", count(*) FROM gold_patient   WHERE state = '<value>' "
-        "AND x = '<value>'  \nGROUP BY 1")
+        "SELECT \"gender\", count(*) FROM gold_patient WHERE state = '<value>' "
+        "AND x = '<value>'\nGROUP BY 1")
 
 
 def test_plain_strings_have_no_backslash_escapes_and_params_stay():

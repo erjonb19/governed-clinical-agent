@@ -137,8 +137,8 @@ _DOLLAR_TAG = re.compile(r"\$([^\W\d]\w*)?\$")
 _PLAIN_NAME = re.compile(r"^\"[A-Za-z_][A-Za-z0-9_]*\"$")
 
 
-def _mask_sql_literals(sql: str) -> str:
-    """The SQL a hosted backend gets (item 64): comments dropped, every string
+def _scan_mask(sql: str) -> str:
+    """Second pass of `_mask_sql_literals` (item 64): comments dropped, every string
     literal -- '...' (with '' escapes, so also E'...'), $$...$$ and $tag$...$tag$
     -- replaced by '<value>'. Text a person typed can ride out in a WHERE
     clause or in a comment the model copied; neither leaves this machine.
@@ -208,6 +208,62 @@ def _mask_sql_literals(sql: str) -> str:
     return "".join(out)
 
 
+# Token shapes kept from a non-literal token's span (the rest of the span --
+# a comment, an unterminated tail -- is dropped).
+_WORD = re.compile(rb"[\w$\x80-\xff]+")
+_OPERATOR = re.compile(rb"[^\w\s'\"$\x80-\xff]+")
+_QUOTED = re.compile(rb'"(?:[^"]|"")*"')
+_NUMBER = re.compile(rb"0[xXbB][0-9A-Fa-f_]+|[0-9_.]+(?:[eE][+-]?[0-9_]+)?")
+
+
+def _token_mask(sql: str) -> str:
+    """First pass: DuckDB's own lexer says where each literal is, so a quoting
+    trick the hand scanner reads differently (E'', $tag$, non-ASCII next to a
+    quote) cannot shift a literal out of the mask. duckdb.tokenize returns byte
+    offsets and leaves comments, and anything after an unterminated literal or
+    comment, in the gap behind the previous token; every gap is dropped."""
+    import duckdb
+
+    raw = sql.encode("utf-8")
+    toks = duckdb.tokenize(sql)
+    if not toks:
+        return ""
+    out: list[bytes] = []
+    if toks[0][0] > 0 and raw[: toks[0][0]].strip():
+        out.append(b" ")  # leading comment
+    for k, (start, kind) in enumerate(toks):
+        end = toks[k + 1][0] if k + 1 < len(toks) else len(raw)
+        span = raw[start:end]
+        name = getattr(kind, "name", str(kind))
+        if name == "string_const":
+            kept = b"'<value>'"
+        elif span.startswith(b'"'):
+            m = _QUOTED.match(span)
+            kept = m.group(0) if m and _PLAIN_NAME.match(m.group(0).decode()) else b'"<name>"'
+        else:
+            m = (name == "numeric_const" and _NUMBER.match(span)) or _WORD.match(span) \
+                or _OPERATOR.match(span)
+            kept = m.group(0) if m else b" "
+        if name == "string_const" or span.startswith(b'"'):
+            rest = span[len(span.rstrip()):]  # keep only the trailing whitespace
+        else:
+            rest = span[len(kept):]
+        out.append(kept + (rest if not rest.strip() else b" "))
+    return b"".join(out).decode("utf-8", "replace")
+
+
+def _mask_sql_literals(sql: str) -> str:
+    """The SQL a hosted backend gets (item 64): no comment and no string-literal
+    text. DuckDB's tokenizer finds the literals; the hand scanner then runs over
+    the result. Each pass only removes text, so the output is masked wherever
+    EITHER reads a literal or comment. SQL the tokenizer cannot read is withheld."""
+    try:
+        first = _token_mask(sql)
+    except Exception:  # noqa: BLE001 -- fail closed, never raise into export
+        return "<SQL withheld: could not be tokenized>"
+    return _scan_mask(first)
+
+
 def _digest(value: Any) -> tuple[str, int]:
     text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
     # surrogatepass: a lone surrogate from a model's JSON must not drop the span
@@ -236,7 +292,7 @@ def hosted_attributes(name: str, attrs: dict) -> dict:
         out["sql"] = _mask_sql_literals(str(out["sql"]))
     for key in ("reason", "issues"):
         v = out.get(key)
-        if v and (name == "critic" or (isinstance(v, str) and v.startswith("critic:"))):
+        if v and (name == "critic" or (isinstance(v, str) and v.lstrip().startswith("critic:"))):
             out[f"{key}_sha256"], out[f"{key}_chars"] = _digest(out.pop(key))
     out.pop("escalated_to", None)
     if name == "approval.decision":
