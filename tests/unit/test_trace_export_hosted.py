@@ -273,6 +273,14 @@ DOLLARS = "$" + "$"
     f"SELECT count(*) FROM t WHERE x = '{PERSON}",            # unterminated: fail closed
     f"SELECT 1 /* {PERSON}",                                  # unterminated comment
     f"SELECT 1 -- it's {PERSON}\nFROM t",                     # a quote inside a comment
+    # review of item 64: a backslash escape in E'...', a Unicode dollar tag,
+    # an alias copied from the question, an unterminated quoted name
+    f"SELECT E'x\\' {PERSON} ' AS a",
+    f"SELECT e'x\\' {PERSON} --' AS a",
+    f"SELECT $ä${PERSON}$ä$",
+    f"SELECT $é1$it is {PERSON}$é1$",
+    f'SELECT count(*) AS "{PERSON} diabetes" FROM t',
+    f"SELECT \"a, '{PERSON}'",
 ])
 def test_hosted_sql_carries_no_comment_or_literal_text(sql):
     masked = trace_export._mask_sql_literals(sql)
@@ -285,6 +293,18 @@ def test_hosted_sql_keeps_the_query_shape():
     assert trace_export._mask_sql_literals(sql) == (
         "SELECT \"gender\", count(*) FROM gold_patient   WHERE state = '<value>' "
         "AND x = '<value>'  \nGROUP BY 1")
+
+
+def test_plain_strings_have_no_backslash_escapes_and_params_stay():
+    # DuckDB: 'x\' is a whole string; $1 is a parameter, not a dollar quote
+    assert trace_export._mask_sql_literals("SELECT 'x\\', $1, \"a\"\"b\"") == \
+        "SELECT '<value>', $1, \"<name>\""
+
+
+def test_a_lone_surrogate_does_not_drop_the_span():
+    out = trace_export.otel_attributes("critic", {"reason": "\ud800", "issues": ["\ud800"],
+                                                  "question": "\ud800"}, hosted=True)
+    assert len(out["agent.reason_sha256"]) == 16 and "agent.question_sha256" in out
 
 
 def test_a_hosted_backend_gets_the_critic_text_only_as_a_hash(tmp_path):

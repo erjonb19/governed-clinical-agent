@@ -36,7 +36,8 @@ against arize-phoenix 21.0.0), so the root is sent once, at a final status:
 
 ERROR TEXT: an `error` attribute (and the span status message) is exported as
 the exception's type only; its message can quote a data value. A step's
-`reason` (a guard denial, a failed execute) is exported as recorded: it is the
+`reason` (a guard denial, a failed execute) is exported as recorded -- except
+the critic's, which a HOSTED backend gets as a hash (item 64): the guard's is the
 same text the planner is shown on a retry, and an execution error is reduced to
 its class and target type before it leaves the tool (describe_execution_error),
 so it carries no value -- pinned on this path by
@@ -131,7 +132,9 @@ def is_hosted(endpoint: str) -> bool:
     return host not in _LOCAL_HOSTS
 
 
-_DOLLAR_TAG = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+# DuckDB accepts Unicode letters in a tag ($ä$...$ä$); $1 is a parameter, not a tag.
+_DOLLAR_TAG = re.compile(r"\$([^\W\d]\w*)?\$")
+_PLAIN_NAME = re.compile(r"^\"[A-Za-z_][A-Za-z0-9_]*\"$")
 
 
 def _mask_sql_literals(sql: str) -> str:
@@ -139,15 +142,23 @@ def _mask_sql_literals(sql: str) -> str:
     literal -- '...' (with '' escapes, so also E'...'), $$...$$ and $tag$...$tag$
     -- replaced by '<value>'. Text a person typed can ride out in a WHERE
     clause or in a comment the model copied; neither leaves this machine.
-    Double-quoted names are identifiers and stay. Fail closed: an unterminated
-    literal or comment masks everything after it."""
+    In E'...' a backslash escapes the next character (E'x\\' y' is one string).
+    A double-quoted name stays only when it is a plain identifier ("gender");
+    any other ("John Smith") becomes "<name>": the model can copy question text
+    into an alias. Fail closed: an unterminated literal, name or comment masks
+    everything after it."""
     out: list[str] = []
     i, n = 0, len(sql)
     while i < n:
         c = sql[i]
         if c == "'":
+            escapes = i > 0 and sql[i - 1] in "Ee" and not (
+                i > 1 and (sql[i - 2].isalnum() or sql[i - 2] == "_"))
             j = i + 1
             while j < n:
+                if escapes and sql[j] == "\\":
+                    j += 2
+                    continue
                 if sql[j] == "'":
                     if j + 1 < n and sql[j + 1] == "'":
                         j += 2
@@ -161,10 +172,21 @@ def _mask_sql_literals(sql: str) -> str:
             out.append("'<value>'")
             i = n if end < 0 else end + len(m.group(0))
         elif c == '"':
-            j = sql.find('"', i + 1)
-            j = n if j < 0 else j + 1
-            out.append(sql[i:j])
-            i = j
+            j = i + 1
+            while j < n:
+                if sql[j] == '"':
+                    if j + 1 < n and sql[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:  # unterminated: mask the rest
+                out.append('"<name>"')
+                i = n
+            else:
+                name = sql[i : j + 1]
+                out.append(name if _PLAIN_NAME.match(name) else '"<name>"')
+                i = j + 1
         elif sql.startswith("--", i):
             j = sql.find("\n", i)
             out.append(" ")
@@ -188,7 +210,8 @@ def _mask_sql_literals(sql: str) -> str:
 
 def _digest(value: Any) -> tuple[str, int]:
     text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], len(text)
+    # surrogatepass: a lone surrogate from a model's JSON must not drop the span
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16], len(text)
 
 
 def hosted_attributes(name: str, attrs: dict) -> dict:
@@ -206,7 +229,8 @@ def hosted_attributes(name: str, attrs: dict) -> dict:
     out = dict(attrs)
     q = out.pop("question", None)
     if q:
-        out["question_sha256"] = hashlib.sha256(str(q).encode("utf-8")).hexdigest()[:16]
+        out["question_sha256"] = hashlib.sha256(
+            str(q).encode("utf-8", "surrogatepass")).hexdigest()[:16]
         out["question_chars"] = len(str(q))
     if out.get("sql"):
         out["sql"] = _mask_sql_literals(str(out["sql"]))
