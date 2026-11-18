@@ -445,7 +445,9 @@ SCHEMA_DOC = _SCHEMAS.get(os.environ.get("PLANNER_SCHEMA", "hospital").lower(),
 # around it into a new one ("</ques</question>tion>").
 _UNTRUSTED_TAGS = ("question", "rejection_reason", "proposed_sql")
 _TAG_START = re.compile(
-    r"<(?=\s*/?\s*(?:question|rejection[_\s-]*reason|proposed[_\s-]*sql))", re.I)
+    # up to 8 non-word characters may sit between "<" and the name: "/", "\\/"
+    # (JSON-escaped), "//", spaces, NUL, zero-width characters, a soft hyphen
+    r"<(?=[^\w>]{0,8}(?:question|rejection[_\s-]*reason|proposed[_\s-]*sql))", re.I)
 
 
 def delimit(label: str, text: str) -> str:
