@@ -816,6 +816,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   public network is refused at startup.
 - [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
   findings and approval-queue routes declare their responses.
+- [x] **The UI escapes all five HTML-special characters** (audit item 58), the single quote
+  included.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
