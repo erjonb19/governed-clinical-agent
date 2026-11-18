@@ -2363,7 +2363,8 @@ def check(tree: exp.Expression) -> PhiDecision:
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
-            gated = exp.alias_(gated, target.sql(dialect=DIALECT), quoted=True)
+            # the column keeps its name, but never a comment's text (item 66)
+            gated = exp.alias_(gated, target.sql(dialect=DIALECT, comments=False), quoted=True)
         target.replace(gated)
     for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]

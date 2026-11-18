@@ -113,6 +113,8 @@ def test_the_reference_backend_and_the_tool_share_a_database_file(tmp_path):
     "SELECT count(*) FROM gold_hospital_profile -- Jane Doe",
     "-- Jane Doe\nSELECT count(*) FROM gold_hospital_profile",
     "SELECT count(*) FROM gold_patient WHERE gender = 'F' /* Jane Doe */",
+    # an unaliased FILTER aggregate keeps its text as the column name
+    "SELECT count(*) FILTER (WHERE gender = 'F' /* Jane Doe */) FROM gold_patient",
 ])
 def test_comments_are_dropped_from_the_executed_sql(sql):
     d = validate_query(sql)
