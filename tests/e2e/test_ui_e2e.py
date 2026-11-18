@@ -54,6 +54,7 @@ def server(tmp_path_factory):
     port = _free_port()
     env = {**os.environ,
            "PLANNER_PROVIDER": "replay", "ALLOW_REPLAY": "1", "API_KEY": KEY, "QUERY_MODE": "graph",
+           "UI_PREFILL_KEY": "1",
            "PLANNER_MIN_INTERVAL_SEC": os.environ.get("PLANNER_MIN_INTERVAL_SEC", "0"),
            "TRACE_DB": str(tmp / "traces.sqlite"), "CHECKPOINT_DB": str(tmp / "cp.sqlite"),
            "APPROVALS_DB": str(tmp / "approvals.sqlite"), "AUDIT_LOG_DIR": str(tmp / "audit"),

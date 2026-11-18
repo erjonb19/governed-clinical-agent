@@ -600,6 +600,7 @@ pip install --require-hashes -r requirements-api.lock   # the exact, hash-checke
 $env:PLANNER_PROVIDER="gemini"  # what CI and both eval suites run on
 $env:GEMINI_API_KEY="..."       # the planner's model (free key at aistudio.google.com)
 $env:API_KEY="..."              # require a key on the data endpoints
+$env:UI_PREFILL_KEY="1"         # local only: the UI on this machine gets the key filled in
 
 API_DOCS=1 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
@@ -816,6 +817,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   public network is refused at startup.
 - [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
   findings and approval-queue routes declare their responses.
+- [x] **The UI is never handed the key by default** (audit item 57): `/ui-config` fills in
+  the key only with `UI_PREFILL_KEY=1` and a browser on the same machine.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
