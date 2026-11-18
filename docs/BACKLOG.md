@@ -473,9 +473,10 @@ What real AI, data and software engineering teams would add, checked against the
 - [ ] **64. Hosted trace export masks single-quoted literals only** (Low; security audit finding 35, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: trace_export.py:134-139; analytics_query_tool.py:53-56
   - Done when: Strip SQL comments before masking; hash or truncate the critic's reason for hosted export. (Export is off by default.); a test or check shows it.
-- [ ] **65. Old audit logs are committed although logs/ is gitignored** (Low; security audit finding 36, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **65. Old audit logs are committed although logs/ is gitignored** (Low; security audit finding 36, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: logs/audit/audit_agent_*.jsonl (10 files, demo prompts only)
   - Done when: git rm --cached logs/audit/*.jsonl.; a test or check shows it.
+  - Done 2026-11-18: the ten `logs/audit/audit_agent_*.jsonl` demo logs are untracked (`git rm --cached`; they stay in history, demo prompts only, no secrets per the audit). `tests/unit/test_no_committed_logs.py` fails if any file under `logs/` is tracked again. The other tracked-but-ignored files (`eval_runs/`, `medallion/*.parquet`, `tests/security/data/`) are committed on purpose and are not covered.
 - [ ] **66. SQL comments are allowed and kept in the executed SQL** (Low; security audit finding 37, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: sql_guard.py:186-198 (verified: /* */ and -- pass into safe_sql, which the critic reads)
   - Done when: Deny statements with comments, or emit with comments=False.; a test or check shows it.
