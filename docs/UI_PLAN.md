@@ -23,8 +23,8 @@ cold start). An E2E test checks the two-click claim.
 - **The blocker:** `/findings` requires the API key
   (`dependencies=[Depends(require_api_key)]`). On the deployed site a visitor
   with no key sees "This service is protected. Enter your access key" and **no
-  answer at all**. Locally the server prefills the key, which is why the
-  Overview looks fine in the E2E test (`test_7`).
+  answer at all**. Locally the server prefilled the key (since item 57, only with
+  `UI_PREFILL_KEY=1`), which is why the Overview looks fine in the E2E test (`test_7`).
 - **Cold start:** Render free spins the service down when idle. The page itself
   is served by the sleeping service, so **nothing on the page can show before
   the service wakes** -- the browser just waits. A note on the page can only
@@ -39,7 +39,7 @@ if it was something else.
 **D1. Let a visitor see the fixed findings without a key?**
 - **(a) Recommended, approved:** a new read-only `GET /public/findings` with no key,
   which also returns no key (and `/ui-config` keeps handing its key to loopback
-  callers only),
+  callers only, and since item 57 only with `UI_PREFILL_KEY=1`),
   serving only the cached hospital findings (public CMS data, fixed reviewed
   SQL, the same guard path, no LLM, $0). Its own tight rate limit (for example
   `RATE_LIMIT_PUBLIC`, default `60/minute` per address; on Render every caller shares the proxy's address until
