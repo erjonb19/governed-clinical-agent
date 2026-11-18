@@ -40,23 +40,40 @@ def is_postgres(u: Optional[str] = None) -> bool:
 _LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
 
 
+_STRONG_MODES = {"require", "verify-ca", "verify-full"}
+
+
 def tls_kwargs(u: Optional[str] = None) -> dict[str, str]:
     """Backlog item 61: require TLS to a Postgres that is not on this machine.
 
     `sslmode=require` is added unless the URL already names an `sslmode`, or
-    libpq's own PGSSLMODE is set, or the host is local (a unix socket,
-    localhost, 127.0.0.1 or ::1: CI's service container). STATE_DB_SSLMODE
-    changes the mode added (e.g. `verify-full` with a root certificate);
-    anything weaker than `require` for a remote host is the URL's to state."""
-    from urllib.parse import parse_qs, urlparse
-
+    libpq's own PGSSLMODE is set, or EVERY host is local (a unix socket,
+    localhost, 127.0.0.1 or ::1: CI's service container). The URL is read the
+    way libpq reads it, so a remote `host=`/`hostaddr=` in the query string
+    counts (review of #156). STATE_DB_SSLMODE picks a stronger mode
+    (`verify-ca`, `verify-full`); anything else falls back to `require` --
+    weakening TLS for a remote host is the URL's to state, explicitly."""
     u = url() if u is None else u
-    parsed = urlparse(u)
-    if "sslmode" in parse_qs(parsed.query) or os.environ.get("PGSSLMODE"):
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        params = {k.lower(): str(v) for k, v in conninfo_to_dict(u).items() if v is not None}
+    except Exception:  # noqa: BLE001 -- unparseable or no psycopg: require TLS
+        params = {}
+        hosts = ["?"]
+    else:
+        hosts = [
+            h.strip()
+            for key in ("host", "hostaddr")
+            for h in params.get(key, "").split(",")
+            if h.strip()
+        ]
+    if params.get("sslmode") or os.environ.get("PGSSLMODE"):
         return {}
-    if (parsed.hostname or "") in _LOCAL_HOSTS:
-        return {}
-    return {"sslmode": os.environ.get("STATE_DB_SSLMODE", "require").strip() or "require"}
+    if all(h in _LOCAL_HOSTS or h.startswith("/") for h in hosts):
+        return {}  # no host at all is a local unix socket
+    mode = os.environ.get("STATE_DB_SSLMODE", "").strip().lower()
+    return {"sslmode": mode if mode in _STRONG_MODES else "require"}
 
 
 def describe() -> str:

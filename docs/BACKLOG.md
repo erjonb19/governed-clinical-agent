@@ -460,7 +460,7 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **61. The Postgres connection does not require TLS** (Low; security audit finding 32, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: state_db.py:80
   - Done when: sslmode=require (or verify-full) unless the URL sets one.; a test or check shows it.
-  - Done 2026-11-18: `state_db.tls_kwargs()` adds `sslmode=require` to every Postgres connection (the store and the LangGraph checkpointer's pool) unless the URL names an `sslmode`, libpq's `PGSSLMODE` is set, or the host is local (a unix socket, localhost, 127.0.0.1, ::1 -- CI's service container). `STATE_DB_SSLMODE` picks a stronger mode (e.g. `verify-full`). `tests/unit/test_state_db_tls.py`.
+  - Done 2026-11-18: `state_db.tls_kwargs()` adds `sslmode=require` to every Postgres connection (the store and the LangGraph checkpointer's pool) unless the URL names an `sslmode`, libpq's `PGSSLMODE` is set, or every host is local (a unix socket, localhost, 127.0.0.1, ::1 -- CI's service container). The URL is read the way libpq reads it, so a remote `host=`/`hostaddr=` in the query string counts. `STATE_DB_SSLMODE` picks a stronger mode (`verify-ca`, `verify-full`); a weaker value falls back to `require`. `tests/unit/test_state_db_tls.py`.
 - [ ] **62. Secret redaction misses this repo's own key formats** (Low; security audit finding 33, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: src/utils/redaction.py:36-37 (sk-, ghp_, Bearer only)
   - Done when: Patterns for AIza (Gemini), gsk_ (Groq), xai- (xAI), sk-ant- (Anthropic), with tests.; a test or check shows it.
