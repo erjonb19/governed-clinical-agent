@@ -12,6 +12,7 @@ data can feed the AIOps panel.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -21,6 +22,37 @@ METRICS_LOG = os.environ.get("PLANNER_METRICS_LOG", "logs/planner_metrics.jsonl"
 _LOCK = threading.Lock()
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+# Backlog item 60: the log is capped. Past METRICS_LOG_MAX_BYTES it is renamed
+# to `<file>.1` (the old `.1` to `.2`, ...), keeping METRICS_LOG_KEEP old files;
+# summaries read the current file only.
+MAX_BYTES = _int_env("METRICS_LOG_MAX_BYTES", 5_000_000)
+KEEP = _int_env("METRICS_LOG_KEEP", 2)
+
+
+def rotate(path: str, max_bytes: int, keep: int) -> None:
+    """Rename `path` to `path.1` (shifting older ones) once it passes max_bytes;
+    the oldest beyond `keep` is removed. 0 for max_bytes turns this off."""
+    if not max_bytes or not os.path.exists(path) or os.path.getsize(path) < max_bytes:
+        return
+    if keep <= 0:
+        os.remove(path)
+        return
+    oldest = f"{path}.{keep}"
+    if os.path.exists(oldest):
+        os.remove(oldest)
+    for i in range(keep - 1, 0, -1):
+        if os.path.exists(f"{path}.{i}"):
+            os.replace(f"{path}.{i}", f"{path}.{i + 1}")
+    os.replace(path, f"{path}.1")
+
+
 def record(metrics: dict, question: str | None = None) -> None:
     """Append one planner call's metrics. Best-effort; never raises to caller."""
     try:
@@ -28,9 +60,14 @@ def record(metrics: dict, question: str | None = None) -> None:
         row = dict(metrics)
         row["ts"] = datetime.now(timezone.utc).isoformat()
         if question:
-            row["question"] = question[:200]
-        with _LOCK, open(METRICS_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row) + "\n")
+            # item 60: a hash and a length, never the text -- the question can
+            # hold anything a visitor typed, and this file is kept
+            row["question_sha256"] = hashlib.sha256(question.encode()).hexdigest()[:16]
+            row["question_chars"] = len(question)
+        with _LOCK:
+            rotate(METRICS_LOG, MAX_BYTES, KEEP)
+            with open(METRICS_LOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
     except Exception:
         pass  # metrics are best-effort, never break a request
 
@@ -60,11 +97,13 @@ def summarize(path: str | None = None) -> dict:
         if r.get("latency_ms") is not None:
             latencies.append(r["latency_ms"])
     latencies.sort()
+
     def pct(p):
         if not latencies:
             return None
         i = min(len(latencies) - 1, int(p / 100 * len(latencies)))
         return latencies[i]
+
     return {
         "calls": n,
         "total_tokens": tot_tokens,
@@ -82,4 +121,5 @@ def summarize(path: str | None = None) -> dict:
 
 if __name__ == "__main__":
     import sys
+
     print(json.dumps(summarize(sys.argv[1] if len(sys.argv) > 1 else None), indent=2))
