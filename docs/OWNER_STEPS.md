@@ -212,6 +212,8 @@ client -> **Cloudflare** -> Render (10.x) -> 127.0.0.1 -> app.
   invalid and treat every caller as one.
 - **A bad trust list no longer stops the deploy.** It logs an error, `/health`
   shows `proxy_trust: invalid`, and the nightly live check fails until it is fixed.
+  Meanwhile every caller is recorded as `untrusted-proxy` and shares one bucket in
+  the per-address limits (fail closed: a forged header gains nothing).
 
 **When that PR is deployed, check:**
 
@@ -244,8 +246,12 @@ branch was `...-item41`, PR #134, merged). You approved deleting it, but this
 session's git proxy refuses branch deletions, so it needs you. It holds nothing
 that is not on `main`.
 
+Your clone pushes to `myfork` (CLAUDE.md). Check the remote names first, then
+delete from the one that points at `erjonb19/governed-clinical-agent`:
+
 ```powershell
-git push origin --delete claude/jolly-hopper-8ly9iq-41
+git remote -v
+git push myfork --delete claude/jolly-hopper-8ly9iq-41
 ```
 
 Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
