@@ -50,3 +50,22 @@ def test_each_provider_key_is_masked_in_a_value_under_an_innocent_key(kind):
 )
 def test_ordinary_text_is_untouched(text):
     assert redact_text(text) == text
+
+
+def test_a_databricks_suffix_goes_too():
+    key = "dapi" + "0123456789abcdef" * 2 + "-2"
+    assert redact_text(f"token {key} rejected") == f"token {REDACTED} rejected"
+
+
+def test_a_key_in_an_exception_never_reaches_a_local_trace(tmp_path):
+    import tracing
+
+    t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=False)
+    key = SAMPLES["groq"]
+    with t.trace("run") as tid:
+        try:
+            with t.span("plan"):
+                raise RuntimeError(f"401: invalid api key {key}")
+        except RuntimeError:
+            pass
+    assert key not in repr(t.get_trace(tid))

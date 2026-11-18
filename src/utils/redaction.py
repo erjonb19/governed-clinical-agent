@@ -44,7 +44,7 @@ _PROVIDER_KEY_RES = (
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}"),  # Anthropic (sk-ant-api03-...)
     re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}"),  # OpenAI project/service keys
     re.compile(r"\b[ps]k-lf-[A-Za-z0-9-]{8,}"),  # Langfuse (item 12's hosted traces)
-    re.compile(r"\bdapi[0-9a-f]{32}\b"),  # Databricks personal access token
+    re.compile(r"\bdapi[0-9a-f]{32}(?:-\d+)?\b"),  # Databricks personal access token
 )
 
 
