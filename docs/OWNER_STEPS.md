@@ -78,7 +78,10 @@ Check what is required (works in PowerShell 5.1 and 7):
 
 ---
 
-## [ ] 4. Confirm Render built the hash-locked install (backlog item 45)
+## [x] 4. Confirm Render built the hash-locked install (backlog item 45)
+
+**Done 2026-11-18 (owner):** the build log for `c287301` shows
+`pip install --require-hashes -r requirements-api.lock`.
 
 **Why:** `render.yaml` now builds with `pip install --require-hashes -r
 requirements-api.lock`. Render applies a `render.yaml` change only if the service
@@ -187,43 +190,52 @@ its steps. Tell the agent "step 8 done". Stop it with `docker compose down`.
 
 ## [ ] 9. Trust Render's proxy for client addresses (backlog item 38)
 
-**Why:** every audit event now records the caller's address (`source_ip`), and the
+**Why:** every audit event records the caller's address (`source_ip`), and the
 keyless `/public/findings` limit and the failed-key counter are kept per address.
-Behind Render's proxy the app sees the proxy's address for every caller until
-uvicorn is told to trust the proxy's `X-Forwarded-For` header. That is an
-environment variable in the Render dashboard (a Render change, so it is yours).
-Trust only the proxy's own addresses: `*` would let any caller choose its own
-address and skip the per-address limits, so the app refuses to start with `*` or
-any public network.
+That only works if the app sees the real caller, not a proxy.
 
-1. Render dashboard -> `governed-clinical-agent` -> **Logs**.
-2. Open the UI once (https://governed-clinical-agent.onrender.com/ui) so a few
-   requests are logged. Each uvicorn access line starts with the client address,
-   e.g. `10.201.33.4:45678 - "GET /ui HTTP/1.1" 200`. With nothing trusted yet, that
-   is Render's proxy. Note the first part of several of them.
-3. If they are all private addresses (`10.x.x.x`), go to **Environment** -> Add
-   Environment Variable: key `FORWARDED_ALLOW_IPS`, value `10.0.0.0/8`. (Only
-   Render's own network can reach the app from a private address.) If they are not
-   `10.x`, do not guess: tell the agent what you saw.
-4. Save; Render redeploys.
+**What we learned (owner's tests, 2026-11-18).** The chain is
+client -> **Cloudflare** -> Render (10.x) -> 127.0.0.1 -> app.
 
-Check: after the redeploy, the access lines in **Logs** should show your own public
-address instead of the `10.x` one. From PowerShell, your public address is:
+- **Current value on Render:** `FORWARDED_ALLOW_IPS` = `127.0.0.1,10.0.0.0/8` (set by
+  the owner; deploy live).
+- **Result:** the logs show a Cloudflare edge, e.g. `104.22.72.4`, not the caller
+  (`check=e2`).
+- **A forged `X-Forwarded-For: 1.2.3.4` was ignored** (`check=e3` logged
+  `104.22.72.47`). The trust list is safe, but it is not yet showing the caller.
+- **One browser request** (`/auth-check`) did show the real address, so some
+  requests arrive by another path.
+- **The fix is in code, with no Render change:** when uvicorn's answer is a
+  Cloudflare edge, the app uses Cloudflare's `CF-Connecting-IP`, or one step left
+  in `X-Forwarded-For`. The PR is "Real client address behind Cloudflare". Do not
+  add Cloudflare's ranges to `FORWARDED_ALLOW_IPS`: the app would log that as
+  invalid and treat every caller as one.
+- **A bad trust list no longer stops the deploy.** It logs an error, `/health`
+  shows `proxy_trust: invalid`, and the nightly live check fails until it is fixed.
+  Meanwhile every caller is recorded as `untrusted-proxy` and shares one bucket in
+  the per-address limits (fail closed: a forged header gains nothing).
+
+**When that PR is deployed, check:**
+
+1. `/health` shows `proxy_trust: ok`:
+
+```powershell
+(Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health).proxy_trust
+```
+
+2. Your address. Then send a request with a forged header and a marker:
 
 ```powershell
 Invoke-RestMethod https://api.ipify.org
+Invoke-RestMethod "https://governed-clinical-agent.onrender.com/v1/health?check=e4" -Headers @{"X-Forwarded-For"="1.2.3.4"}
 ```
 
-Also check a forged header is ignored (the logged address must still be yours,
-not `1.2.3.4`):
+3. Render dashboard -> **Logs**. The line for `check=e4` must start with **your**
+   address, not `1.2.3.4` and not a `104.x`/`172.6x.x` Cloudflare one.
 
-```powershell
-Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health -Headers @{"X-Forwarded-For"="1.2.3.4"}
-```
-
-Then tell the agent "step 9 done". After this, the failed-key lockout
-(`AUTH_FAILURE_LOCKOUT=1`, backlog item 35) can be turned on safely; that is a
-separate decision.
+Leave this step open until the real address shows. Then tell the agent "step 9
+done". After that, the failed-key lockout (`AUTH_FAILURE_LOCKOUT=1`, backlog item
+35) can be turned on safely; that is a separate decision.
 
 ---
 
@@ -250,3 +262,22 @@ gh workflow run security-alerts.yml --repo erjonb19/governed-clinical-agent
 Then tell the agent "step 10 done". If you rotate `API_KEY` on Render, set this
 secret again.
 
+---
+
+## [ ] 11. Delete the stray branch `claude/jolly-hopper-8ly9iq-41`
+
+**Why:** an agent pushed a merge to this misnamed branch on 2026-11-16 (the real
+branch was `...-item41`, PR #134, merged). You approved deleting it, but this
+session's git proxy refuses branch deletions, so it needs you. It holds nothing
+that is not on `main`.
+
+Your clone pushes to `myfork` (CLAUDE.md). Check the remote names first, then
+delete from the one that points at `erjonb19/governed-clinical-agent`:
+
+```powershell
+git remote -v
+git push myfork --delete claude/jolly-hopper-8ly9iq-41
+```
+
+Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
+"step 11 done".
