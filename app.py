@@ -337,8 +337,9 @@ async def lifespan(app: FastAPI):
         try:
             audit = _ServiceAuditLogger(log_dir=Path(AUDIT_LOG_DIR), agent_id="api",
                                 max_buffer_size=1, enable_console=False)
-        except Exception as e:
-            print(f"WARNING: audit log disabled ({e})")
+        except Exception as e:  # noqa: BLE001 -- the service runs, but says so
+            _STATE["audit_error"] = type(e).__name__
+            print(f"WARNING: audit log disabled ({type(e).__name__})", file=sys.stderr)
     runtime = AgentRuntime(audit_logger=audit)
     auth_failures.FAILURES.audit = audit    # refused keys go to the same audit log
     runtime.load_policy(POLICY_PATH)
@@ -892,6 +893,9 @@ def health() -> dict:
         "planner_enabled": _STATE.get("planner") is not None,
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
+        # item 63: whether audit events are being written (how many failed is
+        # in the keyed /metrics: an open endpoint should not say auditing is broken)
+        "audit_enabled": getattr(_STATE.get("runtime"), "audit_logger", None) is not None,
         "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
@@ -1124,8 +1128,19 @@ def _audit_answer(allowed: bool, decided_by: Optional[str], version: dict,
     try:
         logger.log_answer(capability="analytics.query_aggregate", allowed=allowed,
                           decided_by=decided_by, version=version, trace_id=trace_id)
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 -- an audit write must not fail the answer
+        _audit_failed("answer", e)
+
+
+_audit_log = logging.getLogger("governed.audit")
+
+
+def _audit_failed(where: str, exc: BaseException) -> None:
+    """Item 63: a failed audit write is never silent. One warning on stderr with
+    the exception TYPE (its message can carry a path or a value), and a count
+    that /health reports."""
+    _STATE["audit_failures"] = _STATE.get("audit_failures", 0) + 1
+    _audit_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
 
 
 def _query_graph(req: QueryRequest, ds: str) -> dict:
@@ -1288,6 +1303,7 @@ def metrics() -> dict:
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
     out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
+    out["audit_failures"] = _STATE.get("audit_failures", 0)   # item 63
     return out
 
 
