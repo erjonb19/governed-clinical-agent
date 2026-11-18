@@ -588,6 +588,7 @@ Fourteen GitHub Actions workflows:
 - **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay` with `ALLOW_REPLAY=1`, `replay.py`; without that opt-in the provider refuses to start, so a deploy cannot run on it by accident): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
 - **MCP end to end on every push** (`mcp-e2e.yml`) — a real MCP client connects over stdio, standalone Streamable HTTP and `/mcp` in the API; on each it lists tools, runs one allowed and one blocked query, and over HTTP checks the 401 and both key headers. No LLM, $0.
 - **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
+- **Nightly security alerts** (`security-alerts.yml`, backlog item 59) — `security_alerts.py` reads `/v1/metrics` on the deploy with the repo secret `ALERT_API_KEY` and opens one `security-alert` issue per kind: a client over the failed-key limit or 50+ refused keys since the last restart, and model runs or estimated spend at 80% of the daily caps. A quiet night closes it. The counters live in memory, so they cover the time since the last restart. Without the secret it warns and does nothing (`docs/OWNER_STEPS.md` step 10). Standard library only.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
 Fast feedback on every change, complete coverage every night. Reports are uploaded as artifacts.
@@ -816,6 +817,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   public network is refused at startup.
 - [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
   findings and approval-queue routes declare their responses.
+- [x] **Security alerts as issues** (audit item 59): nightly, on refused API keys and on model
+  spend near the daily caps; needs the `ALERT_API_KEY` repo secret (OWNER_STEPS step 10).
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

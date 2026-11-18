@@ -1,0 +1,37 @@
+# .github/workflows/security-alerts.yml
+# Nightly security alerts (backlog item 59): reads the deployed service's
+# /v1/metrics with the repo secret ALERT_API_KEY and opens one `security-alert`
+# issue per kind (refused API keys, model spend); a quiet night closes it.
+# Without the secret it warns and does nothing. Standard library only: no installs.
+
+name: security alerts
+
+on:
+  schedule:
+    - cron: "45 6 * * *"        # 06:45 UTC daily, after the live check wakes the service
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: security-alerts
+  cancel-in-progress: false
+
+jobs:
+  security-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Check thresholds and file issues
+        env:
+          ALERT_API_KEY: ${{ secrets.ALERT_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: python security_alerts.py
