@@ -295,7 +295,9 @@ def validate_query(sql: str,
         # UNION / subquery at top: wrap-limit is fiddly, enforce by re-select
         note = "non-simple SELECT, row cap enforced at DB layer"
 
-    safe_sql = tree.sql(dialect=DIALECT)
+    # Item 66: comments never reach the executed SQL (or the critic and traces
+    # that read it): text a person typed can ride in one, and nothing needs it.
+    safe_sql = tree.sql(dialect=DIALECT, comments=False)
     if phi.protected:
         note += (f"; PHI rules applied, {phi.suppressed_scopes} aggregate(s) suppress groups "
                  f"under {phi_guard.MIN_CELL} people")
