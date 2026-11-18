@@ -814,6 +814,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   key) and the caller's address. On Render the address is the proxy's until
   `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` or any
   public network is refused at startup.
+- [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
+  findings and approval-queue routes declare their responses.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

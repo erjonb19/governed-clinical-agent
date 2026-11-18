@@ -436,9 +436,10 @@ What real AI, data and software engineering teams would add, checked against the
   - Where: app.py:595, :849
   - Done when: Require auth on the router and list public routes explicitly (/health, /ui, /ui-config).; a test or check shows it.
   - Done 2026-11-16: an app-level dependency (`require_key_unless_public`) asks for the key on every route except `PUBLIC_ROUTES` in `app.py`: `/`, `/ui`, `/ui-config`, `/health`, `/public/findings` and `/datasets` (open by item 36's decision: table names and row counts, cached and rate-limited). A new route is private unless added there; a request with no matched route also needs the key. `/metrics` and `/schema` now need it, and the UI's Usage and Data views send it. The per-route checks stay as a second layer. `tests/integration/test_public_findings.py` pins the list against the app's own and checks every other route answers 401.
-- [ ] **55. Request models accept unknown fields; most routes have no response_model** (Low; security audit finding 26, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **55. Request models accept unknown fields; most routes have no response_model** (Low; security audit finding 26, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:396-423
   - Done when: model_config = ConfigDict(extra="forbid"); response models.; a test or check shows it.
+  - Done 2026-11-18: the four request bodies (`/query`, `/raw-sql`, `/propose`, a decision) inherit `_StrictRequest` (`extra="forbid"`), so an unknown field is a 422. `/findings`, `/public/findings` and `/approvals` now declare response models (top-level keys only; the finding cards and queue rows stay `dict`, since each finding renders its own fields); `/query` and `/raw-sql` already had `GovernedResponse`. The approval decision, item and `/propose` answers still have none: their shapes come from the approval graph and would need their own models. `tests/integration/test_strict_requests.py`.
 - [ ] **56. One shared plaintext API key, no scopes or revocation** (Low; security audit finding 27, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:115, :174; mcp_server.py:455-457
   - Done when: covered by item 22 (hashed per-user keys, roles, revocation); tick together; a test or check shows it.
