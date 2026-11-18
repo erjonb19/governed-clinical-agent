@@ -16,6 +16,33 @@ from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
 
 
+# Item 63: a failed audit write is never silent. Every best-effort audit write
+# (the answer event, the critic's review, a refused key) reports here: one
+# warning with the exception TYPE only (its message can carry a path or a value)
+# and one process-wide count that /metrics shows.
+_failure_log = logging.getLogger("governed.audit")
+_failure_lock = Lock()
+_failure_count = 0
+
+
+def record_failure(where: str, exc: BaseException) -> None:
+    global _failure_count
+    with _failure_lock:
+        _failure_count += 1
+    _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
+
+
+def failure_count() -> int:
+    with _failure_lock:
+        return _failure_count
+
+
+def reset_failures() -> None:
+    global _failure_count
+    with _failure_lock:
+        _failure_count = 0
+
+
 class AuditEventType(Enum):
     """Types of audit events."""
     POLICY_EVALUATION = "policy_evaluation"

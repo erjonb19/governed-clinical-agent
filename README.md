@@ -833,6 +833,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   length, not the question; metrics and audit logs rotate (`METRICS_LOG_MAX_BYTES`,
   `AUDIT_LOG_MAX_BYTES`, `AUDIT_LOG_KEEP`); decided approvals expire after
   `APPROVAL_RETENTION_DAYS` (90).
+- [x] **Audit failures are visible** (audit item 63): a failed audit write logs a warning and
+  is counted in `/metrics`; `/health` shows `audit_enabled`.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
