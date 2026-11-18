@@ -13,7 +13,9 @@ Reads the deployed service's `/v1/metrics` with a key (the repo secret
 A repeat comments on the open issue; the next quiet night closes it. The
 counters live in the service's memory, so they cover the time since its last
 restart (Render free sleeps when idle): a quiet night after a restart is not
-proof that nothing happened. Without the secret, or when the service cannot
+proof that nothing happened, and "a client over the limit" means within the
+current 300 s window. It runs at 23:30 UTC, late in the budget day (the caps
+reset at UTC midnight), and allows 180 s for a sleeping service to wake. Without the secret, or when the service cannot
 be reached (live_check.py reports that), the job warns and files nothing.
 Nothing in an issue names a client address or a key.
 
@@ -86,7 +88,9 @@ def actions(
     return out
 
 
-def fetch_metrics(key: str, timeout: float = 120.0) -> dict[str, Any]:
+def fetch_metrics(key: str, timeout: float = 180.0) -> dict[str, Any]:
+    if not SERVICE_URL.startswith("https://"):
+        raise ValueError("SERVICE_URL must be https: the key travels in a header")
     req = urllib.request.Request(
         SERVICE_URL.rstrip("/") + "/v1/metrics", headers={"X-API-Key": key}
     )

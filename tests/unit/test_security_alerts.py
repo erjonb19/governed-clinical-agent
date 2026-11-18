@@ -81,3 +81,33 @@ def test_the_summary_carries_no_client_address():
     s = f.summary()
     assert s["total"] == 3 and s["clients_over_limit"] == 1
     assert "198.51.100.23" not in repr(s)
+
+
+def test_main_opens_an_issue_through_gh(monkeypatch):
+    monkeypatch.setenv("ALERT_API_KEY", "k")
+    monkeypatch.setattr(sys, "argv", ["security_alerts.py"])
+    m = {**QUIET, "auth_failures": {**QUIET["auth_failures"], "clients_over_limit": 1}}
+    monkeypatch.setattr(S, "fetch_metrics", lambda key, timeout=0: m)
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        return (
+            '[{"number": 4, "title": "security alert: model spend"}]' if args[1] == "list" else ""
+        )
+
+    monkeypatch.setattr(S, "_gh", gh)
+    assert S.main() == 0
+    kinds = [(a[0], a[1]) for a in calls]
+    assert ("issue", "create") in kinds  # the refused-keys alert opens
+    assert ("issue", "close") in kinds  # the quiet spend alert closes
+    assert all("k" != x for a in calls for x in a)  # the key never reaches gh
+
+
+def test_an_http_service_url_is_refused(monkeypatch):
+    monkeypatch.setattr(S, "SERVICE_URL", "http://example.invalid")
+    try:
+        S.fetch_metrics("k")
+    except ValueError:
+        return
+    raise AssertionError("an http URL must be refused")
