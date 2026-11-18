@@ -54,6 +54,10 @@ def problems(health_status: Optional[int], health_body: Optional[dict],
         out.append(f"/health returned {health_status}")
     elif (health_body or {}).get("status") != "ok":
         out.append(f"/health status is {(health_body or {}).get('status')!r}, not 'ok'")
+    elif (health_body or {}).get("proxy_trust", "ok") != "ok":
+        # FORWARDED_ALLOW_IPS failed its check: the deploy runs, but every caller
+        # shares one address bucket until it is fixed (item 38, step 9)
+        out.append(f"/health proxy_trust is {(health_body or {}).get('proxy_trust')!r}, not 'ok'")
     if ui_status != 200:
         out.append(f"/ui returned {ui_status}")
     else:

@@ -1945,6 +1945,110 @@ def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
     return sorted({g.name.lower() for g in group.expressions})
 
 
+def _outer_aggregate(q: exp.Expression) -> Optional[str]:
+    """The name of an aggregate that reads a column of an enclosing query, or None.
+
+    Review of item 71 option 2 (2026-11-16): `(SELECT count(p.patient_id))` in
+    a projection or HAVING is computed by DuckDB over the OUTER query's rows,
+    but every PHI check treats it as belonging to the inner SELECT and skips it.
+    `HAVING (SELECT count(p.patient_id) FILTER (WHERE p.gender = 'male')) = 3`
+    confirmed a 3-person cell on main, and over ten key joins it gave back the
+    exact summed age of 4 people. An aggregate may use only its own SELECT's
+    sources (columns are qualified by now). Fail closed."""
+    aliases = {(x.alias_or_name or "").lower() for s in q.find_all(exp.Select) for x in _sources(s)}
+    for node in q.find_all(exp.Func):
+        if not (isinstance(node, exp.AggFunc) or is_agg(node)):
+            continue
+        sel = node.find_ancestor(exp.Select)
+        if sel is None:
+            continue
+        # third review: FILTER (WHERE ...) and WITHIN GROUP (ORDER BY ...) are
+        # parsed as nodes ABOVE the aggregate, so their outer columns were never
+        # seen (`(SELECT count(*) FILTER (WHERE p.gender = 'male'))`). Scan the
+        # aggregate with every wrapper it carries.
+        top = node
+        while isinstance(top.parent, (exp.Filter, exp.WithinGroup,
+                                      exp.IgnoreNulls, exp.RespectNulls)):
+            top = top.parent
+        own = {(x.alias_or_name or "").lower() for x in _sources(sel)}
+        for col in top.find_all(exp.Column):
+            if col.find_ancestor(exp.Select) is not sel:
+                continue                                   # a query nested in the argument
+            t = (col.table or "").lower()
+            if not t:
+                # every real column is qualified by now; a bare table alias is a
+                # whole row (`count(p)` counted the outer rows as structs, third
+                # review). Other unknown names are left to the no-such-column check.
+                if (col.name or "").lower() in aliases:
+                    return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+                continue
+            if t not in own:
+                return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+    return None
+
+
+_ONE_PER_PERSON = {"gold_patient"}
+
+
+def _one_to_many(src: exp.Expression, root: exp.Expression) -> bool:
+    """A row source that can hold several rows per person. Only gold_patient
+    itself and a DISTINCT set of patient keys are known to hold one; anything
+    else (another patient table, a derived table, a CTE) counts as many (fail
+    closed)."""
+    if isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier):
+        body = _cte_body(src.name, root)
+        if body is None:
+            return (src.name or "").lower() not in _ONE_PER_PERSON
+    else:
+        body = src.this if isinstance(src, exp.Subquery) else None
+    if isinstance(body, exp.Select) and _distinct_key_select(body):
+        return False
+    if isinstance(body, exp.SetOperation) and _key_set(body):
+        return False
+    return True
+
+
+def _base_table(src: exp.Expression, root: exp.Expression) -> bool:
+    """A patient table read directly: not a derived table and not a CTE."""
+    return isinstance(src, exp.Table) and isinstance(src.this, exp.Identifier) and \
+        _cte_body(src.name, root) is None
+
+
+def _distinct_key_select(sel: exp.Select) -> bool:
+    """SELECT DISTINCT <x>.patient_id ...: one row per person whatever it joins."""
+    d = sel.args.get("distinct")
+    if d is not None and d.args.get("on") is not None:
+        return False        # DISTINCT ON (x): one row per x, not per person (review)
+    return bool(d) and len(sel.expressions) == 1 and \
+        isinstance(sel.expressions[0].unalias(), exp.Column) and \
+        sel.expressions[0].unalias().name.lower() == PERSON_KEY
+
+
+def _distinct_people_only(sel: exp.Select) -> bool:
+    """Every aggregate in this SELECT (projection, HAVING, QUALIFY, ORDER BY) is
+    count(DISTINCT <alias>.patient_id), there is at least one, and there is no
+    window function: a count of people cannot see how often a row repeats."""
+    if any(True for _ in sel.find_all(exp.Window)):
+        return False
+    found = False
+    # every aggregate, DuckDB's anonymous ones too (fsum, kahan_sum: review)
+    for agg in sel.find_all(exp.Func):
+        if not (isinstance(agg, exp.AggFunc) or is_agg(agg)):
+            continue
+        if agg.find_ancestor(exp.Select) is not sel:
+            continue                                   # belongs to a nested query
+        if not isinstance(agg, exp.Count):
+            return False
+        arg = agg.this
+        if not isinstance(arg, exp.Distinct) or len(arg.expressions) != 1:
+            return False
+        col = arg.expressions[0]
+        if not (isinstance(col, exp.Column) and col.name.lower() == PERSON_KEY):
+            return False
+        found = True
+    return found
+
+
 def _row_multiplication(q: exp.Expression) -> Optional[str]:
     """Item 71 (2026-11-11, review of the first fix): one SELECT may not
     multiply or duplicate patient rows. A cross join with a constant row source
@@ -2020,6 +2124,34 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
                 parent[find(a)] = find(b)
             if len({find(n) for n in rows}) > 1:
                 return "patient tables joined without a patient_id = patient_id condition"
+            # Owner's decision 2026-11-16 (item 71, option 2): key-joined rows
+            # still multiply. Each person's rows from two one-to-many sources
+            # appear (count_a x count_b) times -- ten joins of gold_condition
+            # weight them by count^10 -- so sum(age) split exactly into groups
+            # defined by row count, under 11 (fourth review). Two or more
+            # one-to-many row sources may share a SELECT only when every
+            # aggregate in it is count(DISTINCT <alias>.patient_id), or when it
+            # is a DISTINCT set of patient keys: neither can see a multiplicity.
+            many = [n for n in rows if _one_to_many(next(
+                x for x in srcs if (x.alias_or_name or "").lower() == n), q)]
+            # One key join between two one-to-many tables multiplies each one's
+            # rows ONCE -- the single multiplier already accepted for
+            # gold_patient JOIN gold_condition. The exponent needs some source's
+            # rows multiplied twice: two one-to-many sources plus a third row
+            # source (p JOIN c1 JOIN c2, o JOIN c JOIN e). FHIR comparison of the
+            # stricter first version: f4_avg_glucose_prediabetic's o JOIN c with
+            # AVG went from 3/3 to 0/3 (2026-11-16).
+            # The two-source allowance holds only for BASE tables: a derived
+            # table or CTE (a per-patient grouped wrapper above all) can carry
+            # a value already multiplied below it, so chaining wrappers each
+            # joined to one more table reached count^10 with two sources per
+            # SELECT (fifth review, 2026-11-16).
+            derived = any(not _base_table(next(
+                x for x in srcs if (x.alias_or_name or "").lower() == n), q) for n in many)
+            if len(many) > 1 and (len(rows) > 2 or derived) and \
+                    not (_distinct_people_only(sel) or _distinct_key_select(sel)):
+                return ("a second one-to-many patient table joined on patient_id multiplies each "
+                        "person's rows; over such a join only count(DISTINCT patient_id) is allowed")
     return None
 
 
@@ -2089,6 +2221,16 @@ def check(tree: exp.Expression) -> PhiDecision:
     except Exception as e:                                 # fail closed (fifth review)
         return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
                                   f"{type(e).__name__}", protected=True)
+    try:
+        outer = _outer_aggregate(q)
+    except Exception as e:                                 # fail closed
+        return PhiDecision(False, f"PHI check could not analyse the query, denied (fail closed): "
+                                  f"{type(e).__name__}", protected=True)
+    if outer:
+        return PhiDecision(False, f"PHI rule: the aggregate {outer}() uses columns of an outer "
+                                  f"query, so it is computed over that query's rows where no check "
+                                  f"sees it; write each aggregate over its own FROM",
+                           findings=[f"outer aggregate {outer}"], protected=True)
     if multiplied:
         return PhiDecision(False, f"PHI rule: {multiplied}. Rows of patient data may not be "
                                   f"multiplied or duplicated inside a query (fail closed); join "

@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -164,7 +164,10 @@ RATE_LIMIT_PUBLIC = os.environ.get("RATE_LIMIT_PUBLIC", "60/minute")
 AUDIT_LOG_DIR = os.environ.get("AUDIT_LOG_DIR", "logs")   # "" disables the audit log
 
 RATE_LIMIT_STORAGE = os.environ.get("RATE_LIMIT_STORAGE", "memory://")
-request_context.check_forwarded_allow_ips()   # never trust X-Forwarded-For from anyone
+# Item 57: the UI is handed the API key only when this is set AND the browser is on
+# this machine. Never set it on a deploy.
+UI_PREFILL_KEY = os.environ.get("UI_PREFILL_KEY", "").strip().lower() in {"1", "true", "yes"}
+request_context.check_forwarded_allow_ips()   # a bad trust list logs an error and fails closed
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -700,7 +703,13 @@ def _ui():
 # ---------------------------------------------------------------------------
 # Request / response models -- the contract.
 # ---------------------------------------------------------------------------
-class QueryRequest(BaseModel):
+class _StrictRequest(BaseModel):
+    """Request bodies refuse fields they do not define (backlog item 55): a
+    misspelled or smuggled field is a 422, not silently ignored."""
+    model_config = ConfigDict(extra="forbid")
+
+
+class QueryRequest(_StrictRequest):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals give the best value, high quality and low cost?"])
     backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
@@ -709,7 +718,7 @@ class QueryRequest(BaseModel):
                                    description="dataset: hospital | fhir")
 
 
-class SqlRequest(BaseModel):
+class SqlRequest(_StrictRequest):
     sql: str = Field(..., max_length=MAX_SQL_CHARS,
                      examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
     backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
@@ -718,7 +727,7 @@ class SqlRequest(BaseModel):
                                    description="dataset: hospital | fhir")
 
 
-class ProposeRequest(BaseModel):
+class ProposeRequest(_StrictRequest):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals have the worst heart failure readmission rates?"])
     capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
@@ -726,7 +735,7 @@ class ProposeRequest(BaseModel):
                                        description="who proposes it; they cannot also decide it")
 
 
-class DecisionRequest(BaseModel):
+class DecisionRequest(_StrictRequest):
     """A reviewer's verdict on a pending proposal."""
     decision: str = Field(..., max_length=MAX_NAME_CHARS, examples=["approve"],
                           description="approve | reject | escalate | approve_with_edits")
@@ -737,6 +746,19 @@ class DecisionRequest(BaseModel):
         description="required when decision is approve_with_edits")
     escalated_to: Optional[str] = Field(
         None, max_length=MAX_NAME_CHARS, description="required when decision is escalate")
+
+
+class FindingsResponse(BaseModel):
+    """/findings and /public/findings: only these keys leave the server."""
+    dataset: str
+    backend: str
+    vintage: Optional[str] = None
+    findings: list[dict]
+
+
+class ApprovalQueueResponse(BaseModel):
+    pending: list[dict]
+    metrics: dict
 
 
 class GovernedResponse(BaseModel):
@@ -870,6 +892,7 @@ def health() -> dict:
         "planner_enabled": _STATE.get("planner") is not None,
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
+        "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
                         "public_findings": RATE_LIMIT_PUBLIC},
@@ -887,17 +910,20 @@ def health() -> dict:
 def ui_config(request: Request) -> dict:
     """Bootstrap config for the web UI.
 
-    When the browser is on THIS machine (loopback), hand it the API key so local
-    use needs no setup. That leaks nothing: anyone on the host can already read
-    .env. Remote callers (e.g. the public deploy) never receive it and must enter
-    a key, so the data endpoints stay protected.
+    With UI_PREFILL_KEY=1 AND a browser on THIS machine (loopback), hand it the
+    API key so local use needs no setup. Off by default (audit item 57): behind
+    a proxy on the same host, or with a trusted proxy list that maps a caller to
+    127.0.0.1, "loopback" can be anyone, and an accidental prefill on a deploy
+    would hand its key to the internet.
+    Remote callers never receive it and must enter a key.
     """
     client = request.client
     is_local = bool(client) and client.host in {"127.0.0.1", "::1", "localhost"}
+    prefill = UI_PREFILL_KEY and is_local and bool(API_KEY)
     return {
         "auth_required": bool(API_KEY),
         "is_local": is_local,
-        "prefill_key": API_KEY if (is_local and API_KEY) else None,
+        "prefill_key": API_KEY if prefill else None,
         "datasets": [{"id": k, "label": v["label"],
                       "available": os.path.exists(v["db"])} for k, v in DATASETS.items()],
         "default_dataset": DEFAULT_DATASET,
@@ -1221,7 +1247,7 @@ def _findings_payload() -> dict:
         return out
 
 
-@app.get("/findings", dependencies=[Depends(require_api_key)])
+@app.get("/findings", response_model=FindingsResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def get_findings(request: Request) -> dict:
     """The Overview's plain-English findings (PLAN v2 item 6, D7), for key holders."""
@@ -1234,7 +1260,7 @@ def _public_rate_key(request: Request) -> str:
     return f"public:{_client_address(request)}"
 
 
-@app.get("/public/findings")
+@app.get("/public/findings", response_model=FindingsResponse)
 @limiter.limit(RATE_LIMIT_PUBLIC, key_func=_public_rate_key)
 def get_public_findings(request: Request) -> dict:
     """The same findings with no key (backlog item 9, owner's decision D1a, 2026-11-14).
@@ -1261,6 +1287,7 @@ def metrics() -> dict:
     out = cost_tracker.summarize()
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
+    out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
     return out
 
 
@@ -1318,7 +1345,7 @@ def propose(request: Request, req: ProposeRequest) -> dict:
         return agent.start(req.question, proposed_by=req.proposed_by)   # its cost is not reported: it keeps the worst case
 
 
-@app.get("/approvals", dependencies=[Depends(require_api_key)])
+@app.get("/approvals", response_model=ApprovalQueueResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def list_approvals(request: Request) -> dict:
     """The review queue: everything awaiting a human decision."""

@@ -555,7 +555,7 @@ that names it.
 
 ## CI
 
-Fourteen GitHub Actions workflows:
+Fifteen GitHub Actions workflows:
 
 - **The wake-up page** (`pages.yml`, backlog item 9): on a push to `main` that touches `site/`, publishes the static GitHub Pages page that says the free-plan service may be waking up and opens it once it answers. No secrets; it needs Pages set to deploy from GitHub Actions (owner step 6 in `docs/OWNER_STEPS.md`).
 - **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
@@ -588,6 +588,8 @@ Fourteen GitHub Actions workflows:
 - **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay` with `ALLOW_REPLAY=1`, `replay.py`; without that opt-in the provider refuses to start, so a deploy cannot run on it by accident): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
 - **MCP end to end on every push** (`mcp-e2e.yml`) — a real MCP client connects over stdio, standalone Streamable HTTP and `/mcp` in the API; on each it lists tools, runs one allowed and one blocked query, and over HTTP checks the 401 and both key headers. No LLM, $0.
 - **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
+- **Nightly security alerts** (`security-alerts.yml`, backlog item 59) — at 23:30 UTC, `security_alerts.py` reads `/v1/metrics` on the deploy with the repo secret `ALERT_API_KEY` and opens one `security-alert` issue per kind: a client over the failed-key limit in the current 5-minute window, or 50+ refused keys since the service last started; and model runs or estimated spend at 80% of the day's caps. A quiet night closes it. It is a coarse check, not monitoring: the counters live in memory, so a restart (Render free sleeps when idle) resets them and an attack between restarts can go unseen. Without the secret it warns and does nothing (`docs/OWNER_STEPS.md` step 10). Standard library only.
+- **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it. Then `deploy_lag.py` checks that the deploy serves main's head (the `git_commit` in `/v1/health`): when main has moved more than 60 minutes ago and the deploy has not followed, it opens one `deploy-lag` issue, which closes once the deploy catches up.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
 Fast feedback on every change, complete coverage every night. Reports are uploaded as artifacts.
@@ -600,6 +602,7 @@ pip install --require-hashes -r requirements-api.lock   # the exact, hash-checke
 $env:PLANNER_PROVIDER="gemini"  # what CI and both eval suites run on
 $env:GEMINI_API_KEY="..."       # the planner's model (free key at aistudio.google.com)
 $env:API_KEY="..."              # require a key on the data endpoints
+$env:UI_PREFILL_KEY="1"         # local only: the UI on this machine gets the key filled in
 
 API_DOCS=1 uvicorn app:app --port 8000     # http://localhost:8000/docs
 ```
@@ -760,7 +763,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **No row multipliers on patient data** (item 71): `unnest()` in a projection, a constant row
   source cross-joined to patient rows, an unkeyed self-join and a UNION ALL of patient rows are refused;
   each could carry one person's age, zip or diagnosis, or a group under 11, out of a single query
-  that still covered 11 people. Patient tables join on `patient_id`.
+  that still covered 11 people. Patient tables join on `patient_id`, and two one-to-many patient
+  tables joined that way beside a third row source sit only under `count(DISTINCT patient_id)`
+  ("patients with both A and B"), since any other aggregate sees some rows multiplied twice
+  (owner's decision 2026-11-16). An aggregate that reads an outer query's columns is refused.
 - [x] **Hash-locked installs with a release-age cooldown** (audit item 45): Render, both
   Dockerfiles and every CI install of the app's dependencies use `pip install --require-hashes -r <lock>`, so the whole
   dependency tree is pinned to exact versions and file hashes. `scripts/lock.sh` (uv) builds the
@@ -809,8 +815,18 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Every audit event says who asked and from where** (audit item 38): a request id
   (also returned as `X-Request-ID`), the key it came with as a short fingerprint (never the
   key) and the caller's address. On Render the address is the proxy's until
-  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); `*` or any
-  public network is refused at startup.
+  `FORWARDED_ALLOW_IPS` is set to the proxy's range (`docs/OWNER_STEPS.md` step 9); behind
+  Cloudflare, the address Cloudflare appended is used, so a forged `X-Forwarded-For` cannot
+  choose it. A trust list with `*` or a public network logs an error and fails closed
+  (`/health` shows `proxy_trust: invalid`).
+- [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
+  findings and approval-queue routes declare their responses.
+- [x] **Security alerts as issues** (audit item 59): nightly, on refused API keys and on model
+  spend near the daily caps; needs the `ALERT_API_KEY` repo secret (OWNER_STEPS step 10).
+- [x] **The UI escapes all five HTML-special characters** (audit item 58), the single quote
+  included.
+- [x] **The UI is never handed the key by default** (audit item 57): `/ui-config` fills in
+  the key only with `UI_PREFILL_KEY=1` and a browser on the same machine.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.

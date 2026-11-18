@@ -74,13 +74,15 @@ Where it breaks, in the order you would hit it:
 - **The guard is a parser.** It is a patch list over SQL shapes, hardened by
   adversarial reviews. Known open gaps on `main`: a date grouped below the year
   as a hidden key (a strict xfail in `tests/security/test_phi_guard.py`),
-  cross-query differencing (accepted residual risk, [PLAN_v2 §0.4](PLAN_v2.md)),
-  and key-joined self-joins (each person weighted by their row count to the power
-  of the number of joins), pending the owner's decision (backlog item 71). Row
-  multipliers in general (set-returning functions, unkeyed joins, duplicating
-  unions) and seeded sampling were closed by
+  and cross-query differencing (accepted residual risk,
+  [PLAN_v2 §0.4](PLAN_v2.md)). Row multipliers (set-returning functions, unkeyed
+  joins, duplicating unions) and seeded sampling were closed by
   [#116](https://github.com/erjonb19/governed-clinical-agent/pull/116) on
-  2026-11-14, after its FHIR comparison scored the branch level with `main`. The planned
+  2026-11-14; key-joined multipliers (each person weighted by their row count to
+  the power of the number of joins) by the owner's option 2 on 2026-11-16: a
+  second key join to a one-to-many table is allowed only under `count(DISTINCT
+  patient_id)` (backlog item 71). One key join between two one-to-many tables
+  remains, the same single multiplier as `gold_patient JOIN gold_condition`. The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 

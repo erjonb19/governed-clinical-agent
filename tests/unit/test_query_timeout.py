@@ -22,7 +22,9 @@ from sql_guard import validate_query
 from tests.security.fhir_fixture import build
 
 # guard-ALLOWED and slow: a three-way self-join of a patient table
-BOMB = ("SELECT count(*) AS n FROM gold_observation a JOIN gold_observation b "
+# count(DISTINCT patient_id): item 71 option 2 allows only that over a three-way
+# key join, and the join itself is still the expensive part
+BOMB = ("SELECT count(DISTINCT a.patient_id) AS n FROM gold_observation a JOIN gold_observation b "
         "ON a.patient_id = b.patient_id JOIN gold_observation c ON b.patient_id = c.patient_id")
 FAST = "SELECT count(*) AS n FROM gold_observation"
 
