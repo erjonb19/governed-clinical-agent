@@ -36,7 +36,8 @@ against arize-phoenix 21.0.0), so the root is sent once, at a final status:
 
 ERROR TEXT: an `error` attribute (and the span status message) is exported as
 the exception's type only; its message can quote a data value. A step's
-`reason` (a guard denial, a failed execute) is exported as recorded: it is the
+`reason` (a guard denial, a failed execute) is exported as recorded -- except
+the critic's, which a HOSTED backend gets as a hash (item 64): the guard's is the
 same text the planner is shown on a retry, and an execution error is reduced to
 its class and target type before it leaves the tool (describe_execution_error),
 so it carries no value -- pinned on this path by
@@ -131,12 +132,152 @@ def is_hosted(endpoint: str) -> bool:
     return host not in _LOCAL_HOSTS
 
 
+# DuckDB accepts Unicode letters in a tag ($ä$...$ä$); $1 is a parameter, not a tag.
+_DOLLAR_TAG = re.compile(r"\$([^\W\d]\w*)?\$")
+_PLAIN_NAME = re.compile(r"^\"[A-Za-z_][A-Za-z0-9_]*\"$")
+
+
+def _scan_mask(sql: str) -> str:
+    """Second pass of `_mask_sql_literals` (item 64): comments dropped, every string
+    literal -- '...' (with '' escapes, so also E'...'), $$...$$ and $tag$...$tag$
+    -- replaced by '<value>'. Text a person typed can ride out in a WHERE
+    clause or in a comment the model copied; neither leaves this machine.
+    In E'...' a backslash escapes the next character (E'x\\' y' is one string).
+    A double-quoted name stays only when it is a plain identifier ("gender");
+    any other ("John Smith") becomes "<name>": the model can copy question text
+    into an alias. Fail closed: an unterminated literal, name or comment masks
+    everything after it."""
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            escapes = i > 0 and sql[i - 1] in "Ee" and not (
+                i > 1 and (sql[i - 2].isalnum() or sql[i - 2] == "_"))
+            j = i + 1
+            while j < n:
+                if escapes and sql[j] == "\\":
+                    j += 2
+                    continue
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    break
+                j += 1
+            out.append("'<value>'")
+            i = j + 1  # past the closing quote, or past the end when unterminated
+        elif c == "$" and (m := _DOLLAR_TAG.match(sql, i)) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")
+                                    or re.search(r"\$\d+$", sql[:i])):
+            end = sql.find(m.group(0), m.end())
+            out.append("'<value>'")
+            i = n if end < 0 else end + len(m.group(0))
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if sql[j] == '"':
+                    if j + 1 < n and sql[j + 1] == '"':
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:  # unterminated: mask the rest
+                out.append('"<name>"')
+                i = n
+            else:
+                name = sql[i : j + 1]
+                out.append(name if _PLAIN_NAME.match(name) else '"<name>"')
+                i = j + 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            out.append(" ")
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if sql.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif sql.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            out.append(" ")
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+# Token shapes kept from a non-literal token's span (the rest of the span --
+# a comment, an unterminated tail -- is dropped).
+_WORD = re.compile(rb"[\w$\x80-\xff]+")
+_OPERATOR = re.compile(rb"[^\w\s'\"$\x80-\xff]+")
+_QUOTED = re.compile(rb'"(?:[^"]|"")*"')
+_PARAM = re.compile(rb"\$\d+|\?\d*")
+_NUMBER = re.compile(rb"0[xXbB][0-9A-Fa-f_]+|[0-9_.]+(?:[eE][+-]?[0-9_]+)?")
+
+
+def _token_mask(sql: str) -> str:
+    """First pass: DuckDB's own lexer says where each literal is, so a quoting
+    trick the hand scanner reads differently (E'', $tag$, non-ASCII next to a
+    quote) cannot shift a literal out of the mask. duckdb.tokenize returns byte
+    offsets and leaves comments, and anything after an unterminated literal or
+    comment, in the gap behind the previous token; every gap is dropped."""
+    import duckdb
+
+    raw = sql.encode("utf-8")
+    toks = duckdb.tokenize(sql)
+    if not toks:
+        return ""
+    out: list[bytes] = []
+    if toks[0][0] > 0 and raw[: toks[0][0]].strip():
+        out.append(b" ")  # leading comment
+    for k, (start, kind) in enumerate(toks):
+        end = toks[k + 1][0] if k + 1 < len(toks) else len(raw)
+        span = raw[start:end]
+        name = getattr(kind, "name", str(kind))
+        if name == "string_const":
+            kept = b"'<value>'"
+        elif span.startswith(b'"'):
+            m = _QUOTED.match(span)
+            kept = m.group(0) if m and _PLAIN_NAME.match(m.group(0).decode()) else b'"<name>"'
+        else:
+            if name == "operator":  # never _WORD: "$1$t$..." is a parameter + a string
+                m = _PARAM.match(span) or _OPERATOR.match(span)
+            else:
+                m = (name == "numeric_const" and _NUMBER.match(span)) or _WORD.match(span) \
+                    or _OPERATOR.match(span)
+            kept = m.group(0) if m else b" "
+        if name == "string_const" or span.startswith(b'"'):
+            rest = span[len(span.rstrip()):]  # keep only the trailing whitespace
+        else:
+            rest = span[len(kept):]
+        out.append(kept + (rest if not rest.strip() else b" "))
+    return b"".join(out).decode("utf-8", "replace")
+
+
+_MAX_SQL_CHARS = 8000
+
+
 def _mask_sql_literals(sql: str) -> str:
-    # the existing literal redaction (the one used for SQL error messages):
-    # every single-quoted literal becomes '<value>', so text a person typed
-    # into the question cannot ride out inside a WHERE clause
-    from analytics_query_tool import redact_values
-    return redact_values(sql)
+    """The SQL a hosted backend gets (item 64): no comment and no string-literal
+    text. DuckDB's tokenizer finds the literals; the hand scanner then runs over
+    the result. Each pass only removes text, so the output is masked wherever
+    EITHER reads a literal or comment. SQL the tokenizer cannot read is withheld."""
+    if len(sql) > _MAX_SQL_CHARS:  # the tokenizer is quadratic on nested /* */
+        sql = sql[:_MAX_SQL_CHARS]   # a literal cut here is unterminated: masked
+    try:
+        first = _token_mask(sql)
+    except Exception:  # noqa: BLE001 -- fail closed, never raise into export
+        return "<SQL withheld: could not be tokenized>"
+    return _scan_mask(first)
+
+
+def _digest(value: Any) -> tuple[str, int]:
+    text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    # surrogatepass: a lone surrogate from a model's JSON must not drop the span
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16], len(text)
 
 
 def hosted_attributes(name: str, attrs: dict) -> dict:
@@ -145,16 +286,24 @@ def hosted_attributes(name: str, attrs: dict) -> dict:
     - the visitor's question is replaced by its hash and length: the codebase
       has no free-text PHI redactor (the guard works on SQL), so the question
       is withheld until one is approved;
-    - SQL string literals are masked;
+    - SQL comments are dropped and SQL string literals masked;
+    - the critic's reason and issues (model text that can quote the question)
+      are replaced by their hash and length, on the critic span and wherever
+      a `critic: ...` reason is carried on (item 64);
     - an approval decision's reason and the reviewer identity, and every
       escalation target, are dropped."""
     out = dict(attrs)
     q = out.pop("question", None)
     if q:
-        out["question_sha256"] = hashlib.sha256(str(q).encode("utf-8")).hexdigest()[:16]
+        out["question_sha256"] = hashlib.sha256(
+            str(q).encode("utf-8", "surrogatepass")).hexdigest()[:16]
         out["question_chars"] = len(str(q))
     if out.get("sql"):
         out["sql"] = _mask_sql_literals(str(out["sql"]))
+    for key in ("reason", "issues"):
+        v = out.get(key)
+        if v and (name == "critic" or (isinstance(v, str) and v.lstrip().startswith("critic:"))):
+            out[f"{key}_sha256"], out[f"{key}_chars"] = _digest(out.pop(key))
     out.pop("escalated_to", None)
     if name == "approval.decision":
         out.pop("reason", None)

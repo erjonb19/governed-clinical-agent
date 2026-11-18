@@ -258,3 +258,94 @@ def test_a_local_phoenix_still_gets_the_full_record(tmp_path):
     ("http://phoenix.internal:6006/v1/traces", True)])
 def test_anything_off_this_machine_counts_as_hosted(url, hosted):
     assert trace_export.is_hosted(url) is hosted
+
+
+# Item 64: comments and every literal form are masked; the critic's text is hashed.
+DOLLARS = "$" + "$"
+@pytest.mark.parametrize("sql", [
+    f"SELECT count(*) FROM gold_encounter -- {PERSON}",
+    f"SELECT count(*) /* asked about {PERSON} */ FROM gold_encounter",
+    f"SELECT 1 /* outer /* {PERSON} */ still a comment */ FROM t",
+    f"SELECT count(*) FROM t WHERE x = E'{PERSON}'",
+    f"SELECT count(*) FROM t WHERE x = {DOLLARS}{PERSON}{DOLLARS}",
+    f"SELECT count(*) FROM t WHERE x = $q${PERSON}$q$",
+    f"SELECT count(*) FROM t WHERE x = 'O''Brien {PERSON}'",
+    f"SELECT count(*) FROM t WHERE x = '{PERSON}",            # unterminated: fail closed
+    f"SELECT 1 /* {PERSON}",                                  # unterminated comment
+    f"SELECT 1 -- it's {PERSON}\nFROM t",                     # a quote inside a comment
+    # review of item 64: a backslash escape in E'...', a Unicode dollar tag,
+    # an alias copied from the question, an unterminated quoted name
+    f"SELECT E'x\\' {PERSON} ' AS a",
+    f"SELECT e'x\\' {PERSON} --' AS a",
+    f"SELECT $ä${PERSON}$ä$",
+    f"SELECT $é1$it is {PERSON}$é1$",
+    f'SELECT count(*) AS "{PERSON} diabetes" FROM t',
+    f"SELECT \"a, '{PERSON}'",
+    # second review: where a literal starts follows DuckDB's lexer, not Python's
+    f"SELECT $١${PERSON}$١$",
+    f"SELECT $٣a${PERSON}$٣a$ AS v",
+    f"SELECT x$E'\\', '{PERSON}'",
+    f"SELECT €E'\\', '{PERSON}'",
+    f"SELECT 1 FROM t WHERE c = x$E'\\' AND d = ' {PERSON} '",
+    f"SELECT 1 AS €$t$, $t${PERSON}$t$ AS v",
+    f"SELECT 1E'x\\' {PERSON} '",
+    f"SELECT 1$t${PERSON}$t$",
+    # third review: a $N parameter then an unterminated dollar string
+    "SELECT * FROM gold_patients WHERE name = $1$t$Jane_Doe_02134",
+    f"SELECT 1 FROM t WHERE c = $1{DOLLARS}Jane_Doe_02134 x",
+    "SELECT $1$Jane_Doe_02134$1$",
+])
+def test_hosted_sql_carries_no_comment_or_literal_text(sql):
+    masked = trace_export._mask_sql_literals(sql)
+    assert "Jane" not in masked and "02134" not in masked, masked
+
+
+def test_hosted_sql_keeps_the_query_shape():
+    sql = ("SELECT \"gender\", count(*) FROM gold_patient /* c */ WHERE state = 'MA' "
+           f"AND x = {DOLLARS}y{DOLLARS} -- note\nGROUP BY 1")
+    assert trace_export._mask_sql_literals(sql) == (
+        "SELECT \"gender\", count(*) FROM gold_patient WHERE state = '<value>' "
+        "AND x = '<value>'\nGROUP BY 1")
+
+
+def test_plain_strings_have_no_backslash_escapes_and_params_stay():
+    # DuckDB: 'x\' is a whole string; $1 is a parameter, not a dollar quote
+    assert trace_export._mask_sql_literals("SELECT 'x\\', $1, \"a\"\"b\"") == \
+        "SELECT '<value>', $1, \"<name>\""
+
+
+def test_parameters_are_kept_and_long_input_is_bounded():
+    assert trace_export._mask_sql_literals("SELECT 1 WHERE a = $1 AND b = ?2") == \
+        "SELECT 1 WHERE a = $1 AND b = ?2"
+    import time
+    start = time.monotonic()
+    out = trace_export._mask_sql_literals("/*" * 60000 + PERSON)  # tokenizer is quadratic here
+    assert PERSON not in out and time.monotonic() - start < 10
+
+
+def test_a_lone_surrogate_does_not_drop_the_span():
+    out = trace_export.otel_attributes("critic", {"reason": "\ud800", "issues": ["\ud800"],
+                                                  "question": "\ud800"}, hosted=True)
+    assert len(out["agent.reason_sha256"]) == 16 and "agent.question_sha256" in out
+
+
+def test_a_hosted_backend_gets_the_critic_text_only_as_a_hash(tmp_path):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    mem = InMemorySpanExporter()
+    exp = trace_export.OTLPExporter(HOSTED_URL, processor=SimpleSpanProcessor(mem))
+    t = tracing.Tracer(str(tmp_path / "t.sqlite"), exporter=exp)
+    with t.trace("run", question="q") as tid:
+        with t.span("critic", verdict="revise", reason=f"the question names {PERSON}",
+                    issues=[f"filter on {PERSON}"]):
+            pass
+        t.event("retry", by="critic", reason=f"critic: the question names {PERSON}")
+        t.event("guard", allowed=False, decided_by="guard", reason="table not allowed")
+    spans = {s.name: dict(s.attributes) for s in mem.get_finished_spans()}
+    assert "Jane" not in repr(spans)
+    assert spans["critic"]["agent.verdict"] == "revise"
+    assert len(spans["critic"]["agent.reason_sha256"]) == 16
+    assert spans["critic"]["agent.issues_chars"] > 0
+    assert "agent.reason_sha256" in spans["retry"]
+    assert spans["guard"]["agent.reason"] == "table not allowed"   # not the critic's: kept
+    assert PERSON in repr(t.get_trace(tid))                          # the local record keeps it
