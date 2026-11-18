@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -700,7 +700,13 @@ def _ui():
 # ---------------------------------------------------------------------------
 # Request / response models -- the contract.
 # ---------------------------------------------------------------------------
-class QueryRequest(BaseModel):
+class _StrictRequest(BaseModel):
+    """Request bodies refuse fields they do not define (backlog item 55): a
+    misspelled or smuggled field is a 422, not silently ignored."""
+    model_config = ConfigDict(extra="forbid")
+
+
+class QueryRequest(_StrictRequest):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals give the best value, high quality and low cost?"])
     backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
@@ -709,7 +715,7 @@ class QueryRequest(BaseModel):
                                    description="dataset: hospital | fhir")
 
 
-class SqlRequest(BaseModel):
+class SqlRequest(_StrictRequest):
     sql: str = Field(..., max_length=MAX_SQL_CHARS,
                      examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
     backend: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
@@ -718,7 +724,7 @@ class SqlRequest(BaseModel):
                                    description="dataset: hospital | fhir")
 
 
-class ProposeRequest(BaseModel):
+class ProposeRequest(_StrictRequest):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS,
                           examples=["Which hospitals have the worst heart failure readmission rates?"])
     capability: str = Field("brief.commit", max_length=MAX_NAME_CHARS, examples=["brief.commit"])
@@ -726,7 +732,7 @@ class ProposeRequest(BaseModel):
                                        description="who proposes it; they cannot also decide it")
 
 
-class DecisionRequest(BaseModel):
+class DecisionRequest(_StrictRequest):
     """A reviewer's verdict on a pending proposal."""
     decision: str = Field(..., max_length=MAX_NAME_CHARS, examples=["approve"],
                           description="approve | reject | escalate | approve_with_edits")
@@ -737,6 +743,19 @@ class DecisionRequest(BaseModel):
         description="required when decision is approve_with_edits")
     escalated_to: Optional[str] = Field(
         None, max_length=MAX_NAME_CHARS, description="required when decision is escalate")
+
+
+class FindingsResponse(BaseModel):
+    """/findings and /public/findings: only these keys leave the server."""
+    dataset: str
+    backend: str
+    vintage: Optional[str] = None
+    findings: list[dict]
+
+
+class ApprovalQueueResponse(BaseModel):
+    pending: list[dict]
+    metrics: dict
 
 
 class GovernedResponse(BaseModel):
@@ -1221,7 +1240,7 @@ def _findings_payload() -> dict:
         return out
 
 
-@app.get("/findings", dependencies=[Depends(require_api_key)])
+@app.get("/findings", response_model=FindingsResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def get_findings(request: Request) -> dict:
     """The Overview's plain-English findings (PLAN v2 item 6, D7), for key holders."""
@@ -1234,7 +1253,7 @@ def _public_rate_key(request: Request) -> str:
     return f"public:{_client_address(request)}"
 
 
-@app.get("/public/findings")
+@app.get("/public/findings", response_model=FindingsResponse)
 @limiter.limit(RATE_LIMIT_PUBLIC, key_func=_public_rate_key)
 def get_public_findings(request: Request) -> dict:
     """The same findings with no key (backlog item 9, owner's decision D1a, 2026-11-14).
@@ -1318,7 +1337,7 @@ def propose(request: Request, req: ProposeRequest) -> dict:
         return agent.start(req.question, proposed_by=req.proposed_by)   # its cost is not reported: it keeps the worst case
 
 
-@app.get("/approvals", dependencies=[Depends(require_api_key)])
+@app.get("/approvals", response_model=ApprovalQueueResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT_READ)
 def list_approvals(request: Request) -> dict:
     """The review queue: everything awaiting a human decision."""
