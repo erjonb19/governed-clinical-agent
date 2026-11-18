@@ -167,7 +167,8 @@ def _scan_mask(sql: str) -> str:
                 j += 1
             out.append("'<value>'")
             i = j + 1  # past the closing quote, or past the end when unterminated
-        elif c == "$" and (m := _DOLLAR_TAG.match(sql, i)) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+        elif c == "$" and (m := _DOLLAR_TAG.match(sql, i)) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")
+                                    or re.search(r"\$\d+$", sql[:i])):
             end = sql.find(m.group(0), m.end())
             out.append("'<value>'")
             i = n if end < 0 else end + len(m.group(0))
@@ -213,6 +214,7 @@ def _scan_mask(sql: str) -> str:
 _WORD = re.compile(rb"[\w$\x80-\xff]+")
 _OPERATOR = re.compile(rb"[^\w\s'\"$\x80-\xff]+")
 _QUOTED = re.compile(rb'"(?:[^"]|"")*"')
+_PARAM = re.compile(rb"\$\d+|\?\d*")
 _NUMBER = re.compile(rb"0[xXbB][0-9A-Fa-f_]+|[0-9_.]+(?:[eE][+-]?[0-9_]+)?")
 
 
@@ -241,8 +243,11 @@ def _token_mask(sql: str) -> str:
             m = _QUOTED.match(span)
             kept = m.group(0) if m and _PLAIN_NAME.match(m.group(0).decode()) else b'"<name>"'
         else:
-            m = (name == "numeric_const" and _NUMBER.match(span)) or _WORD.match(span) \
-                or _OPERATOR.match(span)
+            if name == "operator":  # never _WORD: "$1$t$..." is a parameter + a string
+                m = _PARAM.match(span) or _OPERATOR.match(span)
+            else:
+                m = (name == "numeric_const" and _NUMBER.match(span)) or _WORD.match(span) \
+                    or _OPERATOR.match(span)
             kept = m.group(0) if m else b" "
         if name == "string_const" or span.startswith(b'"'):
             rest = span[len(span.rstrip()):]  # keep only the trailing whitespace
@@ -252,11 +257,16 @@ def _token_mask(sql: str) -> str:
     return b"".join(out).decode("utf-8", "replace")
 
 
+_MAX_SQL_CHARS = 8000
+
+
 def _mask_sql_literals(sql: str) -> str:
     """The SQL a hosted backend gets (item 64): no comment and no string-literal
     text. DuckDB's tokenizer finds the literals; the hand scanner then runs over
     the result. Each pass only removes text, so the output is masked wherever
     EITHER reads a literal or comment. SQL the tokenizer cannot read is withheld."""
+    if len(sql) > _MAX_SQL_CHARS:  # the tokenizer is quadratic on nested /* */
+        sql = sql[:_MAX_SQL_CHARS]   # a literal cut here is unterminated: masked
     try:
         first = _token_mask(sql)
     except Exception:  # noqa: BLE001 -- fail closed, never raise into export

@@ -290,6 +290,10 @@ DOLLARS = "$" + "$"
     f"SELECT 1 AS €$t$, $t${PERSON}$t$ AS v",
     f"SELECT 1E'x\\' {PERSON} '",
     f"SELECT 1$t${PERSON}$t$",
+    # third review: a $N parameter then an unterminated dollar string
+    "SELECT * FROM gold_patients WHERE name = $1$t$Jane_Doe_02134",
+    f"SELECT 1 FROM t WHERE c = $1{DOLLARS}Jane_Doe_02134 x",
+    "SELECT $1$Jane_Doe_02134$1$",
 ])
 def test_hosted_sql_carries_no_comment_or_literal_text(sql):
     masked = trace_export._mask_sql_literals(sql)
@@ -308,6 +312,15 @@ def test_plain_strings_have_no_backslash_escapes_and_params_stay():
     # DuckDB: 'x\' is a whole string; $1 is a parameter, not a dollar quote
     assert trace_export._mask_sql_literals("SELECT 'x\\', $1, \"a\"\"b\"") == \
         "SELECT '<value>', $1, \"<name>\""
+
+
+def test_parameters_are_kept_and_long_input_is_bounded():
+    assert trace_export._mask_sql_literals("SELECT 1 WHERE a = $1 AND b = ?2") == \
+        "SELECT 1 WHERE a = $1 AND b = ?2"
+    import time
+    start = time.monotonic()
+    out = trace_export._mask_sql_literals("/*" * 60000 + PERSON)  # tokenizer is quadratic here
+    assert PERSON not in out and time.monotonic() - start < 10
 
 
 def test_a_lone_surrogate_does_not_drop_the_span():
