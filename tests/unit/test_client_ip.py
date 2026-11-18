@@ -158,3 +158,18 @@ def test_turned_off_through_the_stack(monkeypatch):
     monkeypatch.setattr(rc, "TRUST_OK", True)
     monkeypatch.setenv("CLOUDFLARE_CLIENT_IP", "0")
     assert _through_the_stack(f"{OWNER}, {EDGE}, 10.201.33.4")["client"] == EDGE
+
+
+def test_two_cf_connecting_ip_lines_are_not_believed(monkeypatch):
+    monkeypatch.setattr(rc, "TRUST_OK", True)
+    seen = _through_the_stack(
+        f"{OWNER}, {EDGE}, 10.201.33.4",
+        extra=[(b"cf-connecting-ip", b"9.9.9.9"), (b"cf-connecting-ip", OWNER.encode())],
+    )
+    assert seen["client"] == OWNER  # the XFF one-step rule, not either header line
+
+
+def test_odd_ports_parse_like_uvicorn():
+    assert rc._host("1.2.3.4:443") == "1.2.3.4"
+    assert rc._host("1.2.3.4:+5") == "1.2.3.4"  # int("+5") works, as in uvicorn
+    assert rc._host("1.2.3.4:x") == "1.2.3.4:x"

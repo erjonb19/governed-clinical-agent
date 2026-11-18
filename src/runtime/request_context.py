@@ -144,7 +144,11 @@ def _host(value: str) -> str:
         return value[1:end] if (not rest or rest.startswith(":")) else value
     if value.count(":") == 1:
         host, port = value.rsplit(":", 1)
-        return host if port.isdigit() else value
+        try:
+            int(port)  # exactly uvicorn's test
+        except ValueError:
+            return value
+        return host
     return value
 
 
@@ -215,6 +219,13 @@ def _trustable(entry: str) -> bool:
     return net.subnet_of(_ULA)
 
 
+def _single(scope: dict, name: bytes) -> str:
+    """A header's value only when it arrives exactly once; two or more lines are
+    ambiguous, so none is believed (review, PR 150)."""
+    vals = [v for k, v in (scope.get("headers") or []) if k == name]
+    return vals[0].decode("latin-1") if len(vals) == 1 else ""
+
+
 def _presented_key(headers: dict[bytes, bytes]) -> str | None:
     key = headers.get(b"x-api-key")
     if key:
@@ -248,7 +259,7 @@ class RequestContext:
                 client[0],
                 xff.decode("latin-1"),
                 os.environ.get("CLOUDFLARE_CLIENT_IP", "1").strip() != "0",
-                headers.get(b"cf-connecting-ip", b"").decode("latin-1"),
+                _single(scope, b"cf-connecting-ip"),
             )
         else:
             host = "unknown"
