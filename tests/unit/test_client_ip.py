@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from src.runtime import request_context as rc  # noqa: E402
 
-OWNER = "70.23.132.236"  # the owner's address from the step 9 test
+OWNER = "203.0.113.70"  # a caller (TEST-NET-3, RFC 5737), standing in for the step 9 test
 EDGE = "104.22.72.47"  # a Cloudflare edge seen in that test
 
 
