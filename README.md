@@ -817,6 +817,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   public network is refused at startup.
 - [x] **Strict request bodies** (audit item 55): an unknown field in a request is a 422; the
   findings and approval-queue routes declare their responses.
+- [x] **The UI escapes all five HTML-special characters** (audit item 58), the single quote
+  included.
 - [x] **The UI is never handed the key by default** (audit item 57): `/ui-config` fills in
   the key only with `UI_PREFILL_KEY=1` and a browser on the same machine.
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,

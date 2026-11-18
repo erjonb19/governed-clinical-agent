@@ -446,10 +446,12 @@ What real AI, data and software engineering teams would add, checked against the
 - [x] **57. /ui-config prefills the API key for any loopback-looking client** (Low; security audit finding 28, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: app.py:567-585
   - Done when: Prefill only with an explicit UI_PREFILL_KEY=1.; a test or check shows it.
+- [x] **58. esc() does not escape the single quote** (Low; security audit finding 29, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Done 2026-11-18: `/ui-config` returns the key only when `UI_PREFILL_KEY=1` (also `true`/`yes`) AND the client is loopback; unset (the default, and Render), never. The UI E2E sets it for its local server; README's local-run block shows it. `tests/integration/test_ui_prefill.py`.
 - [ ] **58. esc() does not escape the single quote** (Low; security audit finding 29, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: web/index.html:428
   - Done when: Add ' -> &#39;. Not exploitable today (all dynamic attributes are double-quoted).; a test or check shows it.
+  - Done 2026-11-18: `esc()` in `web/index.html` maps `'` to `&#39;` beside `& < > "`. The CSP hash is computed from the served file at startup, so it follows. `tests/unit/test_ui_escape.py` runs the real function under Node (skipped without Node).
 - [ ] **59. No error tracking or security alerts** (Low; security audit finding 30, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: repository-wide (eval, uptime and SLO alerts exist)
   - Done when: Alert on auth-failure and spend thresholds through a GitHub issue (nightly_alerts pattern); optional free Sentry with send_default_pii=False and a scrubber (new dependency: owner's OK).; a test or check shows it.
