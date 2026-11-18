@@ -6,14 +6,14 @@
 # sqlglot, openai) arrives as a mystery CI failure with no matching code change.
 # Bump these on purpose, in a PR, with the suite green -- not by accident.
 
-fastapi==0.162.2
+fastapi==0.162.4
 uvicorn[standard]==0.54.0
 pydantic==2.14.3
 duckdb==1.5.4
 sqlglot==30.11.0
-openai==3.48.0
+openai==3.49.0
 httpx==0.28.1        # openai 3 no longer installs it; live_check.py and FastAPI's TestClient need it
-anthropic==2.6.0
+anthropic==2.8.0
 pyyaml==6.0.3
 langgraph==1.2.20
 langgraph-checkpoint-sqlite==3.1.3
