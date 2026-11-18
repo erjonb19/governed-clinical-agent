@@ -827,6 +827,10 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   included.
 - [x] **The UI is never handed the key by default** (audit item 57): `/ui-config` fills in
   the key only with `UI_PREFILL_KEY=1` and a browser on the same machine.
+- [x] **Retention for logs with free text** (audit item 60): the metrics log stores a hash and
+  length, not the question; metrics and audit logs rotate (`METRICS_LOG_MAX_BYTES`,
+  `AUDIT_LOG_MAX_BYTES`, `AUDIT_LOG_KEEP`); decided approvals expire after
+  `APPROVAL_RETENTION_DAYS` (90).
 - [x] **Security headers and a Content Security Policy** (audit item 33): nosniff,
   frame-deny, Referrer-Policy, Permissions-Policy and HSTS on every response; the UI page
   only runs its own script (by hash), so injected script could not read the stored key.
