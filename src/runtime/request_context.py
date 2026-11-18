@@ -20,6 +20,22 @@ X-Forwarded-For: set `FORWARDED_ALLOW_IPS` to the proxy's exact addresses
 refused at startup (`check_forwarded_allow_ips`), and so is any entry that is not a private or loopback address: it would let any caller name
 its own address and step around the per-address limits (/public/findings, the
 auth-failure counter).
+
+Behind Cloudflare (Render's onrender.com edge; found 2026-11-18, owner step 9)
+the chain is client -> Cloudflare -> Render (10.x) -> 127.0.0.1 -> app, so the
+first untrusted hop uvicorn finds is a Cloudflare edge, not the client. When that
+hop is in Cloudflare's published ranges (pinned in CLOUDFLARE_RANGES below,
+fetched 2026-11-18 from cloudflare.com/ips-v4 and /ips-v6), `resolve_client`
+takes EXACTLY ONE more step left in X-Forwarded-For: the entry Cloudflare itself
+appended for the connecting client. Anything a client forges sits further left
+and is never read; a client whose own address is a Cloudflare one (Workers,
+WARP) is reported as that address, never as what it wrote. No proxy setting is
+needed for this. `CLOUDFLARE_CLIENT_IP=0` turns it off.
+
+A trust list that fails the check no longer stops the deploy (owner,
+2026-11-18): it logs an error, `/health` reports `proxy_trust: invalid`, and
+every request's address becomes `untrusted-proxy` -- fail closed: all callers
+share one bucket in the per-address limits, so a forged header buys nothing.
 """
 
 from __future__ import annotations
@@ -28,6 +44,7 @@ import contextvars
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import re
 import uuid
@@ -63,22 +80,91 @@ def principal(presented: str | None, keys: dict[str, str]) -> str:
     return "invalid-key"
 
 
-def check_forwarded_allow_ips() -> None:
-    """Refuse to start unless every trusted proxy entry is a private or loopback
-    address or network (fail closed). `*`, `0.0.0.0/0`, `::/0` or any public
-    network would let callers name their own address; a name that is not an
-    address is refused too."""
+log = logging.getLogger("governed.proxy")
+
+UNTRUSTED = "untrusted-proxy"
+# The process-wide verdict on FORWARDED_ALLOW_IPS, set by check_forwarded_allow_ips.
+TRUST_OK = True
+
+# Cloudflare's published edge ranges (https://www.cloudflare.com/ips-v4 and
+# /ips-v6, fetched 2026-11-18). tests/unit/test_client_ip.py compares them with
+# the live lists when run with the `network` marker.
+CLOUDFLARE_RANGES = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "173.245.48.0/20",
+        "103.21.244.0/22",
+        "103.22.200.0/22",
+        "103.31.4.0/22",
+        "141.101.64.0/18",
+        "108.162.192.0/18",
+        "190.93.240.0/20",
+        "188.114.96.0/20",
+        "197.234.240.0/22",
+        "198.41.128.0/17",
+        "162.158.0.0/15",
+        "104.16.0.0/13",
+        "104.24.0.0/14",
+        "172.64.0.0/13",
+        "131.0.72.0/22",
+        "2400:cb00::/32",
+        "2606:4700::/32",
+        "2803:f800::/32",
+        "2405:b500::/32",
+        "2405:8100::/32",
+        "2a06:98c0::/29",
+        "2c0f:f248::/32",
+    )
+)
+
+
+def _ip(s: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(s.strip())
+    except ValueError:
+        return None
+
+
+def is_cloudflare(addr: str) -> bool:
+    ip = _ip(addr)
+    return ip is not None and any(ip in n for n in CLOUDFLARE_RANGES)
+
+
+def resolve_client(uvicorn_host: str, forwarded_for: str, cloudflare: bool = True) -> str:
+    """The caller's address. `uvicorn_host` is the first hop uvicorn did not
+    trust; `forwarded_for` the raw X-Forwarded-For. Only when that hop is a
+    Cloudflare edge, the entry just left of its rightmost occurrence (the one
+    Cloudflare appended) is taken -- one step, never more."""
+    if not cloudflare or not is_cloudflare(uvicorn_host):
+        return uvicorn_host
+    hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+    for i in range(len(hops) - 1, 0, -1):
+        if hops[i] == uvicorn_host:
+            left = hops[i - 1]
+            return left if _ip(left) is not None else uvicorn_host
+    return uvicorn_host
+
+
+def check_forwarded_allow_ips() -> bool:
+    """True when every trusted proxy entry is a private or loopback address or
+    network. `*`, `0.0.0.0/0`, `::/0`, any public network or a name fails. A
+    failure no longer stops the process: it logs an error and every request's
+    address becomes `untrusted-proxy` (fail closed, see the module docstring)."""
+    global TRUST_OK
     raw = os.environ.get("FORWARDED_ALLOW_IPS", "")
-    for part in (p.strip() for p in raw.split(",")):
-        if not part:
-            continue
-        if not _trustable(part):
-            raise SystemExit(
-                f"FORWARDED_ALLOW_IPS entry {part!r} is not a private IPv4 or IPv6 "
-                "(fc00::/7) address or network, or loopback: it would let callers set "
-                "their own client address, or be ignored. List the proxy's own "
-                "addresses (backlog item 38)"
-            )
+    bad = [p for p in (x.strip() for x in raw.split(",")) if p and not _trustable(p)]
+    TRUST_OK = not bad
+    if bad:
+        log.error(
+            "FORWARDED_ALLOW_IPS has %d entr%s that %s not a private IPv4 or IPv6 "
+            "(fc00::/7) address or network, or loopback; client addresses are NOT "
+            "trusted and every request is counted as %r until it is fixed (item 38)",
+            len(bad),
+            "y" if len(bad) == 1 else "ies",
+            "is" if len(bad) == 1 else "are",
+            UNTRUSTED,
+        )
+    return TRUST_OK
 
 
 _ULA = ipaddress.ip_network("fc00::/7")
@@ -125,10 +211,25 @@ class RequestContext:
         given = headers.get(b"x-request-id", b"").decode("latin-1")
         request_id = given if _SAFE_ID.fullmatch(given) else uuid.uuid4().hex
         client = scope.get("client")
+        if not TRUST_OK:
+            host = UNTRUSTED
+        elif client:
+            xff = b",".join(v for k, v in (scope.get("headers") or []) if k == b"x-forwarded-for")
+            host = resolve_client(
+                client[0],
+                xff.decode("latin-1"),
+                os.environ.get("CLOUDFLARE_CLIENT_IP", "1").strip() != "0",
+            )
+        else:
+            host = "unknown"
+        if client and host != client[0]:
+            # in place, so every later reader (rate limits, the auth-failure
+            # counter, uvicorn's access log) sees the same address
+            scope["client"] = (host, client[1])
         ctx = {
             "request_id": request_id,
             "principal": principal(_presented_key(headers), self.keys()),
-            "source_ip": client[0] if client else "unknown",
+            "source_ip": host,
         }
         token = _CURRENT.set(ctx)
 
