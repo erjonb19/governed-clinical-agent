@@ -40,12 +40,14 @@ setup(
     install_requires=requirements + GUARD_PINS,
     extras_require={
         "dev": GUARD_PINS + [
-            "pytest>=7.0.0",
-            "pytest-cov>=4.0.0",
-            "pytest-mock>=3.10.0",
-            "black>=23.0.0",
-            "flake8>=6.0.0",
-            "mypy>=1.0.0",
+            # exact pins, the same versions CI runs (audit item 69): pytest and
+            # its plugins as in requirements-ci.txt, ruff and mypy as in tests.yml
+            # (ruff replaced black and flake8, which nothing ran)
+            "pytest==9.2.0",
+            "pytest-cov==7.1.0",
+            "pytest-mock==3.17.0",
+            "ruff==0.16.9",
+            "mypy==2.3.1",
         ],
     },
     entry_points={

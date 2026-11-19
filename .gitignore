@@ -1,4 +1,4 @@
-﻿venv311/
+venv311/
 __pycache__/
 *.pyc
 .env
@@ -16,3 +16,14 @@ srv_out.log
 # Local working notes (owner: not committed)
 MORNING_REPORT.md
 .coverage
+
+# Secrets and key material never belong in git (audit item 69)
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.tfstate
+*.tfstate.*
+secrets/
