@@ -628,6 +628,11 @@ Then open **http://localhost:8000/ui** — a self-contained web UI to ask questi
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
 The API's Swagger docs are at `/docs` when `API_DOCS=1` is set (off on the deploy, audit item 53).
 
+**Kill switch:** `AGENT_DISABLED=1` makes `/query`, `/propose` and `/mcp` answer 503 before any
+model call or tool runs; `/health` (which then shows `agent_disabled: true`), the UI, the fixed
+findings and `/raw-sql` keep serving. **MCP demo tools:** the Milestone-1 `echo`, `fetch_url` and
+`git_push` are advertised over MCP only with `MCP_DEMO_TOOLS=1` (audit item 69).
+
 The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
 **About** (backlog item 9). Answers offers four questions as buttons; one click shows
 the answer as a plain sentence with its number and a "How we know" showing the exact
