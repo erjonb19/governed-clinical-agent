@@ -65,7 +65,7 @@ import sqlite3  # noqa: F401  (kept: older callers import approval.sqlite3)
 
 import state_db
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, TypedDict
 
 APPROVALS_DB = os.environ.get("APPROVALS_DB", "logs/approvals.sqlite")
@@ -114,6 +114,28 @@ class ApprovalStore:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.path = path
         self._init()
+        # Backlog item 60: decided items, with the free-text question, proposal
+        # and reasons, are kept APPROVAL_RETENTION_DAYS (default 90; 0 keeps
+        # them forever). Pending items are never purged.
+        try:
+            days = int(os.environ.get("APPROVAL_RETENTION_DAYS", "90"))
+        except ValueError:
+            days = 90
+        if days > 0:
+            self.purge(days)
+
+    def purge(self, older_than_days: int) -> int:
+        """Delete decided items (and their decision chain) whose final decision
+        is older than `older_than_days`. Returns how many items went."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        old = ("SELECT approval_id FROM approvals "
+               "WHERE status <> 'pending' AND decided_at IS NOT NULL AND decided_at < ?")
+        with self._conn() as con:
+            n = len(con.execute(old, (cutoff,)).fetchall())
+            if n:
+                con.execute(f"DELETE FROM approval_events WHERE approval_id IN ({old})", (cutoff,))
+                con.execute(f"DELETE FROM approvals WHERE approval_id IN ({old})", (cutoff,))
+        return n
 
     def _conn(self):
         # Postgres when STATE_DB_URL is set (item 19: the queue survives a

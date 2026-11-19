@@ -338,7 +338,10 @@ class Tracer:
             yield span
         except BaseException as exc:
             span.status = "error"
-            span.attrs.setdefault("error", f"{type(exc).__name__}: {exc}"[:500])
+            # item 62: a provider error can echo a key; redact before storing
+            from src.utils.redaction import redact_text
+
+            span.attrs.setdefault("error", redact_text(f"{type(exc).__name__}: {exc}")[:500])
             raise
         finally:
             _current_span.reset(token)
