@@ -16,7 +16,9 @@ gh auth login
 
 ---
 
-## [ ] 1. Dismiss code scanning alert #10 as a false positive
+## [x] 1. Dismiss code scanning alert #10 as a false positive
+
+**Done 2026-11-18:** alert #10 dismissed as a false positive.
 
 **Why:** CodeQL flags `nl_to_sql_planner.py:563` as clear-text logging of a
 secret. The line prints the environment variable's **name** (for example
@@ -105,7 +107,9 @@ Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health
 
 ---
 
-## [ ] 5. Add `pip-audit` to the required checks on `main` (backlog item 44)
+## [x] 5. Add `pip-audit` to the required checks on `main` (backlog item 44)
+
+**Done 2026-11-18:** `pip-audit` is a required check on `main`.
 
 **Why:** item 44's "Done when" lists `pip-audit` (the dependency vulnerability scan)
 among the required checks, and it is not required today, so a PR that adds a
@@ -124,7 +128,9 @@ Check (the list should now include `pip-audit`):
 
 ---
 
-## [ ] 6. Turn on GitHub Pages for the wake-up page (backlog item 9)
+## [x] 6. Turn on GitHub Pages for the wake-up page (backlog item 9)
+
+**Done 2026-11-18:** Pages deploys from Actions (`build_type=workflow`); the `pages.yml` run succeeded, and https://erjonb19.github.io/governed-clinical-agent/ wakes the service and opens the app. The README links point at it.
 
 **Why:** on Render's free plan the service sleeps when idle, and a sleeping
 service cannot show its own "please wait" note. The wake-up page (`site/`,
@@ -188,7 +194,9 @@ its steps. Tell the agent "step 8 done". Stop it with `docker compose down`.
 
 ---
 
-## [ ] 9. Trust Render's proxy for client addresses (backlog item 38)
+## [x] 9. Trust Render's proxy for client addresses (backlog item 38)
+
+**Done 2026-11-18, on deploy `f631081`:** `/v1/health` shows `proxy_trust: ok`, and a request with a forged `X-Forwarded-For: 1.2.3.4` (`check=e4`) was logged with the caller's real address (recorded here as the documentation address `203.0.113.70`), not `1.2.3.4` and not a Cloudflare edge. The failed-key lockout (`AUTH_FAILURE_LOCKOUT=1`, item 35) can now be turned on; that stays a separate decision.
 
 **Why:** every audit event records the caller's address (`source_ip`), and the
 keyless `/public/findings` limit and the failed-key counter are kept per address.
@@ -239,7 +247,9 @@ done". After that, the failed-key lockout (`AUTH_FAILURE_LOCKOUT=1`, backlog ite
 
 ---
 
-## [ ] 10. Give the security-alert job a key (backlog item 59)
+## [x] 10. Give the security-alert job a key (backlog item 59)
+
+**Done 2026-11-18:** `ALERT_API_KEY` is set and a manual `security-alerts` run succeeded.
 
 **Why:** the nightly `security alerts` job reads the deploy's `/v1/metrics`, which
 needs the API key since item 54. Without the repo secret `ALERT_API_KEY` the job
@@ -264,7 +274,9 @@ secret again.
 
 ---
 
-## [ ] 11. Delete the stray branch `claude/jolly-hopper-8ly9iq-41`
+## [x] 11. Delete the stray branch `claude/jolly-hopper-8ly9iq-41`
+
+**Done 2026-11-18:** both stray branches, `claude/jolly-hopper-8ly9iq-41` and `claude/jolly-hopper-8ly9iq-clientip` (whose early commits held a real address), are deleted.
 
 **Why:** an agent pushed a merge to this misnamed branch on 2026-11-16 (the real
 branch was `...-item41`, PR #134, merged). You approved deleting it, but this
