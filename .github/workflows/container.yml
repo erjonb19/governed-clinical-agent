@@ -43,11 +43,13 @@ jobs:
       - name: Memory at idle (Render budget, item 17)
         run: docker stats --no-stream --format 'memory {{.MemUsage}}' api
 
-      # Trivy, from its own image pinned by DIGEST (0.58.2, Jan 2025), not the
-      # trivy-action wrapper: a digest cannot be moved under us, a tag can.
+      # Trivy, from its own image pinned by DIGEST (0.76.2, 2026-11-05), not the
+      # trivy-action wrapper: a digest cannot be moved under us, a tag can. It
+      # scans a `docker save` tarball mounted read-only (--input), so the scanner
+      # never gets the Docker socket, which is root on the runner (audit item 69).
       - name: Scan (Trivy; fail on fixable CRITICAL findings)
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy@sha256:665030f4d33a82c1e8d9d5e0453365842236723c1ee5cc3becca698268e66a56 \
-            image --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress \
-            governed-clinical-agent:ci
+          docker save governed-clinical-agent:ci -o "$RUNNER_TEMP/image.tar"
+          docker run --rm -v "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+            aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            image --input /image.tar --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress

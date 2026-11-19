@@ -293,3 +293,32 @@ git push myfork --delete claude/jolly-hopper-8ly9iq-41
 
 Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
 "step 11 done".
+
+---
+
+## [ ] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+
+**Why:** `SECURITY.md` asks people to report problems privately through the
+repository's **Security** tab, which only works once private vulnerability reporting
+is on. Dependabot security updates open a fix PR as soon as a known vulnerability
+affects a pinned dependency, instead of waiting for the weekly version updates. Both
+are repository settings, so this session cannot change them.
+
+From the repo folder (uses the GitHub CLI you signed in to before step 1):
+
+```powershell
+gh api -X PUT repos/erjonb19/governed-clinical-agent/private-vulnerability-reporting
+gh api -X PUT repos/erjonb19/governed-clinical-agent/vulnerability-alerts
+gh api -X PUT repos/erjonb19/governed-clinical-agent/automated-security-fixes
+```
+
+Check both are on (each should print `true`):
+
+```powershell
+gh api repos/erjonb19/governed-clinical-agent/private-vulnerability-reporting --jq .enabled
+gh api repos/erjonb19/governed-clinical-agent/automated-security-fixes --jq .enabled
+```
+
+Or in the browser: the repo -> Settings -> Code security -> turn on "Private
+vulnerability reporting" and "Dependabot security updates". Tell the agent "step 12
+done".
