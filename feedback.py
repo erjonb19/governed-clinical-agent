@@ -31,6 +31,13 @@ RATINGS = ("up", "down")
 MAX_REASON_CHARS = 500
 
 
+def retention_days() -> int:
+    try:
+        return int(os.environ.get("FEEDBACK_RETENTION_DAYS", "90"))
+    except ValueError:
+        return 90
+
+
 class FeedbackStore:
     def __init__(self, path: Optional[str] = None):
         self.path = path or FEEDBACK_DB
@@ -43,18 +50,15 @@ class FeedbackStore:
                     rated_at    TEXT NOT NULL
                 )
             """)
-        try:
-            days = int(os.environ.get("FEEDBACK_RETENTION_DAYS", "90"))
-        except ValueError:
-            days = 90
-        if days > 0:
-            self.purge(days)
+        self.retention_days = retention_days()
+        self._purge_due()
 
     def rate(self, trace_id: str, rating: str, reason: Optional[str] = None) -> None:
         if rating not in RATINGS:
             raise ValueError(f"rating must be one of {RATINGS}")
         reason = (reason or "").strip()[:MAX_REASON_CHARS] or None
         now = datetime.now(timezone.utc).isoformat()
+        self._purge_due()  # on every write: a process that never restarts still forgets
         with state_db.connect(self.path) as con:
             # the same upsert in SQLite (3.24+) and Postgres
             con.execute(
@@ -87,6 +91,10 @@ class FeedbackStore:
                 "WHERE rating = 'down' ORDER BY rated_at"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def _purge_due(self) -> None:
+        if self.retention_days > 0:
+            self.purge(self.retention_days)
 
     def purge(self, older_than_days: int) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()

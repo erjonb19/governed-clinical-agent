@@ -7,8 +7,10 @@ rater's reason and a link to the trace. `reference_sql`, `mode` and `tier` are
 left as TODO: only a person can say what the right answer is. Once finished, the
 case goes into eval_bank.py or eval_bank_fhir.py by hand, through a PR.
 
-A candidate whose trace is gone (a Render restart wipes traces) is written with
-what is known and says so. Existing files are left alone, so the script can run
+Run it where the traces are: ratings can live in Postgres (STATE_DB_URL), but
+traces are always the server's own SQLite file (TRACE_DB), so on another machine
+every candidate comes out as "trace gone". A candidate whose trace is gone (a
+Render restart wipes traces) is written with what is known and says so. Existing files are left alone, so the script can run
 again safely.
 
     python scripts/feedback_to_cases.py [--out logs/eval_candidates] [--base-url URL]

@@ -1101,7 +1101,9 @@ def post_feedback(request: Request, req: FeedbackRequest) -> dict:
         import question_screen
         kinds = question_screen.identifiers_in(req.reason)
         if kinds:
-            raise HTTPException(status_code=422, detail=question_screen.refusal(kinds))
+            raise HTTPException(status_code=422, detail=(
+                "The reason looks like it contains personal information (" + ", ".join(kinds)
+                + "). Please describe what was wrong without it."))
     _feedback_store().rate(req.trace_id, req.rating, req.reason)
     return {"ok": True, "trace_id": req.trace_id, "rating": req.rating}
 
