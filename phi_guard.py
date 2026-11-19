@@ -40,7 +40,7 @@ import datetime as _dt
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Iterator, Optional, cast
 
 import sqlglot
 import yaml
@@ -71,7 +71,8 @@ _ZIP_VALUE = re.compile(r"^\s*\d{5}(-\d{4})?\s*$")
 # configuration
 # ---------------------------------------------------------------------------
 
-def _load(path: str = CONFIG_PATH):
+def _load(path: str = CONFIG_PATH
+          ) -> tuple[dict[str, dict[str, tuple[str, bool]]], Any, int, set[str], int]:
     with open(path, encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     tables: dict[str, dict[str, tuple[str, bool]]] = {}
@@ -103,7 +104,7 @@ _MEAN_AGGS = {"avg", "mean", "sum", "stddev", "stddev_samp", "stddev_pop", "vari
               "fsum", "sumkahan", "kahan_sum", "sum_no_overflow"}
 PROTECTED = set(TABLES)
 # for qualify(): expand * and qualify columns of the protected tables
-SCHEMA = {t: {c: "VARCHAR" for c in cols} for t, cols in TABLES.items()}
+SCHEMA: dict[str, Any] = {t: {c: "VARCHAR" for c in cols} for t, cols in TABLES.items()}
 
 
 def classify(table: str, column: str) -> tuple[str, bool]:
@@ -123,7 +124,7 @@ def touches_protected(tree: exp.Expression) -> bool:
 # shared expression rules
 # ---------------------------------------------------------------------------
 
-def _is_year(node: exp.Expression) -> bool:
+def _is_year(node: exp.Expr) -> bool:
     """A reduction of a date to the year (or to an age in whole years)."""
     if isinstance(node, exp.Year):
         return True
@@ -142,7 +143,7 @@ _DIFFS = (exp.DateDiff, exp.DatetimeDiff, exp.TimestampDiff)
 _DATE_LITERAL = re.compile(r"\d{4}-\d")
 
 
-def _interval_operands(node: exp.Expression) -> Optional[list]:
+def _interval_operands(node: exp.Expr) -> Optional[list[Any]]:
     """If `node` is a difference between two dates -- date_diff(unit, a, b) in
     any unit, or a - b -- its two operands; else None."""
     if isinstance(node, _DIFFS):
@@ -169,12 +170,12 @@ def _interval_operands(node: exp.Expression) -> Optional[list]:
 _DAY_FUNCS = {"to_days", "to_hours", "to_weeks"}
 
 
-def _fixed_days(node: Optional[exp.Expression]) -> bool:
+def _fixed_days(node: Optional[exp.Expr]) -> bool:
     """A fixed shift a date may be moved by in a date-vs-date comparison: a
     number (date + 30 is 30 days in DuckDB), an INTERVAL of a number, or
     to_days(<number>). Nothing computed: a subquery or a column would make the
     'shift' a constant date in disguise."""
-    def number(n):
+    def number(n: Any) -> bool:
         while isinstance(n, (exp.Paren, exp.Neg)):
             n = n.this
         return isinstance(n, exp.Literal) and re.fullmatch(
@@ -198,11 +199,11 @@ def _fixed_days(node: Optional[exp.Expression]) -> bool:
 _TRANSPARENT = (exp.Cast, exp.TryCast, exp.Paren, exp.Distinct)
 
 
-def side_channel(col: exp.Expression, root: exp.Expression) -> Optional[str]:
+def side_channel(col: exp.Expr, root: exp.Expr) -> Optional[str]:
     """Is `col` used as an aggregate FILTER or a window PARTITION BY / ORDER BY
     inside `root`? Those do not return the value, but on a labelled column they
     look a person up (a filtered count) or form unsuppressed groups (a window)."""
-    node = col
+    node: exp.Expr = col
     while node is not root and node.parent is not None:
         parent = node.parent
         if isinstance(parent, exp.Filter) and node is parent.args.get("expression"):
@@ -213,8 +214,10 @@ def side_channel(col: exp.Expression, root: exp.Expression) -> Optional[str]:
     return None
 
 
-def _path(col: exp.Expression, root: exp.Expression) -> list:
+def _path(col: exp.Expr, root: exp.Expr) -> list[exp.Expr]:
     """Ancestors of `col` up to and including `root`, nearest first."""
+    out: list[exp.Expr]
+    node: exp.Expr
     out, node = [], col
     while node is not root and node.parent is not None:
         out.append(node.parent)
@@ -222,7 +225,7 @@ def _path(col: exp.Expression, root: exp.Expression) -> list:
     return out
 
 
-def reduced(col: exp.Expression, root: exp.Expression, is_date: bool) -> bool:
+def reduced(col: exp.Expr, root: exp.Expr, is_date: bool) -> bool:
     """Is `col` reduced on its way to `root`: the direct argument of COUNT, or a
     date with YEAR / EXTRACT(year) / date_diff('year') applied to it directly
     (only casts and DISTINCT in between)?"""
@@ -259,7 +262,8 @@ _PATIENT_ROW_AGGS = _PER_PATIENT_AGGS | {
     "regr_sxy", "regr_syy", "count_if", "countif"}   # *_if is refused as conditional below
 
 
-def _plain_agg_arg(node: Optional[exp.Expression], col_ok=None) -> bool:
+def _plain_agg_arg(node: Optional[exp.Expr],
+                   col_ok: Optional[Callable[[exp.Column], bool]] = None) -> bool:
     """An argument an aggregate over patient rows may take: a column (cast or
     DISTINCT at most), *, a scalar literal, a date reduced to the year, or the
     days between two date columns. Nothing computed (ninth review) -- and, with
@@ -270,7 +274,7 @@ def _plain_agg_arg(node: Optional[exp.Expression], col_ok=None) -> bool:
     return col_ok is None or node is None or all(col_ok(c) for c in node.find_all(exp.Column))
 
 
-def _plain_shape(node: Optional[exp.Expression]) -> bool:
+def _plain_shape(node: Optional[exp.Expr]) -> bool:
     while isinstance(node, (exp.Cast, exp.TryCast, exp.Paren, exp.Ordered)):
         node = node.this
     if isinstance(node, exp.Distinct):
@@ -298,7 +302,7 @@ def _plain_shape(node: Optional[exp.Expression]) -> bool:
     return _interval_operands(node) is not None       # days between two date columns
 
 
-def _is_age_cap(node: exp.Expression) -> bool:
+def _is_age_cap(node: exp.Expr) -> bool:
     """LEAST(<age column>, AGE_CAP) exactly: the cap the guard applies anyway,
     so writing it out reveals nothing more. Any other bound is not plain."""
     if not isinstance(node, exp.Least):
@@ -314,8 +318,9 @@ def _is_age_cap(node: exp.Expression) -> bool:
             and lit.this == str(AGE_CAP))
 
 
-def _agg_name(node: exp.Expression) -> str:
-    return (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+def _agg_name(node: exp.Expr) -> str:
+    return (node.name if isinstance(node, exp.Anonymous)
+            else cast(exp.Func, node).sql_name()).lower()
 
 
 def _is_key(base: Optional[str]) -> bool:
@@ -328,7 +333,7 @@ def _is_key(base: Optional[str]) -> bool:
         classify(table, column)[0] == IDENTIFIER
 
 
-def _banned_wrapper(col: exp.Expression, root: exp.Expression) -> Optional[str]:
+def _banned_wrapper(col: exp.Expr, root: exp.Expr) -> Optional[str]:
     path = _path(col, root) or []
     for anc in path:
         if isinstance(anc, exp.Count):
@@ -359,7 +364,7 @@ def _duckdb_aggregates() -> set[str]:
 _AGG_NAMES = _duckdb_aggregates()
 
 
-def is_agg(node: exp.Expression) -> bool:
+def is_agg(node: exp.Expr) -> bool:
     if isinstance(node, exp.AggFunc):
         return True
     return isinstance(node, exp.Anonymous) and (node.name or "").lower() in _AGG_NAMES
@@ -378,17 +383,17 @@ def _is_aggregate(select: exp.Select) -> bool:
     return having is not None
 
 
-def _equal_components(select: exp.Select):
+def _equal_components(select: exp.Select) -> Callable[[str, str], bool]:
     """Which column references are tied together by `a = b` in the JOIN ONs and
     the WHERE (top-level AND only: an OR does not tie anything)."""
-    parent: dict = {}
+    parent: dict[str, str] = {}
 
-    def find(x):
+    def find(x: str) -> str:
         while parent.get(x, x) != x:
             x = parent[x]
         return x
 
-    def conjuncts(e):
+    def conjuncts(e: Optional[exp.Expr]) -> Iterator[exp.Expr]:
         if isinstance(e, exp.And):
             yield from conjuncts(e.this)
             yield from conjuncts(e.expression)
@@ -410,7 +415,7 @@ def _equal_components(select: exp.Select):
     return lambda a, b: find(a) == find(b)
 
 
-def _own_nodes(select: exp.Expression, kind):
+def _own_nodes(select: exp.Expr, kind: Any) -> Iterator[Any]:
     """Nodes of `kind` in this SELECT itself, not in its nested queries."""
     stack = [select]
     while stack:
@@ -423,7 +428,7 @@ def _own_nodes(select: exp.Expression, kind):
             stack.append(child)
 
 
-def _ancestors(node, root):
+def _ancestors(node: exp.Expr, root: Optional[exp.Expr]) -> Iterator[exp.Expr]:
     while node is not root and node.parent is not None:
         node = node.parent
         yield node
@@ -449,13 +454,13 @@ class Sens:
 class PhiDecision:
     allowed: bool
     reason: str = "allowed"
-    findings: list = field(default_factory=list)
+    findings: list[Any] = field(default_factory=list)
     tree: Optional[exp.Expression] = None
     protected: bool = False
     analysed_sql: Optional[str] = None     # the qualified ORIGINAL query, for check_output
-    analysed_names: list = field(default_factory=list)   # its result columns, in order
+    analysed_names: list[Any] = field(default_factory=list)   # its result columns, in order
     aggregate_root: bool = False           # an ungrouped aggregate at the root
-    age_outputs: list = field(default_factory=list)   # result positions that ARE ages
+    age_outputs: list[Any] = field(default_factory=list)   # result positions that ARE ages
     suppressed_scopes: int = 0
 
 
@@ -463,13 +468,14 @@ class _Analysis:
     def __init__(self, root: exp.Expression):
         self.root = root
         self.memo: dict[int, list[tuple[str, Sens]]] = {}
-        self.person: dict[int, Optional[str]] = {}     # person-row scopes: key output name
+        self.person: dict[int, Any] = {}     # person-row scopes: key output name
         self.findings: list[str] = []
-        self.rewrites: list[tuple[exp.Select, list]] = []
-        self.filters: list[tuple[exp.Filter, list]] = []
+        self.rewrites: list[tuple[exp.Select, Any]] = []
+        self.filters: list[tuple[exp.Filter, Any]] = []
 
     # -- sensitivity of a column reference --
     def resolve(self, scope: Scope, col: exp.Column) -> Sens:
+        s: Optional[Scope]
         name, s, src = col.table, scope, None
         if not name:
             # qualify() leaves a column it cannot place unqualified -- e.g. one
@@ -502,7 +508,7 @@ class _Analysis:
                 return sens
         return Sens(IDENTIFIER, False, None)            # unknown: fail closed
 
-    def sens_of(self, scope: Scope, proj: exp.Expression) -> Sens:
+    def sens_of(self, scope: Scope, proj: exp.Expr) -> Sens:
         worst = Sens()
         for col in proj.find_all(exp.Column):
             if any(isinstance(a, (exp.Subquery, exp.Select)) for a in _ancestors(col, proj)):
@@ -555,7 +561,7 @@ class _Analysis:
     def _col_plain(self, scope: Scope, col: exp.Column) -> bool:
         return not self.resolve(scope, col).computed
 
-    def _plain_output(self, scope: Scope, node: exp.Expression) -> bool:
+    def _plain_output(self, scope: Scope, node: exp.Expr) -> bool:
         """Is this projection a plain value: a plain argument (as an aggregate
         would take it), or an aggregate -- FILTERed at most -- of plain
         arguments (a per-patient count)? Anything else is 'computed', and an
@@ -604,7 +610,7 @@ class _Analysis:
             return
         keys = list(group.expressions)
         if group.args.get("all"):
-            keys = [p for p in scope.expression.selects
+            keys = [p for p in cast(exp.Select, scope.expression).selects
                     if not any(isinstance(n, exp.AggFunc) for n in p.walk())]
         for key in keys:
             for col in key.find_all(exp.Column):
@@ -614,7 +620,7 @@ class _Analysis:
                         continue
                     self.findings.append(f"identifier {s.base or col.name} is a GROUP BY key")
 
-    def _consumers(self, scope: Scope) -> list:
+    def _consumers(self, scope: Scope) -> list[Any]:
         """The scopes that read this one: as a FROM source, or -- a subquery in a
         predicate -- its parent."""
         users = [s for s in self.scopes if any(v is scope for v in s.sources.values())]
@@ -661,7 +667,7 @@ class _Analysis:
         return bool(users) and all(isinstance(u.expression, exp.Select)
                                    and _is_aggregate(u.expression) for u in users)
 
-    def _person_group_refs(self, scope: Scope) -> Optional[list]:
+    def _person_group_refs(self, scope: Scope) -> Optional[list[Any]]:
         """If this aggregate is grouped by the person key of its patient
         sources (one row per patient), the bare references it groups by."""
         group = scope.expression.args.get("group")
@@ -684,7 +690,7 @@ class _Analysis:
         # joined on anything else (a condition name, gender) puts other
         # people's rows into each "one-patient" group.
         keys = self._person_source(scope)[1] or []
-        linked = _equal_components(scope.expression)
+        linked = _equal_components(cast(exp.Select, scope.expression))
         for k in keys:
             k = k.lower()
             if k not in refs and not any(linked(k, r) for r in refs):
@@ -784,14 +790,14 @@ class _Analysis:
                 self.findings.append("a date difference must be between two date columns, "
                                      "not a date and a constant")
 
-    def _date_comparison(self, scope: Scope, col: exp.Column, clause: exp.Expression) -> bool:
+    def _date_comparison(self, scope: Scope, col: exp.Column, clause: exp.Expr) -> bool:
         """Owner's decision 2: a filter may compare two date columns (b.start >
         a.end, b.start BETWEEN a.end AND a.end + INTERVAL 30 DAY). EVERY operand
         must be a date column, shifted at most by a fixed number of days: a
         constant bound -- make_date(...), current_date, an epoch, a subquery --
         compares a date with a constant (eighth review: one column bound and one
         constant bound pinned a date to the day)."""
-        node = col
+        node: exp.Expr = col
         while node.parent is not None and node is not clause:
             parent = node.parent
             if isinstance(parent, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)):
@@ -810,7 +816,7 @@ class _Analysis:
             bases.add(base)
         return len(bases) >= 2
 
-    def _shifted_date_column(self, scope: Scope, node: Optional[exp.Expression]) -> Optional[str]:
+    def _shifted_date_column(self, scope: Scope, node: Optional[exp.Expr]) -> Optional[str]:
         """If `node` is a date column of a real table, optionally plus or minus a
         fixed day count (INTERVAL 30 DAY, INTERVAL '30 days', 30, to_days(30)),
         the column's "table.column"; else None."""
@@ -830,7 +836,7 @@ class _Analysis:
         # self-join are two dates (readmission measured start to start)
         return f"{node.table}.{node.name}".lower() if (r.is_date and r.base and node.table) else None
 
-    def aggregate_only(self, scopes: list) -> None:
+    def aggregate_only(self, scopes: list[Any]) -> None:
         """Owner's decision 1 (2026-10-31): patient data is aggregate-only. The
         result must be an aggregate (each row covering 11+ people, by the
         small-cell rule); row-level results are refused even of safe columns.
@@ -905,6 +911,7 @@ class _Analysis:
         IN (SELECT '<id>') -- is not a key, so it is a filter."""
         if not _is_key(s.base):
             return False
+        node: exp.Expr
         node, parent = col, col.parent
         while isinstance(parent, (exp.Cast, exp.TryCast, exp.Paren)):
             node, parent = parent, parent.parent
@@ -934,7 +941,7 @@ class _Analysis:
         outs = self.outputs(scope)
         return len(outs) == 1 and _is_key(outs[0][1].base)
 
-    def person_rows(self, scope: Scope) -> tuple[bool, Optional[list]]:
+    def person_rows(self, scope: Scope) -> tuple[bool, Optional[list[Any]]]:
         """Does this scope's output hold person-level rows, and if so which
         output columns carry the person key of EVERY person source it reads?
         (None when any is missing: a join on gender between two patient tables
@@ -954,7 +961,7 @@ class _Analysis:
                 and self._person_group_refs(scope):
             # grouped by patient (decision 4): one row per patient, and the
             # outer aggregate must count them -- so it carries the key
-            refs = self._person_group_refs(scope)
+            refs = cast(list[Any], self._person_group_refs(scope))
             outs = self.outputs(scope)
             names = [next((n for n, sens in outs if sens.ref == r), None) for r in refs]
             result = names if all(names) else None
@@ -975,7 +982,7 @@ class _Analysis:
         self.person[id(scope)] = result
         return result is not False, (result if isinstance(result, list) else None)
 
-    def _person_source(self, scope: Scope) -> tuple[bool, Optional[str]]:
+    def _person_source(self, scope: Scope) -> tuple[bool, Optional[list[str]]]:
         """(reads person rows?, the person keys of EVERY person source joined
         with AND, or None if any of them has none). Every source counts: a
         cross join to an unrelated patient table must not pad a group's count."""
@@ -1091,6 +1098,7 @@ class _Analysis:
         # COLUMNS('regex') / COLUMNS(lambda) select columns by pattern, so no
         # column reference exists to classify; a * qualify() could not expand
         # is the same. On patient data both are refused.
+        node: Optional[exp.Expr]
         for node in self.root.walk():
             if isinstance(node, exp.Columns) or (
                     isinstance(node, exp.Anonymous) and (node.name or "").lower() == "columns"):
@@ -1178,7 +1186,7 @@ def _rule_hint(findings: list[str]) -> str:
 _SAFE_TABLE_FUNCTIONS = {"range", "generate_series", "unnest"}
 
 
-def _no_such_column(names: list) -> PhiDecision:
+def _no_such_column(names: list[Any]) -> PhiDecision:
     # Every real column of a protected table is labelled (pinned by
     # test_every_fhir_column_is_labelled), so an unlabelled one does not exist:
     # say so, rather than calling an invented column an identifier. Still a
@@ -1189,11 +1197,11 @@ def _no_such_column(names: list) -> PhiDecision:
                        protected=True)
 
 
-def _unknown_columns_by_alias(tree: exp.Expression) -> list:
+def _unknown_columns_by_alias(tree: exp.Expression) -> list[Any]:
     """Columns written as <alias>.<name> where the alias can only be one
     protected table and that table has no such column (qualify() raises on
     these before the analysis can place them)."""
-    aliases: dict[str, set] = {}
+    aliases: dict[str, set[Any]] = {}
     for t in tree.find_all(exp.Table):
         if isinstance(t.this, exp.Identifier):
             aliases.setdefault((t.alias_or_name or "").lower(), set()).add((t.name or "").lower())
@@ -1210,7 +1218,7 @@ def _unknown_columns_by_alias(tree: exp.Expression) -> list:
     return out
 
 
-def _unknown_columns(a: "_Analysis") -> list:
+def _unknown_columns(a: "_Analysis") -> list[Any]:
     """Columns the analysis placed on a protected table that has no such column."""
     out = []
     for sc in a.scopes:
@@ -1224,7 +1232,7 @@ def _unknown_columns(a: "_Analysis") -> list:
     return out
 
 
-def _differenced_scopes(rewrites: list) -> list:
+def _differenced_scopes(rewrites: list[Any]) -> list[Any]:
     """The small-cell scopes whose complement must ALSO cover 11 people: those
     with a WHERE filter, when the query holds more than one such scope (a
     scalar subquery, CTE, derived table or UNION branch beside another).
@@ -1245,7 +1253,7 @@ def _complement_ok(complement: str, whole: str) -> str:  # noqa: D401
             f"AND ({whole}) >= {MIN_CELL}))")
 
 
-def _complement(sel: exp.Select, keys: list) -> exp.Expression:
+def _complement(sel: exp.Select, keys: list[Any]) -> exp.Expr:
     """For each person key, `_complement_ok` over two scalar counts built from
     the qualified scope: the people the scope's WHERE leaves out, and everyone
     in its sources. Self-contained subqueries (their own FROM, so their aliases
@@ -1253,7 +1261,7 @@ def _complement(sel: exp.Select, keys: list) -> exp.Expression:
     conds = []
     pred = sel.args["where"].this.sql(dialect=DIALECT)
     for k in keys:
-        def count(where):
+        def count(where: Optional[str]) -> str:
             c = sel.copy()
             for arg in ("group", "having", "order", "limit", "offset", "qualify", "distinct",
                         "windows"):
@@ -1276,7 +1284,7 @@ class _CannotCorrelate(Exception):
     """A grouped scope whose complement cannot be written safely: refused."""
 
 
-def _own_sources(sel: exp.Select) -> set:
+def _own_sources(sel: exp.Select) -> set[Any]:
     """Aliases of the tables and derived tables a SELECT reads directly."""
     out = set()
     for node in [sel.args.get("from"), sel.args.get("from_"), *(sel.args.get("joins") or [])]:
@@ -1288,7 +1296,7 @@ def _own_sources(sel: exp.Select) -> set:
     return out
 
 
-def _rename_sources(copy: exp.Select, suffix: str) -> dict:
+def _rename_sources(copy: exp.Select, suffix: str) -> dict[Any, Any]:
     """Give the copy's own sources fresh aliases (alias -> alias+suffix) and
     rename every column that refers to them, except inside a nested SELECT that
     defines the same alias itself (that one is the nested query's own).
@@ -1320,7 +1328,7 @@ def _rename_sources(copy: exp.Select, suffix: str) -> dict:
     return rename
 
 
-def _group_complement(sel: exp.Select, keys: list) -> exp.Expression:
+def _group_complement(sel: exp.Select, keys: list[Any]) -> exp.Expr:
     """The per-group form of `_complement` (owner's decision 2026-11-07): for
     each group, the people of THAT group whom the scope's WHERE leaves out must
     number 0 or at least 11, and 0 only when the whole group has 11. Written as
@@ -1389,10 +1397,11 @@ class _Unit:
     ANDed), the FILTER node if it is one, and whether it counts rows (anything
     but count(DISTINCT <person key>))."""
 
-    def __init__(self, sel, keys, flt, rows):
+    def __init__(self, sel: exp.Select, keys: Any, flt: Optional[exp.Filter],
+                 rows: bool) -> None:
         self.sel, self.keys, self.flt, self.rows = sel, list(keys), flt, rows
 
-    def preds(self, sel: Optional[exp.Select] = None) -> list:
+    def preds(self, sel: Optional[exp.Select] = None) -> list[Any]:
         sel = self.sel if sel is None else sel
         out = []
         where = sel.args.get("where")
@@ -1410,14 +1419,14 @@ class _Unit:
         return self.sel.args.get("group") is not None
 
 
-def _people_count(agg: exp.Expression, keys: list) -> bool:
+def _people_count(agg: exp.Expression, keys: list[Any]) -> bool:
     if not isinstance(agg, exp.Count) or not isinstance(agg.this, exp.Distinct):
         return False
     args = agg.this.expressions
     return len(args) == 1 and args[0].sql(dialect=DIALECT).lower() in {k.lower() for k in keys}
 
 
-def _scope_counts_rows(sel: exp.Select, keys: list) -> bool:
+def _scope_counts_rows(sel: exp.Select, keys: list[Any]) -> bool:
     for node in _own_nodes(sel, exp.Expression):
         if is_agg(node) and not isinstance(node.parent, exp.Window) \
                 and not isinstance(node.parent, exp.Filter) and not _people_count(node, keys):
@@ -1427,7 +1436,7 @@ def _scope_counts_rows(sel: exp.Select, keys: list) -> bool:
     return False
 
 
-def _enclosing_select(node: exp.Expression) -> Optional[exp.Select]:
+def _enclosing_select(node: Optional[exp.Expr]) -> Optional[exp.Select]:
     while node is not None and not isinstance(node, exp.Select):
         node = node.parent
     return node
@@ -1454,7 +1463,7 @@ def _counts(sel: exp.Select) -> bool:
     return False
 
 
-def _filtered_averages(rewrites: list, filters: list, root: exp.Expression) -> int:
+def _filtered_averages(rewrites: list[Any], filters: list[Any], root: exp.Expression) -> int:
     """How many FILTERED averages the query holds: scopes whose aggregates are
     only averages, narrowed by a WHERE or a hidden filter, plus averages with a
     FILTER clause."""
@@ -1464,7 +1473,8 @@ def _filtered_averages(rewrites: list, filters: list, root: exp.Expression) -> i
     return n + sum(1 for flt, _ in filters if not _counting_agg(flt.this))
 
 
-def _filtered_units(rewrites: list, filters: list, averages_count: bool = False) -> list:
+def _filtered_units(rewrites: list[Any], filters: list[Any],
+                    averages_count: bool = False) -> list[Any]:
     # Only aggregates that can be turned into a group size are units. A single
     # average beside counts is not (owner, 2026-11-11: a JOIN count beside the
     # BMI average; its residual risk is the accepted cross-query one, PLAN_v2
@@ -1481,7 +1491,7 @@ def _filtered_units(rewrites: list, filters: list, averages_count: bool = False)
     return units
 
 
-def _sources(sel: exp.Select) -> list:
+def _sources(sel: exp.Select) -> list[Any]:
     nodes = [sel.args.get("from") or sel.args.get("from_"), *(sel.args.get("joins") or [])]
     return [n.this if isinstance(n, (exp.From, exp.Join)) else n for n in nodes if n is not None]
 
@@ -1491,7 +1501,7 @@ def _sources_sql(sel: exp.Select) -> str:
     return " ".join(p.sql(dialect=DIALECT) for p in parts if p is not None)
 
 
-def _aligned(u: _Unit, v: _Unit) -> Optional[list]:
+def _aligned(u: _Unit, v: _Unit) -> Optional[list[Any]]:
     """V's predicates written over U's source aliases, when the two read the
     same sources (same tables in the same order, same joins once renamed);
     else None."""
@@ -1534,7 +1544,7 @@ def _aligned(u: _Unit, v: _Unit) -> Optional[list]:
     return probe.preds(copy)
 
 
-def _over(sel: exp.Select, select_sql: str, preds: list) -> str:
+def _over(sel: exp.Select, select_sql: str, preds: list[Any]) -> str:
     c = sel.copy()
     for arg in _STRIP:
         c.set(arg, None)
@@ -1550,7 +1560,7 @@ _MAX_UNITS = 3        # 2^3 = 8 regions to check; more than that is refused
 def _cte_body(name: str, root: exp.Expression) -> Optional[exp.Expression]:
     for cte in root.find_all(exp.CTE):
         if (cte.alias_or_name or "").lower() == name.lower():
-            return cte.this
+            return cast(Optional[exp.Expression], cte.this)
     return None
 
 
@@ -1590,7 +1600,7 @@ def _bare_aggregate(sel: exp.Select) -> bool:
     return False
 
 
-def _regions(f, whole: str, n: int) -> list:
+def _regions(f: Callable[[tuple[int, ...]], str], whole: str, n: int) -> list[Any]:
     """For n units, the number of people in each region of their Venn diagram
     (in exactly the units of T, in none of the others), as SQL, from union
     counts only: f(Y) = people in any unit of Y, whole = everyone.
@@ -1599,7 +1609,7 @@ def _regions(f, whole: str, n: int) -> list:
     from itertools import combinations
     units = list(range(n))
 
-    def g(ys):
+    def g(ys: set[int]) -> str:
         return whole if not ys else f"({whole} - {f(tuple(sorted(ys)))})"
 
     out = []
@@ -1615,7 +1625,7 @@ def _regions(f, whole: str, n: int) -> list:
     return out
 
 
-def _row_patterns(preds: list) -> list:
+def _row_patterns(preds: list[Any]) -> list[Any]:
     """Every in/out pattern of the units' predicates, as a row condition."""
     from itertools import product
     out = []
@@ -1678,11 +1688,11 @@ def _person_constant_grouping(sel: exp.Select, root: exp.Expression) -> bool:
     return True
 
 
-def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> set:
+def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> set[Any]:
     """The base tables a scope's rows come from: its FROM / JOIN sources,
     through derived tables and CTEs (item 70). Not the tables of a WHERE
     semi-join, which is a filter the units already see."""
-    out: set = set()
+    out: set[Any] = set()
     if depth > 20:
         raise _CannotCorrelate("sources nested too deep to compare")
     if isinstance(node, exp.Select):
@@ -1704,7 +1714,8 @@ def _base_tables(node: exp.Expression, root: exp.Expression, depth: int = 0) -> 
     return out
 
 
-def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> dict:
+def _combination_checks(rewrites: list[Any], filters: list[Any],
+                        root: exp.Expression) -> dict[Any, Any]:
     """{id(select or FILTER node): [SQL conditions]} so that no combination of
     the filtered aggregates in one query isolates fewer than 11 people: every
     region of their Venn diagram (relative to the unfiltered rows) holds 0 or
@@ -1779,7 +1790,7 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
                 raise _CannotCorrelate("a grouping that is not constant per person beside "
                                        "another scope")
     units = _filtered_units(rewrites, filters, averages_count)
-    by_sel: dict = {}
+    by_sel: dict[Any, Any] = {}
     for u in units:
         by_sel.setdefault(id(u.sel), []).append(u)
     single = len(by_sel) == 1
@@ -1795,11 +1806,11 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
     if len(units) > _MAX_UNITS:
         raise _CannotCorrelate("too many filtered aggregates")
     rows = any(u.rows for u in units)
-    conds: list = []
+    conds: list[Any] = []
     if single:
         preds = [u.preds()[-1] for u in units]
         for k in units[0].keys:
-            def f(ys, k=k):
+            def f(ys: tuple[int, ...], k: Any = k) -> str:
                 return (f"count(DISTINCT {k}) FILTER (WHERE "
                         + " OR ".join(f"({preds[i]})" for i in ys) + ")")
             conds += [_region_ok(x) for x in _regions(f, f"count(DISTINCT {k})", len(units))]
@@ -1817,7 +1828,7 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
                 raise _CannotCorrelate("filtered aggregates over different sources")
             preds.append(" AND ".join(f"({p})" for p in mapped) or "TRUE")
         for k in base.keys:
-            def f(ys, k=k):
+            def f(ys: tuple[int, ...], k: Any = k) -> str:
                 return _over(base.sel, f"count(DISTINCT {k})",
                              [" OR ".join(f"({preds[i]})" for i in ys)])
             whole = _over(base.sel, f"count(DISTINCT {k})", [])
@@ -1825,7 +1836,7 @@ def _combination_checks(rewrites: list, filters: list, root: exp.Expression) -> 
             if rows:
                 conds += [_region_ok(_over(base.sel, f"count(DISTINCT {k})", [pat]))
                           for pat in _row_patterns(preds)]
-    out: dict = {}
+    out: dict[Any, Any] = {}
     for u in units:
         out.setdefault(id(u.flt) if u.flt is not None else id(u.sel), []).extend(conds)
     return out
@@ -1851,7 +1862,8 @@ def _row_multiplier(tree: exp.Expression) -> Optional[str]:
             # constant-arguments rule never saw its column arguments
             name = "unnest"
         else:
-            name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
+            name = (node.name if isinstance(node, exp.Anonymous)
+                    else cast(exp.Func, node).sql_name()).lower()
             if name not in _ROW_MULTIPLIERS:
                 continue
             if isinstance(node.parent, exp.Table) and isinstance(
@@ -1890,7 +1902,7 @@ def _body_kind(body: exp.Expression, root: exp.Expression, depth: int) -> str:
     return "agg" if _is_aggregate(body) else "rows"
 
 
-def _key_edges(sel: exp.Select, aliases: set) -> list:
+def _key_edges(sel: exp.Select, aliases: set[Any]) -> list[Any]:
     """Pairs of source aliases joined by `a.patient_id = b.patient_id` as a
     top-level AND condition of an ON clause or the WHERE (qualify() has already
     rewritten USING into ON)."""
@@ -1928,7 +1940,7 @@ def _key_set(setop: exp.SetOperation) -> bool:
     return True
 
 
-def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list]:
+def _group_keys(src: exp.Expression, root: exp.Expression) -> Optional[list[Any]]:
     """For an aggregated source: None if it yields one row (no GROUP BY),
     else its GROUP BY column names, ['?'] when not plain columns (fail closed)."""
     body = src.this if isinstance(src, exp.Subquery) else (
@@ -1966,7 +1978,7 @@ def _outer_aggregate(q: exp.Expression) -> Optional[str]:
         # parsed as nodes ABOVE the aggregate, so their outer columns were never
         # seen (`(SELECT count(*) FILTER (WHERE p.gender = 'male'))`). Scan the
         # aggregate with every wrapper it carries.
-        top = node
+        top: exp.Expr = node
         while isinstance(top.parent, (exp.Filter, exp.WithinGroup,
                                       exp.IgnoreNulls, exp.RespectNulls)):
             top = top.parent
@@ -2116,7 +2128,7 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
         if len(rows) > 1:
             parent = {n: n for n in rows}
 
-            def find(n):
+            def find(n: Any) -> Any:
                 while parent[n] != n:
                     n = parent[n]
                 return n
@@ -2266,7 +2278,7 @@ def check(tree: exp.Expression) -> PhiDecision:
                 f"checked: subtracting could recover a group of fewer than {MIN_CELL} people; "
                 "name the GROUP BY columns explicitly, or ask for each count in its own query")
             break
-    pair_conds: dict = {}
+    pair_conds: dict[Any, Any] = {}
     if not a.findings:
         try:
             pair_conds = _combination_checks(a.rewrites, a.filters, q)
@@ -2330,7 +2342,7 @@ def check(tree: exp.Expression) -> PhiDecision:
     if out_tree is q and age_refs:
         _restore_output_names(tree, q)            # after capping
 
-    def _enough(keys):
+    def _enough(keys: Any) -> exp.Expr:
         return sqlglot.parse_one(" AND ".join(f"count(DISTINCT {k}) >= {MIN_CELL}" for k in keys),
                                  read=DIALECT)
 
@@ -2338,6 +2350,7 @@ def check(tree: exp.Expression) -> PhiDecision:
     # copy), each nulled unless its own subgroup holds 11+ people
     q_filters = list(q.find_all(exp.Filter))
     o_filters = list(out_tree.find_all(exp.Filter))
+    target: exp.Expr
     for flt, keys in a.filters:
         target = o_filters[next(i for i, x in enumerate(q_filters) if x is flt)]
         where_sql = target.args["expression"].sql(dialect=DIALECT)          # "WHERE ..."
@@ -2385,7 +2398,7 @@ class _AgeCapError(Exception):
     pass
 
 
-def _age_refs(a: "_Analysis", q: exp.Expression):
+def _age_refs(a: "_Analysis", q: exp.Expression) -> tuple[list[Any], list[int]]:
     """(age column references in the qualified tree that must be capped, root
     result positions whose value is an age)."""
     # EVERY reference, means included (owner: "cap ages at 90 everywhere ages
@@ -2418,7 +2431,7 @@ def _age_refs(a: "_Analysis", q: exp.Expression):
     return refs, sorted(outputs or ())
 
 
-def _select_branches(node: exp.Expression) -> list:
+def _select_branches(node: exp.Expression) -> list[Any]:
     """The SELECTs whose rows form the result (every branch of a UNION)."""
     if isinstance(node, exp.SetOperation):
         return _select_branches(node.this) + _select_branches(node.expression)
@@ -2427,7 +2440,7 @@ def _select_branches(node: exp.Expression) -> list:
     return [node] if isinstance(node, exp.Select) else []
 
 
-def _age_cols(tree: exp.Expression) -> list:
+def _age_cols(tree: exp.Expression) -> list[Any]:
     return [c for c in tree.find_all(exp.Column) if (c.name or "").lower() in AGE_NAMES]
 
 
@@ -2459,7 +2472,7 @@ def _restore_output_names(tree: exp.Expression, q: exp.Expression) -> None:
     mine[0].set("expressions", projs)
 
 
-def _cap_ages(refs: list, q: exp.Expression, out_tree: exp.Expression) -> None:
+def _cap_ages(refs: list[Any], q: exp.Expression, out_tree: exp.Expression) -> None:
     """Wrap each reference as LEAST(col, AGE_CAP) in the tree that executes.
     The original tree's age columns are matched to the qualified copy's by
     position among same-named columns; if the two disagree, refuse."""
@@ -2487,7 +2500,7 @@ def _cap_ages(refs: list, q: exp.Expression, out_tree: exp.Expression) -> None:
             rename[id(node)] = (node, node.sql(dialect=DIALECT))
     # 2. Cap every mention in place (all of them: the nodes stay in the tree).
     for col in targets:
-        capped = exp.func("LEAST", col.copy(), exp.Literal.number(AGE_CAP))
+        capped: exp.Expr = exp.func("LEAST", col.copy(), exp.Literal.number(AGE_CAP))
         parent = col.parent
         if isinstance(parent, exp.Select) and col in parent.expressions:
             capped = exp.alias_(capped, col.name)        # keep the result column's name
@@ -2497,7 +2510,8 @@ def _cap_ages(refs: list, q: exp.Expression, out_tree: exp.Expression) -> None:
         node.replace(exp.alias_(node.copy(), text, quoted=True))
 
 
-def cap_age_values(decision: Any, columns: list[str], rows: list[dict]) -> list[dict]:
+def cap_age_values(decision: Any, columns: list[str],
+                   rows: list[dict[Any, Any]]) -> list[dict[Any, Any]]:
     """Show an age of AGE_CAP or more as "90+" in the result columns that are ages."""
     idx = getattr(decision, "phi_age_outputs", None) or []
     names = [columns[i] for i in idx if i < len(columns)]
@@ -2531,7 +2545,7 @@ class OutputRefused(Exception):
     """A result that must not be returned. The message never holds a value."""
 
 
-def _trace(node) -> list[tuple[str, bool, str, bool]]:
+def _trace(node: Any) -> list[tuple[str, bool, str, bool]]:
     """(source "table.column", reduced on the way?, class, is_date) for every
     lineage path under `node`. A path is reduced if ANY step reduces it."""
     out: list[tuple[str, bool, str, bool]] = []
@@ -2574,7 +2588,7 @@ def _reduces(expression: exp.Expression, ref: str, is_date: bool) -> bool:
     return bool(refs) and all(reduced(c, expression, is_date) for c in refs)
 
 
-def check_output(decision: Any, columns: list[str], rows: list[dict]) -> None:
+def check_output(decision: Any, columns: list[str], rows: list[dict[Any, Any]]) -> None:
     """Raise OutputRefused if the result carries PHI. `decision` is the
     validated query's sql_guard.Decision (with .phi_sql)."""
     sql = getattr(decision, "phi_sql", None)
@@ -2609,7 +2623,7 @@ def check_output(decision: Any, columns: list[str], rows: list[dict]) -> None:
                                             f"like a zip code")
 
 
-def _leaves(v):
+def _leaves(v: Any) -> Iterator[Any]:
     """Every scalar inside a value, through lists, tuples, structs and maps."""
     if isinstance(v, dict):
         for x in list(v.keys()) + list(v.values()):
