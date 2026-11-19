@@ -53,7 +53,7 @@ def test_done_notes_sit_under_their_own_ticked_item():
     for n, ticked, body in _items():
         done = [i for i, l in enumerate(body) if DONE.match(l)]
         # An open item may record partial progress as "Done <date> (code part)".
-        full = [i for i in done if "part)" not in body[i]]
+        full = [i for i in done if "part)" not in body[i] and "parts)" not in body[i]]
         assert ticked or not full, f"item {n} is unticked but has a Done note"
         assert len(done) <= 1, f"item {n} has {len(done)} Done notes"
         # Items written in the Where / Done when / Done form keep that order:
