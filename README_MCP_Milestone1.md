@@ -32,8 +32,11 @@ key, as `X-API-Key: <key>` or `Authorization: Bearer <key>` (`MCP_API_KEY`, else
 Easiest is the MCP Inspector, which gives you a UI to call the tools:
 
 ```bash
-npx @modelcontextprotocol/inspector python mcp_server.py
+MCP_DEMO_TOOLS=1 npx @modelcontextprotocol/inspector python mcp_server.py
 ```
+
+The three demo tools are advertised only with `MCP_DEMO_TOOLS=1` (backlog item 69):
+a production server lists just `query_analytics` and `analytics_schema`.
 
 Then call each tool and confirm the behavior:
 

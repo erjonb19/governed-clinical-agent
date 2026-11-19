@@ -432,6 +432,35 @@ app = FastAPI(
 )
 
 
+def agent_disabled() -> bool:
+    """AGENT_DISABLED=1: the kill switch (item 69). Read on every request."""
+    return os.environ.get("AGENT_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _AgentKillSwitch:
+    """One switch that stops the agent endpoints (item 69): with AGENT_DISABLED=1,
+    /query, /propose and /mcp (and their /v1 forms) answer 503 before any model
+    call, guard run or MCP tool. The rest -- /health, /ui, the fixed findings,
+    /raw-sql, the approval queue -- keeps serving, so an operator can still look."""
+
+    PATHS = ("/query", "/propose", "/mcp")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and agent_disabled():
+            path = scope.get("path", "").rstrip("/") or "/"
+            if any(path == p or path.startswith(p + "/") for p in self.PATHS):
+                body = b'{"detail": "the agent is turned off on this deployment (AGENT_DISABLED)"}'
+                await send({"type": "http.response.start", "status": 503,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"retry-after", b"3600")]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 class _APIVersionPrefix:
     """Every endpoint answers under /v1 as well (backlog item 5).
 
@@ -635,6 +664,7 @@ class _SecurityHeaders:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(_AgentKillSwitch)     # inside the /v1 strip: sees /query, /propose, /mcp
 app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
 app.add_middleware(_SecurityHeaders)     # every response, /v1 or not, 413s included
@@ -896,6 +926,7 @@ def health() -> dict:
         # item 63: whether audit events are being written (how many failed is
         # in the keyed /metrics: an open endpoint should not say auditing is broken)
         "audit_enabled": getattr(_STATE.get("runtime"), "audit_logger", None) is not None,
+        "agent_disabled": agent_disabled(),      # item 69: the kill switch
         "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
