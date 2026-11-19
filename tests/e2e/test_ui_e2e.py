@@ -58,7 +58,8 @@ def server(tmp_path_factory):
            "PLANNER_MIN_INTERVAL_SEC": os.environ.get("PLANNER_MIN_INTERVAL_SEC", "0"),
            "TRACE_DB": str(tmp / "traces.sqlite"), "CHECKPOINT_DB": str(tmp / "cp.sqlite"),
            "APPROVALS_DB": str(tmp / "approvals.sqlite"), "AUDIT_LOG_DIR": str(tmp / "audit"),
-           "PLANNER_METRICS_LOG": str(tmp / "metrics.jsonl"), "PLANNER_SCHEMA": "hospital"}
+           "PLANNER_METRICS_LOG": str(tmp / "metrics.jsonl"), "PLANNER_SCHEMA": "hospital",
+           "FEEDBACK_DB": str(tmp / "feedback.sqlite")}
     log = open(tmp / "server.log", "w")
     proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(port)],
                             cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -108,6 +109,17 @@ def test_1_ask_answers_and_shows_its_trace(page, server):
     names = _open_trace(page)
     for step in ("plan", "critic", "guard", "execute"):
         assert step in names, names
+
+
+def test_1b_a_thumbs_down_is_saved_with_its_reason(page, server):
+    """Item 24: rate an answer down in the UI; /metrics counts it."""
+    _ask(page, server, ASK)
+    page.click("#rateDown")
+    page.fill("#rateWhy", "expected the count for one state")
+    page.click("#rateSend")
+    page.wait_for_selector("#rate:has-text('Thanks, noted')", timeout=10_000)
+    fb = httpx.get(server + "/metrics", headers={"X-API-Key": KEY}, timeout=10).json()["feedback"]
+    assert fb["down"] >= 1, fb
 
 
 def test_2_a_guard_denial_names_the_rule_and_the_retries_are_traced(page, server):

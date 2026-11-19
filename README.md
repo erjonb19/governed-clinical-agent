@@ -716,6 +716,9 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **Feedback on answers** (backlog item 24): thumbs up or down on each answer, stored with
+  its trace; `/metrics` shows the share rated down, and `scripts/feedback_to_cases.py` turns each
+  thumbs-down into a candidate eval case for review.
 - [x] **Branch protection on `main`** (audit item 44): the CI checks, `pip-audit` included,
   are required, and force pushes and deletion are blocked; the monthly data refresh opens a
   PR instead of pushing.

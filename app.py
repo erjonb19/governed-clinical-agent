@@ -33,7 +33,7 @@ import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
@@ -749,6 +749,15 @@ class QueryRequest(_StrictRequest):
                                    description="dataset: hospital | fhir")
 
 
+class FeedbackRequest(_StrictRequest):
+    """Thumbs up or down on one answer (backlog item 24)."""
+    trace_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+                          description="the trace_id the answer came back with")
+    rating: Literal["up", "down"]
+    reason: Optional[str] = Field(None, max_length=500,
+                                  description="optional: what was wrong (no personal data)")
+
+
 class SqlRequest(_StrictRequest):
     sql: str = Field(..., max_length=MAX_SQL_CHARS,
                      examples=["SELECT facility_name, star_rating FROM gold_hospital_profile WHERE star_rating = 5 LIMIT 10"])
@@ -1070,6 +1079,33 @@ def query(request: Request, req: QueryRequest) -> dict:
         return out
 
 
+def _feedback_store():
+    import feedback
+    store = _STATE.get("feedback")
+    if store is None or store.path != feedback.FEEDBACK_DB:
+        store = _STATE["feedback"] = feedback.FeedbackStore(feedback.FEEDBACK_DB)
+    return store
+
+
+@app.post("/feedback", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def post_feedback(request: Request, req: FeedbackRequest) -> dict:
+    """Rate one answer (backlog item 24). The trace must exist, so a rating
+    always points at a real run; a later rating of the same answer replaces the
+    first. The reason is free text: screened like a question, stored only here,
+    never traced or logged."""
+    if tracing.get_tracer().get_trace(req.trace_id) is None:
+        raise HTTPException(status_code=404, detail="no answer with that trace_id "
+                            "(traces on the free deploy do not survive a restart)")
+    if req.reason:
+        import question_screen
+        kinds = question_screen.identifiers_in(req.reason)
+        if kinds:
+            raise HTTPException(status_code=422, detail=question_screen.refusal(kinds))
+    _feedback_store().rate(req.trace_id, req.rating, req.reason)
+    return {"ok": True, "trace_id": req.trace_id, "rating": req.rating}
+
+
 def _screen_question(question: str, path: str) -> None:
     """Audit item 41: refuse a question that carries a personal identifier before
     it reaches a third-party model. Only the kinds found are recorded (a trace
@@ -1332,6 +1368,10 @@ def metrics() -> dict:
     out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
     from src.runtime.audit_logger import failure_count
     out["audit_failures"] = failure_count()   # item 63
+    try:
+        out["feedback"] = _feedback_store().summary()   # item 24: counts only
+    except Exception as e:  # noqa: BLE001 -- a metrics page must not fail on one store
+        out["feedback"] = {"error": type(e).__name__}
     out["audit_error"] = _STATE.get("audit_error")   # item 63: why auditing is off, type only
     return out
 

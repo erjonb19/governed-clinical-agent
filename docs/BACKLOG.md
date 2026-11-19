@@ -277,13 +277,15 @@ What real AI, data and software engineering teams would add, checked against the
   - Done when: tests with planted identifiers show every one removed; its memory is measured
     (Render budget; a regex-only mode if the full model does not fit).
   - Today: `src/utils/redaction.py` masks secrets (keys, tokens), not PHI.
+  - **Waiting on the owner (2026-11-19):** Presidio is a new dependency (directive 11), and its model's memory against Render's 512 MB is the open question; a regex-only mode (dates, ages over 89, record, phone and SSN numbers, emails, zip codes, much of which `question_screen.py` already detects) needs no new dependency but cannot find names. Which one?
 
-- [ ] **24. The feedback loop.** Thumbs up or down, with a reason, on each answer in the UI;
+- [x] **24. The feedback loop.** Thumbs up or down, with a reason, on each answer in the UI;
   stored per answer with its trace id; a script turns a bad answer into a candidate eval
   case for the owner to finish (as the data intake platform's S11.5 does).
   - Done when: a thumbs-down in the UI produces a candidate case file and its trace link;
     `/metrics` shows the share of answers rated down.
   - Today: no user feedback is collected.
+  - Done 2026-11-19: each answer in the Ask view has a thumbs up and a thumbs down (with an optional reason) that `POST /feedback` stores with its trace id (`feedback.py`: Postgres when `STATE_DB_URL` is set, else `FEEDBACK_DB`; one rating per answer, a later one replaces it; the trace must exist; the reason is screened like a question, never traced or logged, and kept `FEEDBACK_RETENTION_DAYS`, default 90). The keyed `/metrics` shows `feedback` (counts and `down_share`, never reasons). `python scripts/feedback_to_cases.py` writes one candidate case per thumbs-down to `logs/eval_candidates/` (question, dataset, the agent's SQL, the decision, the reason, the trace link; `reference_sql`, `mode`, `tier` left as TODO for the owner). `tests/integration/test_feedback.py`; the UI step is in `tests/e2e/test_ui_e2e.py`.
 
 - [ ] **25. RAG over CMS measure definitions** (the README's "Next"). Retrieval over CMS's
   public measure documentation, so the agent can answer what a measure means, with
