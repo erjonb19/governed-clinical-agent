@@ -33,7 +33,7 @@ import threading
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
@@ -337,8 +337,9 @@ async def lifespan(app: FastAPI):
         try:
             audit = _ServiceAuditLogger(log_dir=Path(AUDIT_LOG_DIR), agent_id="api",
                                 max_buffer_size=1, enable_console=False)
-        except Exception as e:
-            print(f"WARNING: audit log disabled ({e})")
+        except Exception as e:  # noqa: BLE001 -- the service runs, but says so
+            _STATE["audit_error"] = type(e).__name__
+            print(f"WARNING: audit log disabled ({type(e).__name__})", file=sys.stderr)
     runtime = AgentRuntime(audit_logger=audit)
     auth_failures.FAILURES.audit = audit    # refused keys go to the same audit log
     runtime.load_policy(POLICY_PATH)
@@ -429,6 +430,35 @@ app = FastAPI(
     openapi_url="/openapi.json" if API_DOCS else None,
     dependencies=[Depends(require_key_unless_public)],
 )
+
+
+def agent_disabled() -> bool:
+    """AGENT_DISABLED=1: the kill switch (item 69). Read on every request."""
+    return os.environ.get("AGENT_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _AgentKillSwitch:
+    """One switch that stops the agent endpoints (item 69): with AGENT_DISABLED=1,
+    /query, /propose and /mcp (and their /v1 forms) answer 503 before any model
+    call, guard run or MCP tool. The rest -- /health, /ui, the fixed findings,
+    /raw-sql, the approval queue -- keeps serving, so an operator can still look."""
+
+    PATHS = ("/query", "/propose", "/mcp")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and agent_disabled():
+            path = scope.get("path", "").rstrip("/") or "/"
+            if any(path == p or path.startswith(p + "/") for p in self.PATHS):
+                body = b'{"detail": "the agent is turned off on this deployment (AGENT_DISABLED)"}'
+                await send({"type": "http.response.start", "status": 503,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"retry-after", b"3600")]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
 
 
 class _APIVersionPrefix:
@@ -634,6 +664,7 @@ class _SecurityHeaders:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(_AgentKillSwitch)     # inside the /v1 strip: sees /query, /propose, /mcp
 app.add_middleware(_APIVersionPrefix)    # strips /v1 before routing (later add = outer)
 app.add_middleware(_BodySizeLimit)       # before routing: no oversized body is parsed
 app.add_middleware(_SecurityHeaders)     # every response, /v1 or not, 413s included
@@ -716,6 +747,15 @@ class QueryRequest(_StrictRequest):
                                    description="data backend: local (default) | databricks")
     dataset: Optional[str] = Field(None, max_length=MAX_NAME_CHARS,
                                    description="dataset: hospital | fhir")
+
+
+class FeedbackRequest(_StrictRequest):
+    """Thumbs up or down on one answer (backlog item 24)."""
+    trace_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+                          description="the trace_id the answer came back with")
+    rating: Literal["up", "down"]
+    reason: Optional[str] = Field(None, max_length=500,
+                                  description="optional: what was wrong (no personal data)")
 
 
 class SqlRequest(_StrictRequest):
@@ -892,6 +932,10 @@ def health() -> dict:
         "planner_enabled": _STATE.get("planner") is not None,
         "planner_error": _STATE.get("planner_error"),
         "auth_enabled": bool(API_KEY),
+        # item 63: whether audit events are being written (how many failed is
+        # in the keyed /metrics: an open endpoint should not say auditing is broken)
+        "audit_enabled": getattr(_STATE.get("runtime"), "audit_logger", None) is not None,
+        "agent_disabled": agent_disabled(),      # item 69: the kill switch
         "proxy_trust": "ok" if request_context.TRUST_OK else "invalid",   # item 38 / step 9
         "open_access_override": ALLOW_OPEN_ACCESS,
         "rate_limits": {"llm_endpoints": RATE_LIMIT_QUERY, "read_endpoints": RATE_LIMIT_READ,
@@ -1035,6 +1079,35 @@ def query(request: Request, req: QueryRequest) -> dict:
         return out
 
 
+def _feedback_store():
+    import feedback
+    store = _STATE.get("feedback")
+    if store is None or store.path != feedback.FEEDBACK_DB:
+        store = _STATE["feedback"] = feedback.FeedbackStore(feedback.FEEDBACK_DB)
+    return store
+
+
+@app.post("/feedback", dependencies=[Depends(require_api_key)])
+@limiter.limit(RATE_LIMIT_READ)
+def post_feedback(request: Request, req: FeedbackRequest) -> dict:
+    """Rate one answer (backlog item 24). The trace must exist, so a rating
+    always points at a real run; a later rating of the same answer replaces the
+    first. The reason is free text: screened like a question, stored only here,
+    never traced or logged."""
+    if tracing.get_tracer().get_trace(req.trace_id) is None:
+        raise HTTPException(status_code=404, detail="no answer with that trace_id "
+                            "(traces on the free deploy do not survive a restart)")
+    if req.reason:
+        import question_screen
+        kinds = question_screen.identifiers_in(req.reason)
+        if kinds:
+            raise HTTPException(status_code=422, detail=(
+                "The reason looks like it contains personal information (" + ", ".join(kinds)
+                + "). Please describe what was wrong without it."))
+    _feedback_store().rate(req.trace_id, req.rating, req.reason)
+    return {"ok": True, "trace_id": req.trace_id, "rating": req.rating}
+
+
 def _screen_question(question: str, path: str) -> None:
     """Audit item 41: refuse a question that carries a personal identifier before
     it reaches a third-party model. Only the kinds found are recorded (a trace
@@ -1124,8 +1197,15 @@ def _audit_answer(allowed: bool, decided_by: Optional[str], version: dict,
     try:
         logger.log_answer(capability="analytics.query_aggregate", allowed=allowed,
                           decided_by=decided_by, version=version, trace_id=trace_id)
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 -- an audit write must not fail the answer
+        _audit_failed("answer", e)
+
+
+def _audit_failed(where: str, exc: BaseException) -> None:
+    """Item 63: a failed audit write is never silent (shared counter in
+    audit_logger, which the critic and refused-key paths use too)."""
+    from src.runtime.audit_logger import record_failure
+    record_failure(where, exc)
 
 
 def _query_graph(req: QueryRequest, ds: str) -> dict:
@@ -1288,6 +1368,13 @@ def metrics() -> dict:
     out["llm_cache"] = llm_cache.get_cache().stats()
     out["llm_budget"] = llm_budget.BUDGET.status()   # item 37: today's runs and est. spend
     out["auth_failures"] = auth_failures.FAILURES.summary()   # item 59: counts, no addresses
+    from src.runtime.audit_logger import failure_count
+    out["audit_failures"] = failure_count()   # item 63
+    try:
+        out["feedback"] = _feedback_store().summary()   # item 24: counts only
+    except Exception as e:  # noqa: BLE001 -- a metrics page must not fail on one store
+        out["feedback"] = {"error": type(e).__name__}
+    out["audit_error"] = _STATE.get("audit_error")   # item 63: why auditing is off, type only
     return out
 
 

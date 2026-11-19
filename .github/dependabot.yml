@@ -46,6 +46,13 @@ updates:
       day: monday
     cooldown:
       default-days: 7
+    # Stay on Python 3.11: the hash locks, Render (PYTHON_VERSION 3.11.9) and CI
+    # are all 3.11, and a newer interpreter has no wheels for some locked
+    # packages (#142, 3.11 -> 3.15: zstandard tried to compile, no gcc). New
+    # 3.11-slim digests still arrive; moving Python is a deliberate change.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       images:
         patterns: ["*"]

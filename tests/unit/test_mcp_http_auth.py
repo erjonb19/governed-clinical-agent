@@ -171,6 +171,7 @@ async def test_a_tool_waiting_on_the_host_lock_does_not_freeze_the_event_loop(an
     import time
     import anyio
 
+    M.register_demo_tools()   # echo is a demo tool (hidden unless MCP_DEMO_TOOLS=1, item 69)
     lock = threading.Lock()
     lock.acquire()
     threading.Timer(0.6, lock.release).start()

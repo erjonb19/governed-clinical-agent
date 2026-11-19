@@ -1,6 +1,7 @@
 """Audit trail logging for security decisions and operations."""
 
 import json
+import os
 import logging
 import time
 from dataclasses import dataclass, field, asdict
@@ -13,6 +14,33 @@ import hashlib
 
 from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
+
+
+# Item 63: a failed audit write is never silent. Every best-effort audit write
+# (the answer event, the critic's review, a refused key) reports here: one
+# warning with the exception TYPE only (its message can carry a path or a value)
+# and one process-wide count that /metrics shows.
+_failure_log = logging.getLogger("governed.audit")
+_failure_lock = Lock()
+_failure_count = 0
+
+
+def record_failure(where: str, exc: BaseException) -> None:
+    global _failure_count
+    with _failure_lock:
+        _failure_count += 1
+    _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
+
+
+def failure_count() -> int:
+    with _failure_lock:
+        return _failure_count
+
+
+def reset_failures() -> None:
+    global _failure_count
+    with _failure_lock:
+        _failure_count = 0
 
 
 class AuditEventType(Enum):
@@ -610,17 +638,50 @@ class AuditLogger:
         
         return event.event_id
     
+    def _rotate(self) -> None:
+        """Backlog item 60: cap the audit JSONL. Past AUDIT_LOG_MAX_BYTES the
+        current file is closed and a new one started; only the newest
+        AUDIT_LOG_KEEP files of this agent are kept (0 keeps everything). Until
+        audit events reach an append-only store (item 39), this file is the
+        record, so the defaults are generous: 10 MB x 20 files."""
+        try:
+            max_bytes = int(os.environ.get("AUDIT_LOG_MAX_BYTES", 10_000_000))
+            keep = int(os.environ.get("AUDIT_LOG_KEEP", 20))
+        except ValueError:
+            max_bytes, keep = 10_000_000, 20
+        if max_bytes > 0 and self.log_file.exists() and self.log_file.stat().st_size >= max_bytes:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            self.log_file = self.log_dir / f"audit_{self.agent_id}_{stamp}.jsonl"
+        self._keep = keep
+
+    def _prune(self) -> None:
+        """Drop this agent's oldest audit files beyond the newest `_keep`
+        (after a write, so the current file is counted)."""
+        keep = getattr(self, "_keep", 0)
+        if keep <= 0:
+            return
+        mine = sorted(self.log_dir.glob(f"audit_{self.agent_id}_*.jsonl"),
+                      key=lambda p: (p.stat().st_mtime_ns, p.name))
+        for old in mine[:-keep]:
+            if old != self.log_file:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+
     def _flush_buffer(self):
         """Flush buffered events to disk."""
         if not self._buffer:
             return
-        
+        self._rotate()
+
         with self.log_file.open('a') as f:
             for event in self._buffer:
                 json.dump(event.to_dict(), f)
                 f.write('\n')
         
         self._buffer.clear()
+        self._prune()
     
     def flush(self):
         """Manually flush the buffer to disk."""

@@ -36,6 +36,16 @@ _PRIVATE_KEY_BLOCK_RE = re.compile(
 )
 _GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")
 _OPENAI_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
+# Backlog item 62: the key formats this repo itself uses (and close relatives).
+_PROVIDER_KEY_RES = (
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),  # Google / Gemini
+    re.compile(r"\bgsk_[A-Za-z0-9]{20,}"),  # Groq
+    re.compile(r"\bxai-[A-Za-z0-9]{20,}"),  # xAI
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}"),  # Anthropic (sk-ant-api03-...)
+    re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}"),  # OpenAI project/service keys
+    re.compile(r"\b[ps]k-lf-[A-Za-z0-9-]{8,}"),  # Langfuse (item 12's hosted traces)
+    re.compile(r"\bdapi[0-9a-f]{32}(?:-\d+)?\b"),  # Databricks personal access token
+)
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -67,6 +77,8 @@ def redact_text(text: str) -> str:
     redacted = _AUTH_HEADER_RE.sub(r"\1: [REDACTED]", redacted)
     redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
     redacted = _GITHUB_TOKEN_RE.sub(REDACTED, redacted)
+    for pattern in _PROVIDER_KEY_RES:  # before the shorter sk- rule
+        redacted = pattern.sub(REDACTED, redacted)
     redacted = _OPENAI_TOKEN_RE.sub(REDACTED, redacted)
     redacted = _SENSITIVE_PATH_RE.sub("[REDACTED_PATH]", redacted)
     return _truncate_text(redacted)
