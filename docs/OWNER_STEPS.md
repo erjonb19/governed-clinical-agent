@@ -130,7 +130,7 @@ Check (the list should now include `pip-audit`):
 
 ## [x] 6. Turn on GitHub Pages for the wake-up page (backlog item 9)
 
-**Done 2026-11-18:** Pages deploys from Actions (`build_type=workflow`); the `pages.yml` run succeeded, and https://erjonb19.github.io/governed-clinical-agent/ wakes the service and opens the app. The README links point at it.
+**Done 2026-11-18:** Pages deploys from Actions (`build_type=workflow`); the `pages.yml` run succeeded, and https://erjonb19.github.io/governed-clinical-agent/ wakes the service and opens the app. The README's Live link points at it.
 
 **Why:** on Render's free plan the service sleeps when idle, and a sleeping
 service cannot show its own "please wait" note. The wake-up page (`site/`,
@@ -274,9 +274,9 @@ secret again.
 
 ---
 
-## [x] 11. Delete the stray branch `claude/jolly-hopper-8ly9iq-41`
+## [x] 11. Delete the stray branches `claude/jolly-hopper-8ly9iq-41` and `-clientip`
 
-**Done 2026-11-18:** both stray branches, `claude/jolly-hopper-8ly9iq-41` and `claude/jolly-hopper-8ly9iq-clientip` (whose early commits held a real address), are deleted.
+**Done 2026-11-18:** both stray branches, `claude/jolly-hopper-8ly9iq-41` and `claude/jolly-hopper-8ly9iq-clientip`, are deleted.
 
 **Why:** an agent pushed a merge to this misnamed branch on 2026-11-16 (the real
 branch was `...-item41`, PR #134, merged). You approved deleting it, but this
