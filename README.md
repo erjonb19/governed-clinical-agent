@@ -4,7 +4,9 @@ A governed natural-language analytics agent for healthcare data. You ask a quest
 
 It runs today over two real datasets — CMS hospital quality measures and a 367,000-resource FHIR clinical lakehouse — behind an authenticated HTTP API, with the full authorization decision returned in every response, and a 63-case ground-truth evaluation suite running in CI.
 
-**Live:** https://governed-clinical-agent.onrender.com/ui
+**Live:** https://erjonb19.github.io/governed-clinical-agent/ — a small page that wakes the
+free-tier service (it sleeps when idle) and opens the app once it answers. Direct link, if it is
+already awake: https://governed-clinical-agent.onrender.com/ui
 
 ## Why this matters
 
@@ -709,6 +711,9 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **Branch protection on `main`** (audit item 44): the CI checks, `pip-audit` included,
+  are required, and force pushes and deletion are blocked; the monthly data refresh opens a
+  PR instead of pushing.
 - [x] **CI covers everything**: pytest on every push and nightly, a hospital and a
   FHIR eval gate on every push, the full evals nightly; a failing test, an eval
   below the gate, or an inconclusive nightly (after one retry) turns the build red
