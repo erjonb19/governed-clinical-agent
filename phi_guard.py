@@ -2160,10 +2160,21 @@ def _row_multiplication(q: exp.Expression) -> Optional[str]:
             # SELECT (fifth review, 2026-11-16).
             derived = any(not _base_table(next(
                 x for x in srcs if (x.alias_or_name or "").lower() == n), q) for n in many)
-            if len(many) > 1 and (len(rows) > 2 or derived) and \
+            # Owner's decision 2026-11-18: a SELF-join of one one-to-many table
+            # (c1 JOIN c2 on patient_id) is refused too, unless it only counts
+            # people. Each person's rows appear count^2 times, so a sum of a
+            # column nearly constant per person (age_at_onset) weighted it by
+            # count squared -- the exponent the refused three-way join needed.
+            # Two DIFFERENT one-to-many tables (o JOIN c, f4_avg_glucose_
+            # prediabetic) still run: each is weighted once, by the other.
+            base_names = [(next(x for x in srcs if (x.alias_or_name or "").lower() == n).name
+                           or "").lower() for n in many]
+            self_join = len(base_names) != len(set(base_names))
+            if len(many) > 1 and (len(rows) > 2 or derived or self_join) and \
                     not (_distinct_people_only(sel) or _distinct_key_select(sel)):
-                return ("a second one-to-many patient table joined on patient_id multiplies each "
-                        "person's rows; over such a join only count(DISTINCT patient_id) is allowed")
+                return ("a second one-to-many patient table (or the same one twice) joined on "
+                        "patient_id multiplies each person's rows; over such a join only "
+                        "count(DISTINCT patient_id) is allowed")
     return None
 
 
@@ -2376,7 +2387,8 @@ def check(tree: exp.Expression) -> PhiDecision:
         gated = sqlglot.parse_one(f"CASE WHEN {guard} THEN {target.sql(dialect=DIALECT)} END",
                                   read=DIALECT)
         if isinstance(target.parent, exp.Select):     # unaliased: keep the name it had
-            gated = exp.alias_(gated, target.sql(dialect=DIALECT), quoted=True)
+            # the column keeps its name, but never a comment's text (item 66)
+            gated = exp.alias_(gated, target.sql(dialect=DIALECT, comments=False), quoted=True)
         target.replace(gated)
     for sel, keys in a.rewrites:
         target = o_selects[next(i for i, x in enumerate(q_selects) if x is sel)]
