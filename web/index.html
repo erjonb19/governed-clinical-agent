@@ -741,11 +741,35 @@ function renderAnswer(d){
       <span>Decision <b>${esc(d.decided_by||"—")}</b></span>
       ${m?`<span>Model <b>${esc(m.model)}</b></span><span>Time <b>${esc(m.latency_ms)} ms</b></span><span>Cost <b>$${esc(m.est_cost_usd??0)}</b></span>`:""}
       ${d.trace_id?`<span class="adv"><a href="#" id="toTrace" data-tid="${esc(d.trace_id)}">View trace</a></span>`:""}
+      ${d.trace_id?`<span id="rate">Was this right? <button class="try" id="rateUp" title="Yes, a good answer" aria-label="Good answer">👍</button> <button class="try" id="rateDown" title="No, something was wrong" aria-label="Wrong answer">👎</button></span>`:""}
     </div></div>`;
   el.innerHTML=h;
+  if(d.trace_id) wireRating(d.trace_id);
   const t=$("toTrust"); if(t)t.onclick=e=>{e.preventDefault();show("about");};
   const tl=$("toTrace"); if(tl)tl.onclick=e=>{e.preventDefault();show("traces");openTrace(tl.dataset.tid);};
   el.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+// Thumbs up or down on an answer (backlog item 24): stored with its trace id;
+// a thumbs-down becomes a candidate eval case for the owner.
+function wireRating(tid){
+  const box=$("rate"); if(!box) return;
+  async function send(rating,reason){
+    box.textContent="Saving…";
+    try{
+      const r=await fetch("/feedback",{method:"POST",headers:authHdrs(),
+        body:JSON.stringify({trace_id:tid,rating,reason:reason||null})});
+      if(r.ok){ box.textContent=rating==="up"?"Thanks.":"Thanks, noted. It goes to the eval review."; return; }
+      const e=await r.json().catch(()=>({}));
+      box.textContent="Not saved: "+(typeof e.detail==="string"?e.detail:"error "+r.status);
+    }catch(_){ box.textContent="Not saved: the service did not answer."; }
+  }
+  $("rateUp").onclick=()=>send("up");
+  $("rateDown").onclick=()=>{
+    box.innerHTML=`<input id="rateWhy" maxlength="500" placeholder="What was wrong? Optional, no personal data" style="min-width:16em"> <button class="try" id="rateSend">Send</button>`;
+    $("rateSend").onclick=()=>send("down",$("rateWhy").value.trim());
+    $("rateWhy").focus();
+  };
 }
 
 async function run(){

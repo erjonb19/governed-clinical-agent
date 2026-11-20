@@ -453,7 +453,6 @@ def query_analytics(
     return _refusal(error, findings, ds)
 
 
-@offloaded_tool
 def echo(
     text: Annotated[str, Field(description="Text to echo back.", max_length=4_000)],
 ) -> str:
@@ -461,7 +460,6 @@ def echo(
     return guarded("demo.echo", {"text": text})
 
 
-@offloaded_tool
 def fetch_url(
     url: Annotated[str, Field(description="Absolute http(s) URL to fetch.")],
 ) -> str:
@@ -470,13 +468,39 @@ def fetch_url(
     return guarded("http.fetch", {"url": url})
 
 
-@offloaded_tool
 def git_push(
     remote: Annotated[str, Field(description="Git remote name.")] = "origin",
     branch: Annotated[str, Field(description="Branch to push.")] = "main",
 ) -> str:
     """Attempt a git push. Capability git.push is allowed:false — DENIED."""
     return guarded("git.push", {"remote": remote, "branch": branch})
+
+
+# The three Milestone-1 demo tools are NOT advertised on a production server
+# (item 69): every one is harmless (echo) or denied by the policy (fetch_url,
+# git_push), but a client's model should not see a "git_push" tool on the
+# analytics endpoint at all. MCP_DEMO_TOOLS=1 brings them back for the demos
+# (README_MCP_Milestone1.md). The functions stay importable either way.
+DEMO_TOOLS = (echo, fetch_url, git_push)
+_DEMO_REGISTERED = False
+
+
+def demo_tools_enabled() -> bool:
+    return os.environ.get("MCP_DEMO_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def register_demo_tools() -> None:
+    """Advertise the demo tools over MCP (idempotent)."""
+    global _DEMO_REGISTERED
+    if _DEMO_REGISTERED:
+        return
+    for fn in DEMO_TOOLS:
+        offloaded_tool(fn)
+    _DEMO_REGISTERED = True
+
+
+if demo_tools_enabled():
+    register_demo_tools()
 
 
 # ---------------------------------------------------------------------------
