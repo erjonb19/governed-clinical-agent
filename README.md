@@ -4,7 +4,9 @@ A governed natural-language analytics agent for healthcare data. You ask a quest
 
 It runs today over two real datasets — CMS hospital quality measures and a 367,000-resource FHIR clinical lakehouse — behind an authenticated HTTP API, with the full authorization decision returned in every response, and a 63-case ground-truth evaluation suite running in CI.
 
-**Live:** https://governed-clinical-agent.onrender.com/ui
+**Live:** https://erjonb19.github.io/governed-clinical-agent/ — a small page that wakes the
+free-tier service (it sleeps when idle) and opens the app once it answers. Direct link, if it is
+already awake: https://governed-clinical-agent.onrender.com/ui
 
 ## Why this matters
 
@@ -626,6 +628,11 @@ Then open **http://localhost:8000/ui** — a self-contained web UI to ask questi
 (or run SQL) and see the decision, the SQL the guard ran, the rows, and the cost.
 The API's Swagger docs are at `/docs` when `API_DOCS=1` is set (off on the deploy, audit item 53).
 
+**Kill switch:** `AGENT_DISABLED=1` makes `/query`, `/propose` and `/mcp` answer 503 before any
+model call or tool runs; `/health` (which then shows `agent_disabled: true`), the UI, the fixed
+findings and `/raw-sql` keep serving. **MCP demo tools:** the Milestone-1 `echo`, `fetch_url` and
+`git_push` are advertised over MCP only with `MCP_DEMO_TOOLS=1` (audit item 69).
+
 The UI opens on **Answers** with three tabs for everyone: **Answers**, **Ask** and
 **About** (backlog item 9). Answers offers four questions as buttons; one click shows
 the answer as a plain sentence with its number and a "How we know" showing the exact
@@ -709,6 +716,12 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **Feedback on answers** (backlog item 24): thumbs up or down on each answer, stored with
+  its trace; `/metrics` shows the share rated down, and `scripts/feedback_to_cases.py` turns each
+  thumbs-down into a candidate eval case for review.
+- [x] **Branch protection on `main`** (audit item 44): the CI checks, `pip-audit` included,
+  are required, and force pushes and deletion are blocked; the monthly data refresh opens a
+  PR instead of pushing.
 - [x] **CI covers everything**: pytest on every push and nightly, a hospital and a
   FHIR eval gate on every push, the full evals nightly; a failing test, an eval
   below the gate, or an inconclusive nightly (after one retry) turns the build red
@@ -837,6 +850,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   Anthropic, OpenAI project, Langfuse and Databricks keys are masked in redacted text.
 - [x] **Untrusted text is delimited in prompts** (audit item 67): the question, a retry's
   rejection reason and the SQL under review sit in labelled tags the model is told are data.
+- [x] **Comments never run** (audit item 66): the guard drops every SQL comment from the
+  query it approves; what it allows or refuses is unchanged.
 - [x] **Hosted traces mask comments and the critic** (audit item 64): a hosted trace
   backend gets SQL without comments or literal values, and the critic's text only as a hash.
 - [x] **No committed logs** (audit item 65): nothing under `logs/` is tracked, and a test keeps

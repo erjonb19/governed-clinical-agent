@@ -81,8 +81,9 @@ Where it breaks, in the order you would hit it:
   2026-11-14; key-joined multipliers (each person weighted by their row count to
   the power of the number of joins) by the owner's option 2 on 2026-11-16: a
   second key join to a one-to-many table is allowed only under `count(DISTINCT
-  patient_id)` (backlog item 71). One key join between two one-to-many tables
-  remains, the same single multiplier as `gold_patient JOIN gold_condition`. The planned
+  patient_id)` (backlog item 71). One key join between two DIFFERENT one-to-many tables
+  remains, the same single multiplier as `gold_patient JOIN gold_condition`; a
+  self-join of one such table runs only as a people count (owner, 2026-11-18). The planned
   answer is a de-identified layer enforced by the database
   ([PLAN_v2 §0.6](PLAN_v2.md)).
 

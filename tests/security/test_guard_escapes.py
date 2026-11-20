@@ -103,3 +103,20 @@ def test_the_reference_backend_and_the_tool_share_a_database_file(tmp_path):
     ref = LocalDuckDBBackend(db)
     assert ref.execute("SELECT count(*) AS n FROM gold_hospital_profile")[1] == [{"n": 1}]
     assert tool.execute({"sql": "SELECT count(*) AS n FROM gold_hospital_profile"}).success
+
+
+# Item 66 (audit finding 37): a comment never reaches the executed SQL. Text a
+# person typed can ride in one, into the database's query log, the critic's
+# prompt and the traces; nothing the agent runs needs it.
+@pytest.mark.parametrize("sql", [
+    "SELECT count(*) /* ask about Jane Doe */ FROM gold_hospital_profile",
+    "SELECT count(*) FROM gold_hospital_profile -- Jane Doe",
+    "-- Jane Doe\nSELECT count(*) FROM gold_hospital_profile",
+    "SELECT count(*) FROM gold_patient WHERE gender = 'F' /* Jane Doe */",
+    # an unaliased FILTER aggregate keeps its text as the column name
+    "SELECT count(*) FILTER (WHERE gender = 'F' /* Jane Doe */) FROM gold_patient",
+])
+def test_comments_are_dropped_from_the_executed_sql(sql):
+    d = validate_query(sql)
+    assert d.allowed, d.reason
+    assert "Jane" not in d.safe_sql and "/*" not in d.safe_sql and "--" not in d.safe_sql

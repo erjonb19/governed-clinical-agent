@@ -745,14 +745,6 @@ EIGHTH_REVIEW_ALLOWED = {
         "SELECT condition_name, count(*) AS n, rank() OVER (ORDER BY count(*) DESC) AS rk "
         "FROM gold_condition GROUP BY condition_name"),
     # F2: other spellings of a 30-day window
-    "date + 30 (days)": (
-        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
-        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
-        "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30"),
-    "date + to_days(30)": (
-        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
-        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
-        "WHERE b.start_date BETWEEN a.end_date AND a.end_date + to_days(30)"),
     # the semi-joins stay allowed: the outer query aggregates the patients
     "key IN semi-join": (
         "SELECT count(*) AS n FROM gold_patient WHERE patient_id IN "
@@ -833,10 +825,6 @@ def test_ninth_review_bypasses_are_refused(name):
 
 NINTH_REVIEW_ALLOWED = {
     # F2: the same date column on two aliases of a self-join is two dates
-    "readmission measured start to start": (
-        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
-        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
-        "WHERE b.start_date > a.start_date AND b.start_date <= a.start_date + INTERVAL 30 DAY"),
     # F3: EXISTS discards its select list
     "correlated EXISTS selecting the key": (
         "SELECT count(*) AS n FROM gold_patient p WHERE EXISTS "
@@ -977,11 +965,6 @@ def test_eleventh_review_bypasses_are_refused(name):
 
 ELEVENTH_REVIEW_ALLOWED = {
     "a constant range() still runs": "SELECT count(*) AS n FROM range(0, 100) r(i)",
-    "readmission rate with FILTER (WHERE b.key IS NOT NULL)": (
-        "SELECT count(DISTINCT a.encounter_id) FILTER (WHERE b.encounter_id IS NOT NULL) * 1.0 / "
-        "count(DISTINCT a.encounter_id) AS rate FROM gold_encounter a LEFT JOIN gold_encounter b "
-        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
-        "AND b.start_date > a.end_date AND b.start_date <= a.end_date + INTERVAL 30 DAY"),
     "per-patient counts with an inner join, averaged outside": (
         "SELECT avg(t.n) AS v FROM (SELECT p.patient_id, count(*) AS n FROM gold_patient p "
         "JOIN gold_condition c ON c.patient_id = p.patient_id GROUP BY p.patient_id) t"),
@@ -2226,6 +2209,30 @@ def test_keyed_joins_and_unions_of_counts_still_run(sql):
 # keys, may sit over such a join.
 _TEN = " ".join(f"JOIN gold_condition c{i} ON p.patient_id = c{i}.patient_id" for i in range(1, 11))
 KEYED_MULTIPLIER_LEAKS = {
+    # owner's decision 2026-11-18: a self-join of ONE one-to-many table weighted a
+    # per-person column by count squared (sum(age_at_onset) over c1 JOIN c2: 1190)
+    "self-join of one table, summing a per-person column": (
+        "SELECT sum(c1.age_at_onset) AS s FROM gold_condition c1 "
+        "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id"),
+    "self-join of one table, counting rows": (
+        "SELECT count(*) AS n FROM gold_condition c1 "
+        "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id"),
+    "self-join of one table, averaging": (
+        "SELECT avg(e1.age_at_encounter) AS a FROM gold_encounter e1 "
+        "JOIN gold_encounter e2 USING (patient_id)"),
+    "self-join with the key in WHERE": (
+        "SELECT sum(c1.age_at_onset) AS s FROM gold_condition c1, gold_condition c2 "
+        "WHERE c1.patient_id = c2.patient_id"),
+    "self-join, schema-qualified": (
+        "SELECT sum(c1.age_at_onset) AS s FROM main.gold_condition c1 "
+        "JOIN main.gold_condition c2 ON c1.patient_id = c2.patient_id"),
+    "self-join inside a per-patient wrapper, then summed": (
+        "SELECT sum(t.s) AS s FROM (SELECT c1.patient_id, sum(c1.age_at_onset) AS s "
+        "FROM gold_condition c1 JOIN gold_condition c2 ON c1.patient_id = c2.patient_id "
+        "GROUP BY c1.patient_id) t"),
+    "self-join, count of distinct non-person values": (
+        "SELECT count(DISTINCT c1.condition_name) AS n FROM gold_condition c1 "
+        "JOIN gold_condition c2 ON c1.patient_id = c2.patient_id"),
     # fifth review: per-patient grouped wrappers chained, each joined to one
     # more table, keep two sources per SELECT yet reach count^10 (170523 =
     # 166*1024 + 539 decoded a 4-person group's summed age)
@@ -2372,4 +2379,42 @@ def test_an_aggregate_cannot_read_the_outer_query_rows(tool, name):
 def test_an_aggregate_over_its_own_from_inside_a_subquery_still_runs():
     d = validate_query("SELECT count(*) AS n FROM gold_patient p WHERE p.age_years > "
                        "(SELECT avg(LEAST(q.age_years, 90)) FROM gold_patient q)")
+    assert d.allowed, d.reason
+
+# Owner's decision 2026-11-18: a self-join of one one-to-many table runs only as a
+# people count. These four were legitimate shapes before it (encounter pairs and a
+# readmission rate); "patients readmitted within 30 days" as count(DISTINCT
+# a.patient_id) still runs (test below).
+REFUSED_BY_SELF_JOIN_DECISION = {
+    "date + 30 (days)": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30"),
+    "date + to_days(30)": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date BETWEEN a.end_date AND a.end_date + to_days(30)"),
+    "readmission measured start to start": (
+        "SELECT count(*) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date > a.start_date AND b.start_date <= a.start_date + INTERVAL 30 DAY"),
+    "readmission rate with FILTER (WHERE b.key IS NOT NULL)": (
+        "SELECT count(DISTINCT a.encounter_id) FILTER (WHERE b.encounter_id IS NOT NULL) * 1.0 / "
+        "count(DISTINCT a.encounter_id) AS rate FROM gold_encounter a LEFT JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "AND b.start_date > a.end_date AND b.start_date <= a.end_date + INTERVAL 30 DAY"),
+}
+
+
+@pytest.mark.parametrize("name", list(REFUSED_BY_SELF_JOIN_DECISION))
+def test_self_join_shapes_refused_by_the_owner_s_decision(tool, name):
+    r = tool.execute({"sql": REFUSED_BY_SELF_JOIN_DECISION[name]})
+    assert not r.success, (name, r.output)
+
+
+def test_readmitted_patients_still_count_as_people():
+    d = validate_query((
+        "SELECT count(DISTINCT a.patient_id) AS n FROM gold_encounter a JOIN gold_encounter b "
+        "ON a.patient_id = b.patient_id AND a.encounter_id <> b.encounter_id "
+        "WHERE b.start_date > a.end_date AND b.start_date <= a.end_date + 30"))
     assert d.allowed, d.reason
