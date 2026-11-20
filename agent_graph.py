@@ -76,7 +76,7 @@ import tracing
 import versioning
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
-from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
+from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC, plan_prompt
 import schema_check
 
 GOLD_DB = os.environ.get("HOSPITAL_GOLD_DB", "medallion/hospital_gold.duckdb")
@@ -202,15 +202,9 @@ class GovernedAgentGraph:
         attempt = state.get("attempts", 0) + 1
         last_error = state.get("last_error")
 
-        prompt = question
-        if last_error:
-            # self-correction: the agent sees its own failure and revises
-            prompt = (
-                f"{question}\n\n"
-                f"Your previous SQL attempt was REJECTED. Reason:\n{last_error}\n\n"
-                f"Write a corrected query that avoids this problem. Use only the "
-                f"allowed table and columns from the schema."
-            )
+        # self-correction: on a retry the agent sees why its last attempt failed,
+        # delimited as data (item 67)
+        prompt = plan_prompt(question, last_error)
 
         schema_doc = self.schema_docs.get(state.get("dataset"))
         kw = {"schema_doc": schema_doc} if schema_doc else {}
