@@ -481,9 +481,10 @@ What real AI, data and software engineering teams would add, checked against the
   - Where: logs/audit/audit_agent_*.jsonl (10 files, demo prompts only)
   - Done when: git rm --cached logs/audit/*.jsonl.; a test or check shows it.
   - Done 2026-11-18: the ten `logs/audit/audit_agent_*.jsonl` demo logs are untracked (`git rm --cached`; they stay in history, demo prompts only, no secrets per the audit). `tests/unit/test_no_committed_logs.py` fails if any file under `logs/` is tracked again. The other tracked-but-ignored files (`eval_runs/`, `medallion/*.parquet`, `tests/security/data/`) are committed on purpose and are not covered.
-- [ ] **66. SQL comments are allowed and kept in the executed SQL** (Low; security audit finding 37, `docs/SECURITY_AUDIT_2026-11-10.md`).
+- [x] **66. SQL comments are allowed and kept in the executed SQL** (Low; security audit finding 37, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: sql_guard.py:186-198 (verified: /* */ and -- pass into safe_sql, which the critic reads)
   - Done when: Deny statements with comments, or emit with comments=False.; a test or check shows it.
+  - Done 2026-11-18 (the second option, so nothing the agent writes is newly refused): `sql_guard.validate_query` emits `safe_sql` with `comments=False`, so a `--` or `/* */` comment never reaches the executed SQL, the database, or the `safe_sql` returned to callers (`/raw-sql`, MCP `sql_executed`); the review also found one in a generated column name (an unaliased FILTER aggregate, `phi_guard`), now emitted without comments too. The critic and the plan spans read the planner's SQL before the guard, so they are not covered here (hosted traces: item 64). What the guard allows or refuses is unchanged. `tests/security/test_guard_escapes.py::test_comments_are_dropped_from_the_executed_sql`.
 - [ ] **67. Retry and critic prompts do not delimit untrusted text** (Low; security audit finding 38, `docs/SECURITY_AUDIT_2026-11-10.md`).
   - Where: agent_graph.py:205-211; nl_to_sql_planner.py:439-466, :613
   - Done when: Labelled delimiters around question, error and SQL; an "untrusted text" rule in the planner's system prompt (as the critic already has). Changes prompts: re-record replays.; a test or check shows it.
