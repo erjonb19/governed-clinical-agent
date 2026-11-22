@@ -57,6 +57,17 @@ PLANTED = [
     ("zip code", "zip-code 10467", "10467"),
     ("social security number", "900 12 3456 on file", "900 12 3456"),
     ("phone number", "call 555-0123", "555-0123"),
+    # second review: double spaces and spaced separators
+    ("age 90+", "age  93", "93"),
+    ("age 90+", "Age:  93", "93"),
+    ("age 90+", "age of  93", "93"),
+    ("age 90+", "93  years old", "93"),
+    ("zip code", "zip  10467", "10467"),
+    ("zip code", "NY  10467", "10467"),
+    ("full date", "born 7 - Mar - 1931", "1931"),
+    ("full date", "born March 7 , 1931", "1931"),
+    ("social security number", "900  12  3456", "3456"),
+    ("phone number", "call 555 - 0123", "0123"),
 ]
 
 
@@ -94,6 +105,7 @@ def test_several_identifiers_in_one_text_are_all_removed():
         "patients aged 45 to 64 with hypertension",
         "an 89-year-old cutoff",  # 89 is not over 89
         "facility 330101",  # a six-digit CMS facility id
+        "readmissions at age 95th percentile",  # a percentile, not an age
         "how many of 12000 patients had a visit",  # five digits, no zip context
         "",
     ],
@@ -148,3 +160,16 @@ def test_crafted_input_at_the_cap_is_fast():
         start = time.perf_counter()
         phi_redact.redact(text[: phi_redact.MAX_CHARS])
         assert time.perf_counter() - start < 1.0, text[:12]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("seen 1931-03-07T10:00", "seen [full date]"),
+        ("93 yrs. old", "[age 90+]"),
+        ("Age 93y", "[age 90+]"),
+        ("a 93-y-o man", "a [age 90+] man"),
+    ],
+)
+def test_the_whole_identifier_is_replaced(text, expected):
+    assert phi_redact.redact(text)[0] == expected

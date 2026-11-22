@@ -38,7 +38,15 @@ import re
 from question_screen import _RULES as _SCREEN_RULES
 
 _MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
-_AGE_WORDS = r"(?:years?|yrs?)(?:[\s-]+old)?|y\s?/?\.?\s?o\b\.?|y\b"
+# Bounded spacing: pasted clinical text often has double spaces, and a bounded
+# run stays linear where adjacent \s* pieces were quadratic.
+_SP = r"\s{0,3}"
+_SEP = rf"(?:\s{{1,3}}|{_SP}-{_SP})"  # " ", "  ", "-", " - "
+_AGE_WORDS = (
+    rf"(?:years?|yrs?)\.?(?:{_SEP}old)?"
+    rf"|y{_SP}[/.-]?{_SP}o\b\.?"
+    r"|y\b"
+)
 _OVER_89 = r"(?:9\d|1\d\d)(?:\.\d+)?"
 
 # Longer text is not scanned (some rules are quadratic on crafted input, and
@@ -46,24 +54,31 @@ _OVER_89 = r"(?:9\d|1\d\d)(?:\.\d+)?"
 MAX_CHARS = 4000
 TOO_LONG = "[text withheld: too long to redact]"
 
+# A lookbehind must have a fixed width, so the state code before a zip is
+# spelled out for one to three spaces, with or without a comma.
+_STATE_BEFORE = "|".join(
+    rf"(?<=\b[A-Z]{{2}}{comma}{' ' * n})" for comma in ("", ",") for n in (1, 2, 3)
+)
+
 _EXTRA_RULES: list[tuple[str, re.Pattern[str]]] = [
     (
         # Formats the screen's date rule misses: day-month-year with dashes,
         # year first with slashes or dots, ISO timestamps, "7th March 1931",
-        # "7-Mar-1931".
+        # "7-Mar-1931", "March 7 , 1931".
         "full date",
         re.compile(
             r"(?<!\d)(?:\d{1,2}-\d{1,2}-\d{4}|\d{4}[/.]\d{1,2}[/.]\d{1,2}|"
-            r"\d{4}-\d{1,2}-\d{1,2}(?=T)|"
-            rf"\d{{1,2}}(?:st|nd|rd|th)?[\s-]{_MONTH}[\s-]\d{{4}})(?!\d)",
+            r"\d{4}-\d{1,2}-\d{1,2}(?:T[\d:.]+Z?)?(?=T|\b)|"
+            rf"\d{{1,2}}(?:st|nd|rd|th)?{_SEP}{_MONTH}{_SEP}\d{{4}}|"
+            rf"{_MONTH}{_SP}\d{{1,2}}(?:st|nd|rd|th)?{_SP},?{_SP}\d{{4}})(?!\d)",
             re.I,
         ),
     ),
     (
         "age 90+",
         re.compile(
-            rf"\b{_OVER_89}[\s-]?(?:{_AGE_WORDS})"
-            rf"|\bage[sd]?(?:\s+of)?(?:\s*[:=])?\s?{_OVER_89}(?![\d%])",
+            rf"\b{_OVER_89}{_SP}-?{_SP}(?:{_AGE_WORDS})"
+            rf"|\bage[sd]?(?:\s{{1,3}}of)?(?:{_SP}[:=])?{_SP}{_OVER_89}(?:{_SP}(?:{_AGE_WORDS}))?(?![\d%]|st|nd|rd|th)",
             re.I,
         ),
     ),
@@ -71,13 +86,16 @@ _EXTRA_RULES: list[tuple[str, re.Pattern[str]]] = [
         "zip code",
         re.compile(
             r"\b\d{5}-\d{4}\b"
-            r"|\b(?i:zip(?:[\s-]?code)?|postal\s?code)(?:\s?[:#])?\s?\d{5}(?:-\d{4})?\b"
+            rf"|\b(?i:zip(?:{_SP}-?{_SP}code)?|postal{_SP}code)(?:{_SP}[:#])?{_SP}\d{{5}}(?:-\d{{4}})?\b"
             # a state code is two CAPITALS: "of 12000" is not a zip
-            r"|(?:(?<=\b[A-Z]{2}\s)|(?<=\b[A-Z]{2},\s))\d{5}\b"
+            rf"|(?:{_STATE_BEFORE})\d{{5}}\b"
         ),
     ),
-    ("social security number", re.compile(r"(?<!\d)\d{3} \d{2} \d{4}(?!\d)")),
-    ("phone number", re.compile(r"(?<![\d-])\d{3}-\d{4}(?![\d-])")),
+    (
+        "social security number",
+        re.compile(r"(?<!\d)\d{3}\s{1,3}\d{2}\s{1,3}\d{4}(?!\d)"),
+    ),
+    ("phone number", re.compile(rf"(?<![\d-])\d{{3}}{_SP}-{_SP}\d{{4}}(?![\d-])")),
     ("number", re.compile(r"(?<!\d)\d{7,}(?!\d)")),
 ]
 
