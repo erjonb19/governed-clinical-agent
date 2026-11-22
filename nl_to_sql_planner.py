@@ -491,13 +491,15 @@ def _ordering_rules(schema_doc: str) -> str:
         "- When the answer is a list or ranking, include a sensible ORDER BY and a LIMIT\n"
         "  (15 unless the question implies otherwise). When the answer is a single\n"
         "  number or one row of aggregates with no GROUP BY, write no ORDER BY and no LIMIT.\n"
+        "  A which / top-N question, even top 1, is a ranking: it keeps ORDER BY and LIMIT.\n"
     )
     if "facility_id" in schema_doc:
         return common + (
             "- Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add facility_id ASC\n"
             "  as the final tie-breaker (e.g. ORDER BY mspb_score DESC, facility_id ASC). This\n"
             "  guarantees the same rows come back in the same order every run, even when several\n"
-            "  hospitals share the same value.\n"
+            "  hospitals share the same value. In a GROUP BY query (e.g. by state), break ties\n"
+            "  on the GROUP BY label(s) instead.\n"
         )
     return common + (
         "- Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add the GROUP BY\n"

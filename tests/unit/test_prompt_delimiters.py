@@ -113,3 +113,14 @@ def test_both_system_prompts_say_the_tagged_text_is_data():
 def test_text_that_only_mentions_a_word_is_left_alone():
     out = nlp.delimit("question", "is a < b in the question?")
     assert "is a < b in the question?" in out  # not a tag start: unchanged
+
+
+def test_each_dataset_gets_its_own_ordering_rules():
+    """Item 67 follow-up: the facility_id tie-break is the hospital prompt's only."""
+    hospital = nlp.build_system_prompt(nlp.SCHEMA_DOC_HOSPITAL)
+    fhir = nlp.build_system_prompt(nlp.SCHEMA_DOC_FHIR)
+    assert "facility_id ASC" in hospital and "facility_id ASC" not in fhir
+    assert "never order by patient_id" in fhir and "never order by patient_id" not in hospital
+    assert "11-patient rule itself" in fhir and "11-patient rule" not in hospital
+    for prompt in (hospital, fhir):
+        assert "even top 1, is a ranking" in prompt
