@@ -369,9 +369,13 @@ Thank you.
 
 ```powershell
 "eecea1e4","57103a1b","e2ee6c13","2bf842e3" | ForEach-Object {
-  $u = "https://github.com/erjonb19/governed-clinical-agent/commit/$_"
-  try { (Invoke-WebRequest $u -Method Head -UseBasicParsing).StatusCode; "$_ still opens" }
-  catch { "$_ gone" }
+  $sha = $_
+  $u = "https://github.com/erjonb19/governed-clinical-agent/commit/$sha"
+  try { $null = Invoke-WebRequest $u -Method Head -UseBasicParsing; "$sha still opens" }
+  catch {
+    if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { "$sha gone" }
+    else { "$sha check failed: $($_.Exception.Message)" }
+  }
 }
 ```
 
