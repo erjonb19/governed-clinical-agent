@@ -296,7 +296,9 @@ Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
 
 ---
 
-## [ ] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+## [x] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+
+**Done 2026-11-22:** Dependabot security updates are on (`automated-security-fixes` reports `true`); private vulnerability reporting was already on.
 
 **Why:** `SECURITY.md` asks people to report problems privately through the
 repository's **Security** tab, which only works once private vulnerability reporting
@@ -322,3 +324,44 @@ gh api repos/erjonb19/governed-clinical-agent/automated-security-fixes --jq .ena
 Or in the browser: the repo -> Settings -> Code security -> turn on "Private
 vulnerability reporting" and "Dependabot security updates". Tell the agent "step 12
 done".
+
+---
+
+## [ ] 13. Ask GitHub Support to purge two old commits from PR #150
+
+**Why:** PR #150 (client address behind Cloudflare) was squash-merged, and its branch
+`claude/jolly-hopper-8ly9iq-clientip` is deleted (step 11). But two of the PR's original
+commits put a real IP address in test files, and GitHub keeps every commit of a pull
+request reachable through the PR's own refs (`refs/pull/150/head`), even after the branch is
+gone. Only GitHub Support can remove them, along with their cached views. The address is
+deliberately not written here.
+
+1. Open https://support.github.com/request and choose the repository
+   `erjonb19/governed-clinical-agent`. Pick the option for **removing sensitive data**
+   (sometimes listed as "Remove data from a pull request" / "sensitive data removal").
+2. Paste this, then put the address itself only in Support's private form if they ask for it:
+
+```text
+Subject: Remove two commits with personal data from pull request #150
+
+Repository: erjonb19/governed-clinical-agent (public)
+Pull request: #150, merged by squash; its head branch
+claude/jolly-hopper-8ly9iq-clientip has been deleted.
+
+Two of the PR's original commits contain my personal IP address in test
+fixtures:
+  eecea1e4  (and)  2bf842e3
+(full SHAs: run `git rev-parse` on them, or see the PR's Commits tab)
+
+The squash commit on main does not contain the address (it was replaced with
+a documentation address before merging). Please remove the PR's references to
+those two commits and purge any cached views of them, so they are no longer
+reachable by SHA. Nothing on main or any live branch needs rewriting.
+
+Thank you.
+```
+
+3. When Support confirms, check that the two SHAs no longer open:
+   `https://github.com/erjonb19/governed-clinical-agent/commit/eecea1e4` (should give 404).
+   Then tell the agent "step 13 done".
+
