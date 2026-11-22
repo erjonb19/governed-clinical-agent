@@ -38,6 +38,25 @@ PLANTED = [
     ("zip code", "ZIP: 02115", "02115"),
     ("zip code", "mail to 10467-1234", "10467-1234"),
     ("number", "account 123456789012 closed", "123456789012"),
+    # review of b1eb936: formats that came through
+    ("full date", "born 07-03-1931", "07-03-1931"),
+    ("full date", "born 1931/03/07", "1931/03/07"),
+    ("full date", "born 1931.03.07", "1931.03.07"),
+    ("full date", "born 7th March 1931", "7th March 1931"),
+    ("full date", "born 7-Mar-1931", "7-Mar-1931"),
+    ("full date", "seen 1931-03-07T10:00", "1931-03-07"),
+    ("age 90+", "a 93 y.o. man", "93"),
+    ("age 90+", "a 93 y. o. man", "93"),
+    ("age 90+", "a 93-y-o man", "93"),
+    ("age 90+", "Age 93y", "93"),
+    ("age 90+", "aged 150", "150"),
+    ("age 90+", "age 93.5", "93"),
+    ("zip code", "zip 10467-1234", "1234"),
+    ("zip code", "Postal Code: 10467-1234", "1234"),
+    ("zip code", "Bronx, NY, 10467", "10467"),
+    ("zip code", "zip-code 10467", "10467"),
+    ("social security number", "900 12 3456 on file", "900 12 3456"),
+    ("phone number", "call 555-0123", "555-0123"),
 ]
 
 
@@ -114,3 +133,18 @@ def test_memory_is_small_enough_for_render():
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert peak < 1_000_000, peak
+
+
+def test_text_over_the_cap_is_withheld_whole():
+    out, kinds = phi_redact.redact("a" * (phi_redact.MAX_CHARS + 1))
+    assert out == phi_redact.TOO_LONG and kinds == ["too long"]
+
+
+def test_crafted_input_at_the_cap_is_fast():
+    import time
+
+    n = phi_redact.MAX_CHARS // 2 - 8
+    for text in ("a." * n, "1-" * n, "zip" + " " * n + "code", "age" + " " * n + "of"):
+        start = time.perf_counter()
+        phi_redact.redact(text[: phi_redact.MAX_CHARS])
+        assert time.perf_counter() - start < 1.0, text[:12]
