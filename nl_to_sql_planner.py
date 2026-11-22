@@ -400,7 +400,9 @@ Notes:
     and sort on safe columns, the year or age_years, never on names, IDs,
     places or full dates (joining on patient_id / encounter_id is fine); per-patient
     figures go in a subquery grouped by patient_id that the outer query
-    COUNTs / SUMs / AVGs; groups of fewer than 11 patients are not returned.
+    COUNTs / SUMs / AVGs. The system applies the 11-patient rule itself (small
+    groups come back empty or NULL): never add your own count(...) >= 11 filter
+    or HAVING for it, and never answer unanswerable because of it.
     Summarise with COUNT, SUM, AVG, MEDIAN, MIN/MAX or STDDEV of a plain
     column, never LIST, ARRAY_AGG, STRING_AGG or ARG_MAX, and never a CASE,
     NULLIF or other expression inside the aggregate: for a share or a
@@ -478,6 +480,34 @@ def plan_prompt(question: str, retry_reason: str | None = None) -> PlannerPrompt
     return PlannerPrompt(text)
 
 
+def _ordering_rules(schema_doc: str) -> str:
+    """ORDER BY / LIMIT and small-group rules (item 67, owner's option (a), 2026-11-22).
+
+    A single-number answer gets no ORDER BY or LIMIT: the rule had the model
+    append "ORDER BY facility_id" to a COUNT(*). The facility_id tie-break is
+    for the hospital table only; the clinical tables have no facility_id, so
+    ties break on the grouped label, never on patient_id."""
+    common = (
+        "- When the answer is a list or ranking, include a sensible ORDER BY and a LIMIT\n"
+        "  (15 unless the question implies otherwise). When the answer is a single\n"
+        "  number or one row of aggregates with no GROUP BY, write no ORDER BY and no LIMIT.\n"
+    )
+    if "facility_id" in schema_doc:
+        return common + (
+            "- Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add facility_id ASC\n"
+            "  as the final tie-breaker (e.g. ORDER BY mspb_score DESC, facility_id ASC). This\n"
+            "  guarantees the same rows come back in the same order every run, even when several\n"
+            "  hospitals share the same value.\n"
+        )
+    return common + (
+        "- Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add the GROUP BY\n"
+        "  label(s) ASC as the final tie-breaker (e.g. ORDER BY n DESC, condition_name ASC).\n"
+        "  There is no facility_id here, and never order by patient_id.\n"
+        "- The system applies the 11-patient rule itself. Never add your own filter or\n"
+        "  HAVING for it, and never refuse a question because of it.\n"
+    )
+
+
 def build_system_prompt(schema_doc: str) -> str:
     """The system prompt for a GIVEN schema doc, so one planner can serve
     multiple datasets (the UI switches between hospital and clinical)."""
@@ -491,12 +521,7 @@ Rules:
 - Exactly one statement, and it MUST be a SELECT (or WITH ... SELECT).
 - Only use the table and columns listed above.
 - When a measure can be NULL, add a "column IS NOT NULL" filter so nulls don't sort to the top.
-- Always include a sensible ORDER BY and a LIMIT (15 unless the question implies otherwise).
-- Make ordering DETERMINISTIC: whenever you ORDER BY a measure, add facility_id ASC
-  as the final tie-breaker (e.g. ORDER BY mspb_score DESC, facility_id ASC). This
-  guarantees the same rows come back in the same order every run, even when several
-  hospitals share the same value.
-- Lower is better for readmission rates and ED times; higher is better for star_rating.
+{_ordering_rules(schema_doc)}- Lower is better for readmission rates and ED times; higher is better for star_rating.
 - ed_volume is a CATEGORY, not a number. Match it with = or IN against the exact
   lowercase values ('very high', 'high', 'medium', 'low') -- never with > or <.
   Write the column name as one token, ed_volume, with no space in it.
