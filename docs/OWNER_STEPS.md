@@ -296,7 +296,9 @@ Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
 
 ---
 
-## [ ] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+## [x] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+
+**Done 2026-11-22:** Dependabot security updates are on (`automated-security-fixes` reports `true`); private vulnerability reporting was already on.
 
 **Why:** `SECURITY.md` asks people to report problems privately through the
 repository's **Security** tab, which only works once private vulnerability reporting
@@ -322,3 +324,60 @@ gh api repos/erjonb19/governed-clinical-agent/automated-security-fixes --jq .ena
 Or in the browser: the repo -> Settings -> Code security -> turn on "Private
 vulnerability reporting" and "Dependabot security updates". Tell the agent "step 12
 done".
+
+---
+
+## [ ] 13. Ask GitHub Support to purge the old commits of PR #150
+
+**Why:** PR #150 (client address behind Cloudflare) was squash-merged, and its branch
+`claude/jolly-hopper-8ly9iq-clientip` is deleted (step 11). But a real IP address was
+committed in `tests/unit/test_client_ip.py` in the PR's first commit and stayed in the
+file's tree through the next two; the fourth removed it, so its diff still shows it. All
+four commits are still reachable through the PR's own ref (`refs/pull/150/head`), even
+after the branch is gone. Only GitHub Support can remove them, along with their cached
+views. The address is deliberately not written here.
+
+1. Open https://support.github.com/request and choose the repository
+   `erjonb19/governed-clinical-agent`. Pick the option for **removing sensitive data**
+   (sometimes listed as "Remove data from a pull request" / "sensitive data removal").
+2. Paste this, then put the address itself only in Support's private form if they ask for it:
+
+```text
+Subject: Remove the commits of pull request #150 (personal data)
+
+Repository: erjonb19/governed-clinical-agent (public)
+Pull request: #150, merged by squash; its head branch
+claude/jolly-hopper-8ly9iq-clientip has been deleted.
+
+All four of the PR's original commits expose my personal IP address in
+tests/unit/test_client_ip.py (added in the first, still in the file tree of
+the next two, shown as a removed line in the last):
+  eecea1e4bec9b635fa84fd9b55fa6ed31241738b
+  57103a1bad5c74e193dc143e995ed3f7a1179104
+  e2ee6c135f4d74b2bf01168b7b8cdb6b3cdf5b80
+  2bf842e303e343dc84d63539ef06da9cc5c5adaf
+
+The squash commit on main does not contain the address (it was replaced with
+a documentation address before merging). Please remove refs/pull/150/head and
+these four commits, and purge any cached views of them, so they are no longer
+reachable by SHA. Nothing on main or any live branch needs rewriting.
+
+Thank you.
+```
+
+3. When Support confirms, check that none of the four opens any more (each should give 404):
+
+```powershell
+"eecea1e4","57103a1b","e2ee6c13","2bf842e3" | ForEach-Object {
+  $sha = $_
+  $u = "https://github.com/erjonb19/governed-clinical-agent/commit/$sha"
+  try { $null = Invoke-WebRequest $u -Method Head -UseBasicParsing; "$sha still opens" }
+  catch {
+    if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { "$sha gone" }
+    else { "$sha check failed: $($_.Exception.Message)" }
+  }
+}
+```
+
+   Then tell the agent "step 13 done".
+

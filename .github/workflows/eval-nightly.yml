@@ -17,17 +17,21 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
-  issues: write       # nightly_alerts.py opens, comments on and closes alert issues (item 3)
+  contents: read      # issues: write is granted per job below, to the two jobs that file alerts
 
 jobs:
   full-eval:
+    permissions:
+      contents: read
+      issues: write   # nightly_alerts.py opens, comments on and closes alert issues (item 3)
     runs-on: ubuntu-latest
     # two attempts (~23 min each when healthy) + 5 min wait; each attempt is
     # capped at 32 min by the gate so an overrun is red, not "cancelled"
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -87,7 +91,9 @@ jobs:
         continue-on-error: true   # a GitHub API hiccup must not turn a green night red
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python nightly_alerts.py --dataset hospital --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+          SINCE: ${{ steps.start.outputs.t }}
+        run: python nightly_alerts.py --dataset hospital --gate-exit "$GATE_RC" --since "$SINCE"
 
   # Second dataset: the 28-case FHIR clinical suite. Runs AFTER the hospital job
   # (needs: full-eval) -- both share one provider key, and running them in
@@ -95,6 +101,9 @@ jobs:
   # Its Gold DB is a derived artifact (gitignored), so this job builds it from the
   # Synthea source, cached so we don't refetch every night.
   fhir-eval:
+    permissions:
+      contents: read
+      issues: write   # nightly_alerts.py opens, comments on and closes alert issues (item 3)
     needs: full-eval
     # still runs when the hospital job is red: each dataset gets its own verdict
     if: ${{ !cancelled() }}
@@ -103,6 +112,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -177,4 +188,6 @@ jobs:
         continue-on-error: true   # a GitHub API hiccup must not turn a green night red
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python nightly_alerts.py --dataset fhir --gate-exit "${{ steps.gate.outputs.rc }}" --since "${{ steps.start.outputs.t }}"
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+          SINCE: ${{ steps.start.outputs.t }}
+        run: python nightly_alerts.py --dataset fhir --gate-exit "$GATE_RC" --since "$SINCE"

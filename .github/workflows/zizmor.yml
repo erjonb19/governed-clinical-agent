@@ -1,0 +1,59 @@
+# Backlog item 69: zizmor audits the workflows for security problems (template injection,
+# credential persistence, unpinned actions, excessive permissions) on every change to them.
+# zizmor is a pinned PyPI release installed with its wheel's SHA-256 (owner approved 2026-11-22,
+# the same pin as the drift monitor's workflow). A deliberate exception carries an inline
+# `# zizmor: ignore[...]` comment with its reason (data-refresh.yml pushes a branch).
+name: Workflow audit
+
+on:
+  push:
+    paths: [".github/workflows/**"]
+  pull_request:
+    paths: [".github/workflows/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor (pinned, hash checked)
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/zizmor
+          printf '%s\n' "zizmor==1.32.0 --hash=sha256:84a6acb975accc13408786a2bd274b572537ca19c933ebbc13e78f3988562071" > /tmp/zizmor-req.txt
+          /tmp/zizmor/bin/pip install -q --require-hashes --only-binary=:all: --no-deps -r /tmp/zizmor-req.txt
+      - name: zizmor catches a planted injection (self-test)
+        run: |
+          set +e -u
+          mkdir -p /tmp/planted
+          # The planted expression is assembled at run time ('$' + '{{ ... }}'), so this file
+          # itself never contains one for Actions to expand.
+          {
+            echo "on: pull_request_target"
+            echo "jobs:"
+            echo "  x:"
+            echo "    runs-on: ubuntu-latest"
+            echo "    steps:"
+            printf '      - run: echo "%s{{ github.event.pull_request.title }}"\n' '$'
+          } > /tmp/planted/bad.yml
+          /tmp/zizmor/bin/zizmor --offline /tmp/planted/bad.yml > /tmp/planted/out.txt 2>&1
+          status=$?
+          # Exit codes 10 to 14 mean findings; 1 would be zizmor's own error, not a detection.
+          if [ "$status" -lt 10 ] || ! grep -q "template-injection" /tmp/planted/out.txt; then
+            cat /tmp/planted/out.txt
+            echo "zizmor did not report the planted template injection (exit $status)"
+            exit 1
+          fi
+          echo "self-test passed: zizmor reported template-injection (exit $status)"
+      - name: Audit this repository's workflows
+        run: /tmp/zizmor/bin/zizmor --offline .github/workflows/
