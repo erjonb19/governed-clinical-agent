@@ -79,7 +79,7 @@ def _fresh_postgres_state(monkeypatch):
 
     with psycopg.connect(u, autocommit=True) as con:
         con.execute(
-            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, checkpoints, "
+            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, llm_budget_day, checkpoints, "
             "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE"
         )
     yield
