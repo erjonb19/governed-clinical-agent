@@ -268,3 +268,129 @@ def test_the_cli_creates_lists_and_revokes(tmp_path, monkeypatch, capsys):
     assert user_keys.main(["user_keys.py", "revoke", key_id]) == 0
     assert user_keys.main(["user_keys.py", "create", "x", "superuser"]) == 2
     assert user_keys.main(["user_keys.py", "create", "bad name!", "viewer"]) == 2
+
+
+# ---- review of #179 -------------------------------------------------------
+
+
+class _RealStoreAgent:
+    """Resumes by recording the decision in a REAL ApprovalStore, as the graph does."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def resume(
+        self,
+        thread_id,
+        decision,
+        decided_by,
+        reason=None,
+        edited_proposal=None,
+        escalated_to=None,
+        identity=None,
+    ):
+        aid = self.store.find_by_thread(thread_id, status="pending")
+        return self.store.decide(
+            aid,
+            decision,
+            decided_by,
+            reason=reason,
+            edited_proposal=edited_proposal,
+            escalated_to=escalated_to,
+            identity=identity,
+        )
+
+
+def _real_queue(m, tmp_path):
+    from approval import ApprovalStore
+
+    store = ApprovalStore(str(tmp_path / "real_approvals.sqlite"))
+    aid = store.propose("t-real", "brief.commit", "q?", "a brief", proposed_by="ann")
+    m._STATE["approval_store"] = store
+    m._STATE["approval_agent"] = _RealStoreAgent(store)
+    return store, aid
+
+
+def test_a_key_decision_is_stored_as_key_and_audited_under_the_user(env):
+    m, c, keys, tmp_path = env
+    store, aid = _real_queue(m, tmp_path)
+    rev = _key(keys, "rob", "reviewer")
+    r = c.post(f"/approvals/{aid}", headers=rev, json={"decision": "approve", "decided_by": "ann"})
+    assert r.status_code == 200, r.text
+    hist = store.history(aid)
+    assert hist[-1]["decided_by"] == "rob" and hist[-1]["identity"] == "key"
+    rt = m._STATE.get("runtime")
+    if rt is not None and getattr(rt, "audit_logger", None) is not None:
+        rt.audit_logger.flush()
+    events = [
+        json.loads(line)
+        for p in (tmp_path / "audit").glob("*.jsonl")
+        for line in p.read_text().splitlines()
+    ]
+    decisions = [e for e in events if e.get("event_type") == "approval_decision"]
+    assert decisions and decisions[-1]["principal"].startswith("user:rob:")
+
+
+def test_the_proposer_cannot_decide_with_their_own_key(env):
+    m, c, keys, tmp_path = env
+    _, aid = _real_queue(m, tmp_path)  # proposed by "ann"
+    r = c.post(
+        f"/approvals/{aid}",
+        headers=_key(keys, "ann", "reviewer"),
+        json={"decision": "approve", "decided_by": "someone-else"},
+    )
+    assert r.status_code == 400 and "proposed it" in r.text
+
+
+@pytest.mark.parametrize("target, ok", [("vera", True), ("vic", False), ("nobody", False)])
+def test_escalation_must_name_an_active_reviewer(env, target, ok):
+    m, c, keys, tmp_path = env
+    _, aid = _real_queue(m, tmp_path)
+    keys.create("vera", "reviewer")
+    keys.create("vic", "viewer")
+    r = c.post(
+        f"/approvals/{aid}",
+        headers=_key(keys, "rob", "reviewer"),
+        json={"decision": "escalate", "escalated_to": target},
+    )
+    assert (r.status_code == 200) is ok, (target, r.status_code, r.text)
+
+
+def test_roles_hold_on_v1_paths(env):
+    _, c, keys, _ = env
+    viewer = _key(keys, "vee", "viewer")
+    assert c.get("/v1/findings", headers=viewer).status_code not in (401, 403)
+    assert c.get("/v1/approvals", headers=viewer).status_code == 403
+    assert c.post("/v1/raw-sql", headers=viewer, json={"sql": "SELECT 1 AS n"}).status_code == 403
+
+
+def test_a_non_ascii_key_is_a_counted_401_not_a_500(env):
+    _, c, _, _ = env
+    import auth_failures
+
+    before = auth_failures.FAILURES.total
+    r = c.get("/findings", headers={"X-API-Key": b"t\xc3\xa9st-key"})
+    assert r.status_code == 401
+    assert auth_failures.FAILURES.total == before + 1
+
+
+def test_two_key_headers_are_refused(env):
+    _, c, keys, _ = env
+    k = keys.create("dup", "admin")[1]
+    r = c.get("/findings", headers=[("X-API-Key", "test-key"), ("X-API-Key", k)])
+    assert r.status_code == 400
+
+
+def test_one_key_lookup_per_request(env, monkeypatch):
+    m, c, keys, _ = env
+    h = _key(keys, "once", "analyst")
+    calls = []
+    real = user_keys.KeyStore.lookup
+
+    def counting(self, presented):
+        calls.append(1)
+        return real(self, presented)
+
+    monkeypatch.setattr(user_keys.KeyStore, "lookup", counting)
+    assert c.post("/raw-sql", headers=h, json={"sql": "SELECT 1 AS n"}).status_code == 200
+    assert len(calls) == 1

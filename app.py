@@ -232,9 +232,27 @@ def require_api_key(
         ident = user_keys.Identity(user="dev", role="admin", key_id="", source="dev")
         request.state.identity = ident
         return ident
+    cached = getattr(request.state, "identity", None)
+    if cached is not None:
+        return cached  # already checked for this request (global + route dependency)
+    if len(request.headers.getlist("x-api-key")) > 1:
+        raise HTTPException(status_code=400, detail="send one X-API-Key header")
     client = _client_address(request)
     ident: Optional[user_keys.Identity] = None
-    if provided is not None and hmac.compare_digest(provided, API_KEY):
+    # Backlog item 35: a client over the failed-key limit is refused before any
+    # key is looked up (no database round-trip for a throttled client)
+    if auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client):
+        auth_failures.FAILURES.record(client, request.url.path, "api")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed API key attempts; try again later",
+            headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
+        )
+    # bytes, not str: compare_digest raises on a non-ASCII str, which was a 500
+    # that skipped the failure count (review of #179, N4)
+    if provided is not None and hmac.compare_digest(
+        provided.encode("utf-8", "surrogateescape"), API_KEY.encode("utf-8")
+    ):
         ident = user_keys.Identity(user="owner", role="admin", key_id="", source="owner-key")
     elif user_keys.looks_like_user_key(provided):
         try:
@@ -244,19 +262,7 @@ def require_api_key(
             ident = store.lookup(provided)
         except Exception:  # noqa: BLE001 -- the store is down: refuse, never allow
             raise HTTPException(status_code=503, detail="key store unavailable; try again shortly")
-    ok = ident is not None
-    # Backlog item 35: every refused key is counted and audited per client.
-    # With AUTH_FAILURE_LOCKOUT on, a client over the limit gets 429 for every
-    # request until its window ends; off (the default, see auth_failures.py)
-    # it is audit and counting only.
-    if auth_failures.FAILURES.lockout and auth_failures.FAILURES.throttled(client):
-        if not ok:
-            auth_failures.FAILURES.record(client, request.url.path, "api")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="too many failed API key attempts; try again later",
-            headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
-        )
+    # Every refused key is counted and audited per client (item 35).
     if ident is None:
         auth_failures.FAILURES.record(client, request.url.path, "api")
         raise HTTPException(
@@ -1264,6 +1270,21 @@ def _audit_answer(allowed: bool, decided_by: Optional[str], version: dict,
         _audit_failed("answer", e)
 
 
+def _audit_decision(approval_id: str, decision: str, decided_by: Optional[str]) -> None:
+    """One audit line per approval decision (item 22): the request's principal
+    names the key's user; the reviewer's free-text reason stays out of it (it
+    is in approval_events)."""
+    logger = getattr(_STATE.get("runtime"), "audit_logger", None)
+    if logger is None or not hasattr(logger, "log_approval_decision"):
+        return
+    try:
+        logger.log_approval_decision(request_event_id=approval_id, capability=decision,
+                                     approved=decision in ("approve", "approve_with_edits"),
+                                     approver=decided_by or "")
+    except Exception as e:  # noqa: BLE001 -- an audit write must not fail the decision
+        _audit_failed("approval_decision", e)
+
+
 def _audit_failed(where: str, exc: BaseException) -> None:
     """Item 63: a failed audit write is never silent (shared counter in
     audit_logger, which the critic and refused-key paths use too)."""
@@ -1543,16 +1564,24 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
     if agent is None:
         raise HTTPException(status_code=503,
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
+    ident = getattr(request.state, "identity", None)
+    if ident is not None and ident.source == "key" and req.decision == "escalate":
+        # a key user may hand an item only to someone who can decide it (N3)
+        store_k = _STATE.get("key_store") or user_keys.KeyStore()
+        if not store_k.has_active(req.escalated_to or "", "reviewer"):
+            raise HTTPException(status_code=400,
+                                detail="escalated_to must be an active user with the reviewer role")
     try:
         with _APPROVAL_LOCK:
-            ident = getattr(request.state, "identity", None)
-            return agent.resume(
+            out = agent.resume(
                 thread_id=item["thread_id"], decision=req.decision,
                 decided_by=_acting_as(request, req.decided_by), reason=req.reason,
                 edited_proposal=req.edited_proposal, escalated_to=req.escalated_to,
                 identity="key" if ident is not None and ident.source == "key" else None)
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _audit_decision(approval_id, req.decision, _acting_as(request, req.decided_by))
+    return out
 
 
 @app.get("/")

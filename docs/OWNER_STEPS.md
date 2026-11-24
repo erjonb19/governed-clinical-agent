@@ -426,6 +426,9 @@ $h = @{ "X-API-Key" = [System.Net.NetworkCredential]::new("", $k).Password }
 Remove-Item Env:STATE_DB_URL
 ```
 
+Review with your own reviewer key, not the deploy's `API_KEY`: that key is not tied to a
+person, so with it any typed name can propose or decide (recorded as `self-asserted`).
+
 To take a key away: `python user_keys.py revoke <key_id>` (refused on the next request). To
 replace one: `python user_keys.py rotate <key_id>`. Then tell the agent "step 15 done".
 

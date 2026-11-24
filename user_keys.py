@@ -148,7 +148,25 @@ class KeyStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def has_active(self, user: str, role: str) -> bool:
+        """Whether `user` holds an active key with at least `role`."""
+        with self._con() as con:
+            self._ensure(con)
+            rows = con.execute(
+                "SELECT role FROM api_keys WHERE user_name = ? AND revoked_at IS NULL", (user,)
+            ).fetchall()
+        return any(RANK.get(r["role"], -1) >= RANK[role] for r in rows)
+
     def lookup(self, presented: Optional[str]) -> Optional[Identity]:
+        """See _lookup; retried once after re-creating the table, which two
+        first requests can race to create (review of #179, N8)."""
+        try:
+            return self._lookup(presented)
+        except Exception:
+            self._ready = False
+            return self._lookup(presented)
+
+    def _lookup(self, presented: Optional[str]) -> Optional[Identity]:
         """The identity a presented key belongs to, or None (unknown, malformed
         or revoked). Raises if the store cannot be read: the caller refuses."""
         m = _KEY.fullmatch(presented or "")

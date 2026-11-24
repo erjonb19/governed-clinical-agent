@@ -831,7 +831,9 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   route (an unlisted route needs admin); traces and `/metrics` are admin-only. Every audit
   event names `user:<name>:<key_id>`. Keys live in the state database (`STATE_DB_URL`, so
   they survive a redeploy only with Postgres). Not yet: per-key quotas, and per-user keys on
-  `/mcp`.
+  `/mcp`. **The owner's `API_KEY` is not bound to a person:** with it, any typed name can
+  propose or decide (marked `self-asserted`), so it can step around separation of duties and
+  put a key user's name on a decision. Use it to make keys, not to review.
 - [x] **Deny-by-default auth** (audit item 54): every route needs the API key unless it is on
   one public list (`/`, `/ui`, `/ui-config`, `/health`, `/public/findings`, `/datasets`);
   `/metrics` and `/schema` now need it.
