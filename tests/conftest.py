@@ -79,7 +79,8 @@ def _fresh_postgres_state(monkeypatch):
 
     with psycopg.connect(u, autocommit=True) as con:
         con.execute(
-            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, audit_events, checkpoints, "
+            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, audit_events, "
+            "llm_budget_day, checkpoints, "
             "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE"
         )
     yield
@@ -94,6 +95,7 @@ def _no_audit_table_by_default(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
 def _no_answer_cache_by_default(tmp_path, monkeypatch):
     """The answer cache (llm_cache.py, item 6) is off in tests unless a test
     turns it on, and it never writes into the repo's logs/: one test's model
