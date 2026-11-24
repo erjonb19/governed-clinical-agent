@@ -25,11 +25,16 @@ _failure_lock = Lock()
 _failure_count = 0
 
 
-def record_failure(where: str, exc: BaseException) -> None:
+def record_failure(where: str, exc: BaseException, events: int = 1) -> None:
+    """Count `events` lost audit writes (a batch counts each of its events)."""
     global _failure_count
     with _failure_lock:
-        _failure_count += 1
-    _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
+        _failure_count += max(1, events)
+    if events > 1:
+        _failure_log.warning("audit write failed (%s, %d events): %s", where, events,
+                             type(exc).__name__)
+    else:
+        _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
 
 
 def failure_count() -> int:
@@ -171,6 +176,17 @@ class AuditLogger:
             'injection_count': 0,
         }
         self._stats_lock = Lock()
+
+        # Item 39: with STATE_DB_URL (Postgres) every event also goes to the
+        # append-only `audit_events` table, through one background writer per
+        # process (audit_store.py). None: the JSONL is the only record.
+        self._store_writer = None
+        try:
+            import audit_store
+
+            self._store_writer = audit_store.writer()
+        except Exception as e:  # noqa: BLE001 -- the JSONL still records
+            record_failure("audit_store_init", e)
     
     def log_policy_evaluation(
         self,
@@ -675,10 +691,14 @@ class AuditLogger:
             return
         self._rotate()
 
+        rows = [event.to_dict() for event in self._buffer]
         with self.log_file.open('a') as f:
-            for event in self._buffer:
-                json.dump(event.to_dict(), f)
+            for row in rows:
+                json.dump(row, f)
                 f.write('\n')
+        if self._store_writer is not None:
+            for row in rows:
+                self._store_writer.put(row)
         
         self._buffer.clear()
         self._prune()
