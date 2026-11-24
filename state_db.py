@@ -76,6 +76,14 @@ def tls_kwargs(u: Optional[str] = None) -> dict[str, str]:
     return {"sslmode": mode if mode in _STRONG_MODES else "require"}
 
 
+def connect_timeout() -> int:
+    """Seconds to wait for a Postgres connection (STATE_DB_CONNECT_TIMEOUT, default 5)."""
+    try:
+        return max(1, int(os.environ.get("STATE_DB_CONNECT_TIMEOUT", "5")))
+    except ValueError:
+        return 5
+
+
 def describe() -> str:
     """For /health: which store, without the credentials in the URL."""
     # /health is unauthenticated: name the kind of store, not its host
@@ -116,7 +124,9 @@ def connect(sqlite_path: str) -> Iterator[Any]:
     if is_postgres():
         import psycopg
 
-        pg = psycopg.connect(url(), **tls_kwargs())
+        # a hard connect timeout: a database that hangs instead of refusing
+        # must not hold a request (and a run slot) for the OS TCP timeout
+        pg = psycopg.connect(url(), connect_timeout=connect_timeout(), **tls_kwargs())
         try:
             yield _PGConn(pg)
             pg.commit()

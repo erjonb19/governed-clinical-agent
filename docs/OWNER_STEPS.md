@@ -403,13 +403,16 @@ quiet demo would hit.
 2. Create a project named `governed-clinical-agent`, Postgres 16 or newer. For the region,
    open your Render service's **Settings** page, see its region, and pick the Neon region
    in the same place (Render "Oregon" is AWS **US West 2 (Oregon)**; "Ohio" is US East 2;
-   "Virginia" is US East 1; "Frankfurt" is EU Central 1).
+   "Virginia" is US East 1; "Frankfurt" is EU Central 1). Then **Branches -> main -> Compute
+   -> Edit** and set both the minimum and maximum size to **0.25 CU**: the free 100
+   compute-hours last about 400 running hours at that size, far fewer if it scales up.
 3. On the project's **Dashboard -> Connect**, choose the default branch and database and copy
    the connection string with **"Connection pooling" switched OFF** (the direct one). It looks
    like `postgresql://USER:PASSWORD@ep-....REGION.aws.neon.tech/neondb?sslmode=require...`.
    It holds a password: paste it only into Render, never into chat, a file or git.
-4. In the Render dashboard: your service -> **Environment** -> `STATE_DB_URL` (it already
-   exists, empty, from `render.yaml`) -> paste the string -> **Save, rebuild and deploy**.
+4. In the Render dashboard: your service -> **Environment** -> `STATE_DB_URL` (add it if it
+   is not listed: `render.yaml` declares it, but Render does not always create such a variable
+   on an existing service) -> paste the string -> **Save, rebuild and deploy**.
 5. When the deploy is live, check the store (no key needed):
 
 ```powershell
@@ -426,8 +429,12 @@ $k = Read-Host "API key" -AsSecureString
 $h = @{ "X-API-Key" = [System.Net.NetworkCredential]::new("", $k).Password }
 $b = '{"question": "How many hospitals are in the data?", "proposed_by": "owner-check"}'
 $p = Invoke-RestMethod -Method Post -Uri https://governed-clinical-agent.onrender.com/v1/propose -Headers $h -ContentType application/json -Body $b
+$p.status
 $p.approval_id
 ```
+
+   `$p.status` should print `pending_approval` and `$p.approval_id` an id. If it prints
+   `completed`, the agent drafted nothing to approve: run the three lines again.
 
    Then Render dashboard -> **Manual Deploy -> Deploy latest commit**, wait until it is live,
    and run (in the same window):

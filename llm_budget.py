@@ -31,10 +31,13 @@ set.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
+
+_log = logging.getLogger("llm_budget")
 
 PROMPT_TOKENS_WORST = 4000  # the largest prompt the planner sends (scheduled_runs.py)
 DEFAULT_MAX_OUTPUT_TOKENS = 800
@@ -70,6 +73,14 @@ def worst_case_usd(planner: Any, max_attempts: int) -> float:
         fb_out = PROVIDERS[fb].get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
         worst = max(worst, per_call(rate_for(fb, PROVIDERS[fb].get("model", "")), fb_out))
     return max_attempts * CALLS_PER_ATTEMPT * worst
+
+
+class Reservation(float):
+    """What reserve() charged, and the UTC day it charged: settle() corrects
+    that day's row, so a run that straddles midnight cannot discount the next
+    day's reservations."""
+
+    day: str = ""
 
 
 class BudgetExceeded(Exception):
@@ -122,8 +133,10 @@ class _Store:
 
     def _retry(self, fn: Callable[..., Any], *args: Any) -> Any:
         """Once more after re-creating the table (it can be dropped under a
-        long-lived process, as the test suite does). A failed first attempt
-        rolled back, so a charge is never applied twice by this retry."""
+        long-lived process, as the test suite does). A first attempt whose
+        commit outcome is unknown (the connection dropped during COMMIT) may
+        have landed, so a retried charge can count twice: that only ever
+        OVERcounts, the safe direction."""
         try:
             return fn(*args)
         except Exception:
@@ -235,7 +248,8 @@ class DailyBudget:
         store = self._store()
         if store is not None:
             try:
-                refused = store.charge(self._today(), worst_usd, self.max_runs, self.max_usd)
+                day = self._today()
+                refused = store.charge(day, worst_usd, self.max_runs, self.max_usd)
             except Exception:
                 # fail closed: a run the budget cannot count does not happen
                 raise BudgetExceeded(
@@ -251,7 +265,9 @@ class DailyBudget:
                     f"daily model budget of ${self.max_usd:.2f} reached",
                     self._seconds_to_midnight(),
                 )
-            return worst_usd
+            r = Reservation(worst_usd)
+            r.day = day
+            return r
         with self._lock:
             self._roll()
             if self.runs + 1 > self.max_runs:
@@ -266,7 +282,9 @@ class DailyBudget:
                 )
             self.runs += 1
             self.usd += worst_usd
-            return worst_usd
+            r = Reservation(worst_usd)
+            r.day = self._day
+            return r
 
     def settle(self, reserved: float, actual_usd: Optional[float]) -> None:
         """Replace a reservation with what the run actually cost. A run that
@@ -274,16 +292,25 @@ class DailyBudget:
         must never undercount. (The check before the NEXT run then sees it.)"""
         if actual_usd is None or actual_usd < 0:
             return
+        day = getattr(reserved, "day", "") or self._today()
+        delta = actual_usd - reserved
         store = self._store()
         if store is not None:
-            try:
-                store.adjust(self._today(), actual_usd - reserved)
-            except Exception:  # noqa: BLE001
-                pass  # the worst case stays charged: never an undercount
+            for _ in range(2 if delta > 0 else 1):  # an overrun is worth a retry
+                try:
+                    store.adjust(day, delta)
+                    return
+                except Exception as e:  # noqa: BLE001
+                    err = e
+            # a refund lost keeps the worst case charged (an overcount); an
+            # overrun lost undercounts by the excess -- say so
+            _log.warning("llm budget: settle failed (%s), delta %.6f", type(err).__name__, delta)
             return
         with self._lock:
             self._roll()
-            self.usd = max(0.0, self.usd - reserved + actual_usd)
+            if day != self._day:
+                return  # the run's day is over: its count is gone with it
+            self.usd = max(0.0, self.usd + delta)
 
     def status(self) -> dict:
         store = self._store()

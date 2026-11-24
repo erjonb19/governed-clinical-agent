@@ -189,7 +189,7 @@ def test_the_stored_day_rolls_over_at_utc_midnight(tmp_path):
         b.reserve(0.0)
     t[0] = datetime(2026, 11, 25, 0, 0, 1, tzinfo=timezone.utc)
     b.reserve(0.0)
-    assert b.status() ["runs"] == 1
+    assert b.status()["runs"] == 1
 
 
 def test_concurrent_runs_never_pass_the_cap(tmp_path):
@@ -250,3 +250,32 @@ def test_an_unreachable_budget_store_is_503_not_429(client, monkeypatch):
     )
     assert r.status_code == 503 and "tomorrow" not in r.text
     assert r.headers["Retry-After"] == "60"
+
+
+def test_a_run_straddling_midnight_settles_against_its_own_day(tmp_path):
+    t, now = _clock(datetime(2026, 11, 24, 23, 59, 59, tzinfo=timezone.utc))
+    b = _stored(tmp_path, now, max_runs=100, max_usd=10)
+    late = b.reserve(0.5)
+    t[0] = datetime(2026, 11, 25, 0, 0, 1, tzinfo=timezone.utc)
+    b.reserve(0.5)
+    b.settle(late, 0.0)  # yesterday's run refunds yesterday, not today
+    assert b.status()["est_usd"] == pytest.approx(0.5)
+
+
+def test_a_run_straddling_midnight_in_memory(tmp_path):
+    t, now = _clock(datetime(2026, 11, 24, 23, 59, 59, tzinfo=timezone.utc))
+    b = DailyBudget(max_runs=100, max_usd=10, now=now)
+    late = b.reserve(0.5)
+    t[0] = datetime(2026, 11, 25, 0, 0, 1, tzinfo=timezone.utc)
+    b.reserve(0.5)
+    b.settle(late, 0.0)
+    assert b.status()["est_usd"] == pytest.approx(0.5)
+
+
+def test_a_dead_database_url_refuses_with_503_semantics(monkeypatch):
+    # a real connection failure, not a monkeypatched store: port 1 refuses
+    monkeypatch.setenv("STATE_DB_URL", "postgresql://u:p@127.0.0.1:1/budget_test")
+    b = DailyBudget(max_runs=5, max_usd=1)
+    with pytest.raises(BudgetExceeded) as e:
+        b.reserve(0.0)
+    assert e.value.unavailable and b.status()["runs"] == -1
