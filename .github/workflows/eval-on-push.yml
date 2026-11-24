@@ -118,6 +118,12 @@ jobs:
           EVAL_RUNS: "1"
         run: python -u eval_harness.py
 
+      # Backlog item 68: all 16 adversarial cases, no model. An authored adversary
+      # writes each attack on every attempt and the critic always approves, so
+      # the guard alone must stop each one (guard + stopping + tables, 100%).
+      - name: Adversarial gate (authored adversary, no model)
+        run: python -u scripts/adversarial_gate.py
+
       - name: Upload FHIR eval report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
