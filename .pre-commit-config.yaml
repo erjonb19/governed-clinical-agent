@@ -18,7 +18,7 @@ repos:
         types: [python]
       - id: mypy
         name: mypy (strict modules)
-        entry: mypy critic.py nightly_alerts.py
+        entry: mypy critic.py nightly_alerts.py sql_guard.py phi_guard.py
         language: system
         pass_filenames: false
         types: [python]

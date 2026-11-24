@@ -48,7 +48,7 @@ jobs:
       - name: Types (mypy, strict on the listed modules)
         run: |
           pip install mypy==2.3.1
-          mypy critic.py nightly_alerts.py
+          mypy critic.py nightly_alerts.py sql_guard.py phi_guard.py
 
       # No deselects: the ENTIRE suite runs. The six previously-deselected tests
       # were triaged and fixed -- two were real bugs in the explainer (a sensitive
