@@ -125,7 +125,8 @@ def test_request_carries_schema_prompt_and_question(planner):
                                 schema_doc=planner_mod.SCHEMA_DOC_FHIR)
     sent = stub.calls[0]
     assert "gold_patient" in sent["system"]
-    assert sent["messages"] == [{"role": "user", "content": "Which hospitals are cheapest?"}]
+    assert sent["messages"] == [{"role": "user",   # delimited (item 67)
+                                 "content": planner_mod.plan_prompt("Which hospitals are cheapest?")}]
 
 
 # --- response handling ------------------------------------------------------

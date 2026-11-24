@@ -858,6 +858,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `APPROVAL_RETENTION_DAYS` (90).
 - [x] **Redaction knows this repo's key formats** (audit item 62): Gemini, Groq, xAI,
   Anthropic, OpenAI project, Langfuse and Databricks keys are masked in redacted text.
+- [x] **Untrusted text is delimited in prompts** (audit item 67): the question, a retry's
+  rejection reason and the SQL under review sit in labelled tags the model is told are data.
 - [x] **Comments never run** (audit item 66): the guard drops every SQL comment from the
   query it approves; what it allows or refuses is unchanged.
 - [x] **Hosted traces mask comments and the critic** (audit item 64): a hosted trace
