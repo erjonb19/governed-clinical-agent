@@ -183,8 +183,12 @@ class AuditStore:
                     "SELECT seq, event_id, ts, event_type, decision, capability, principal, "
                     "payload, prev_hash, hash FROM audit_events ORDER BY seq"
                 ).fetchall()
-            except Exception:
-                rows = None  # no table yet
+            except Exception as e:
+                # only a missing table means "nothing yet"; any other error
+                # (permissions, a wrong schema) fails the check (fail closed)
+                if type(e).__name__ != "UndefinedTable" and "no such table" not in str(e):
+                    raise
+                rows = None
         out: dict[str, Any] = {"ok": True, "rows": 0, "first_bad_seq": None, "last_hash": None}
         if anchor is not None:
             out["anchor_found"] = False
@@ -288,7 +292,11 @@ def main(argv: list[str]) -> int:
     if not state_db.is_postgres():
         print("STATE_DB_URL is not a Postgres URL: no audit table to verify", file=sys.stderr)
         return 2
-    out = AuditStore().verify(anchor)
+    try:
+        out = AuditStore().verify(anchor)
+    except Exception as e:  # noqa: BLE001 -- reported, exit 1
+        print(json.dumps({"ok": False, "error": type(e).__name__}))
+        return 1
     print(json.dumps(out))
     return 0 if out["ok"] else 1
 
