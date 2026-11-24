@@ -79,9 +79,18 @@ def _fresh_postgres_state(monkeypatch):
 
     with psycopg.connect(u, autocommit=True) as con:
         con.execute(
-            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, checkpoints, "
+            "DROP TABLE IF EXISTS answer_feedback, approval_events, approvals, audit_events, checkpoints, "
             "checkpoint_blobs, checkpoint_writes, checkpoint_migrations CASCADE"
         )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_table_by_default(monkeypatch):
+    """The audit table (item 39, audit_store.py) is off in tests, except in its
+    own: its background writer must not carry one test's events into the
+    next test's database."""
+    monkeypatch.setenv("AUDIT_DB", "0")
     yield
 
 
