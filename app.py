@@ -68,6 +68,7 @@ import schema_check
 import tracing
 import versioning
 from src.runtime import request_context
+import user_keys
 from src.runtime.audit_logger import AuditLogger
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, DECISIONS)
@@ -186,13 +187,64 @@ def _client_address(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# Backlog item 22: the least role each route needs. A route that is not here
+# needs admin (fail closed); tests/integration/test_user_keys.py checks that
+# every route is either public or listed. Roles: user_keys.ROLES.
+ROUTE_ROLES: dict[tuple[str, str], str] = {
+    ("GET", "/auth-check"): "viewer",
+    ("GET", "/findings"): "viewer",
+    ("GET", "/schema"): "viewer",
+    ("POST", "/query"): "analyst",
+    ("POST", "/raw-sql"): "analyst",
+    ("POST", "/feedback"): "analyst",
+    ("POST", "/propose"): "analyst",
+    ("GET", "/approvals"): "reviewer",
+    ("GET", "/approvals/{approval_id}"): "reviewer",
+    ("POST", "/approvals/{approval_id}"): "reviewer",
+    # every user's questions and spend: admin only (no per-user filtering yet)
+    ("GET", "/traces"): "admin",
+    ("GET", "/traces/{trace_id}"): "admin",
+    ("GET", "/metrics"): "admin",
+}
+
+
+def _acting_as(request: Request, typed: Optional[str]) -> Optional[str]:
+    """The proposer or reviewer: a user key's own user (whatever the body says,
+    item 22), else the typed name (the owner's API_KEY: "self-asserted")."""
+    ident = getattr(request.state, "identity", None)
+    if ident is not None and ident.source == "key":
+        return ident.user
+    return typed
+
+
+def _needed_role(request: Request) -> str:
+    route = request.scope.get("route")
+    return ROUTE_ROLES.get((request.method, getattr(route, "path", "")), "admin")
+
+
 def require_api_key(
     request: Request, provided: Optional[str] = Security(_api_key_header)
-) -> None:
+) -> "user_keys.Identity":
+    """Who is calling (item 22), refusing a missing, wrong or revoked key (401)
+    and a key whose role is below the route's (403)."""
     if not API_KEY:
-        return  # dev mode: no key configured, allow (see /health auth_enabled)
+        # dev mode: no key configured, allow (see /health auth_enabled)
+        ident = user_keys.Identity(user="dev", role="admin", key_id="", source="dev")
+        request.state.identity = ident
+        return ident
     client = _client_address(request)
-    ok = provided is not None and hmac.compare_digest(provided, API_KEY)
+    ident: Optional[user_keys.Identity] = None
+    if provided is not None and hmac.compare_digest(provided, API_KEY):
+        ident = user_keys.Identity(user="owner", role="admin", key_id="", source="owner-key")
+    elif user_keys.looks_like_user_key(provided):
+        try:
+            store = _STATE.get("key_store")
+            if store is None:
+                store = _STATE["key_store"] = user_keys.KeyStore()
+            ident = store.lookup(provided)
+        except Exception:  # noqa: BLE001 -- the store is down: refuse, never allow
+            raise HTTPException(status_code=503, detail="key store unavailable; try again shortly")
+    ok = ident is not None
     # Backlog item 35: every refused key is counted and audited per client.
     # With AUTH_FAILURE_LOCKOUT on, a client over the limit gets 429 for every
     # request until its window ends; off (the default, see auth_failures.py)
@@ -205,13 +257,23 @@ def require_api_key(
             detail="too many failed API key attempts; try again later",
             headers={"Retry-After": str(auth_failures.FAILURES.retry_after(client))},
         )
-    if ok:
-        return
-    auth_failures.FAILURES.record(client, request.url.path, "api")
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="invalid or missing API key (send header X-API-Key)",
-    )
+    if ident is None:
+        auth_failures.FAILURES.record(client, request.url.path, "api")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or missing API key (send header X-API-Key)",
+        )
+    if ident.source == "key":
+        # every audit event of this request names the user, not a fingerprint
+        request_context.set_principal(f"user:{ident.user}:{ident.key_id}")
+    needed = _needed_role(request)
+    if not ident.allows(needed):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"this key's role ({ident.role}) cannot use this endpoint (needs {needed})",
+        )
+    request.state.identity = ident
+    return ident
 
 # Deny by default (backlog item 54): every route needs the key unless it is on
 # this list. A new route is private until someone adds it here on purpose;
@@ -779,7 +841,8 @@ class DecisionRequest(_StrictRequest):
     """A reviewer's verdict on a pending proposal."""
     decision: str = Field(..., max_length=MAX_NAME_CHARS, examples=["approve"],
                           description="approve | reject | escalate | approve_with_edits")
-    decided_by: str = Field(..., max_length=MAX_NAME_CHARS, examples=["e.brucaj"])
+    # with a per-user key the key's user decides, whatever this says (item 22)
+    decided_by: Optional[str] = Field(None, max_length=MAX_NAME_CHARS, examples=["a.reviewer"])
     reason: Optional[str] = Field(None, max_length=MAX_TEXT_CHARS)
     edited_proposal: Optional[str] = Field(
         None, max_length=MAX_TEXT_CHARS,
@@ -1429,7 +1492,7 @@ def propose(request: Request, req: ProposeRequest) -> dict:
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
     with _run_slot(), _model_budget(getattr(agent, "planner", None) or _STATE.get("planner")), \
             _APPROVAL_LOCK:
-        return agent.start(req.question, proposed_by=req.proposed_by)   # its cost is not reported: it keeps the worst case
+        return agent.start(req.question, proposed_by=_acting_as(request, req.proposed_by))   # its cost is not reported: it keeps the worst case
 
 
 @app.get("/approvals", response_model=ApprovalQueueResponse, dependencies=[Depends(require_api_key)])
@@ -1482,10 +1545,12 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
                             detail=f"approvals unavailable: {_STATE.get('approval_error')}")
     try:
         with _APPROVAL_LOCK:
+            ident = getattr(request.state, "identity", None)
             return agent.resume(
                 thread_id=item["thread_id"], decision=req.decision,
-                decided_by=req.decided_by, reason=req.reason,
-                edited_proposal=req.edited_proposal, escalated_to=req.escalated_to)
+                decided_by=_acting_as(request, req.decided_by), reason=req.reason,
+                edited_proposal=req.edited_proposal, escalated_to=req.escalated_to,
+                identity="key" if ident is not None and ident.source == "key" else None)
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 

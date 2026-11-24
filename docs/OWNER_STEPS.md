@@ -381,3 +381,51 @@ Thank you.
 
    Then tell the agent "step 13 done".
 
+---
+
+## [ ] 15. Make per-user keys (backlog item 22; after step 14)
+
+**Why:** until now everyone used the one `API_KEY`, so a reviewer was only a typed name. A
+per-user key carries a person and a role (viewer, analyst, reviewer, admin): the API refuses
+what the role may not do, the key's user is recorded as the proposer or reviewer whatever is
+typed, and every audit event names the user. Keys live in the Neon database from step 14, so
+they survive redeploys. The deploy's `API_KEY` keeps working as your admin key.
+
+Keys are made from your laptop, in the repo folder, against the Neon database. The full key is
+printed **once**; only its hash is stored. Give each person their own key, never in a public
+place.
+
+1. Load the Neon connection string for this window only (not shown, not saved):
+
+```powershell
+$s = Read-Host "Neon direct connection string" -AsSecureString
+$env:STATE_DB_URL = [System.Net.NetworkCredential]::new("", $s).Password
+```
+
+2. Make keys (names: letters, digits and `. _ @ -`; roles: viewer, analyst, reviewer, admin):
+
+```powershell
+python user_keys.py create reviewer.one reviewer
+python user_keys.py create analyst.one analyst
+python user_keys.py list
+```
+
+3. Check one works (paste the printed key when asked):
+
+```powershell
+$k = Read-Host "a reviewer key" -AsSecureString
+$h = @{ "X-API-Key" = [System.Net.NetworkCredential]::new("", $k).Password }
+(Invoke-WebRequest -Uri https://governed-clinical-agent.onrender.com/v1/approvals -Headers $h -UseBasicParsing).StatusCode
+```
+
+   It should print `200`. A viewer key gets `403` there.
+
+4. Clear the window's copy of the connection string:
+
+```powershell
+Remove-Item Env:STATE_DB_URL
+```
+
+To take a key away: `python user_keys.py revoke <key_id>` (refused on the next request). To
+replace one: `python user_keys.py rotate <key_id>`. Then tell the agent "step 15 done".
+

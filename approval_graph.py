@@ -371,7 +371,7 @@ class GovernedApprovalAgent:
 
     def resume(self, thread_id: str, decision: str, decided_by: str,
                reason: str | None = None, edited_proposal: str | None = None,
-               escalated_to: str | None = None) -> dict:
+               escalated_to: str | None = None, identity: str | None = None) -> dict:
         """Record the decision and, if it is terminal, RESUME the paused graph.
 
         ESCALATION DOES NOT RESUME. Resuming consumes the interrupt: the graph
@@ -389,7 +389,7 @@ class GovernedApprovalAgent:
             raise KeyError(f"no pending approval for thread {thread_id}")
         record = self.store.decide(approval_id, decision, decided_by,
                                    reason=reason, edited_proposal=edited_proposal,
-                                   escalated_to=escalated_to)
+                                   escalated_to=escalated_to, identity=identity)
 
         with self.tracer.attach(thread_id):
             self.tracer.event("approval.decision", approval_id=approval_id,
