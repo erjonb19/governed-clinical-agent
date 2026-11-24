@@ -67,7 +67,7 @@ def data_vintage() -> str:
 # A retry prompt carries the previous attempt's failure (agent_graph._plan,
 # approval_graph._plan). Never cached: a repeated failure would hand back the
 # same failed SQL instead of letting the model correct itself.
-RETRY_MARKERS = ("Your previous SQL attempt was REJECTED", "Your previous SQL was REJECTED")
+RETRY_MARKERS = ("Your previous SQL attempt was REJECTED",)  # nl_to_sql_planner.plan_prompt
 
 
 def cacheable(role: str, user: str, text: str) -> bool:

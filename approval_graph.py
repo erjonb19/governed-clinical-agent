@@ -49,7 +49,7 @@ import critic
 import tracing
 from src.runtime.agent_runtime import AgentRuntime
 from analytics_query_tool import AnalyticsQueryTool
-from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC
+from nl_to_sql_planner import NLToSQLPlanner, SCHEMA_DOC, plan_prompt
 import schema_check
 from approval import (ApprovalStore, APPROVE, REJECT, ESCALATE,
                       APPROVE_WITH_EDITS, EXECUTES, TERMINAL)
@@ -139,10 +139,7 @@ class GovernedApprovalAgent:
 
     def _plan(self, state: ApprovalState) -> dict:
         attempt = state.get("attempts", 0) + 1
-        prompt = state["question"]
-        if state.get("last_error"):
-            prompt = (f"{state['question']}\n\nYour previous SQL was REJECTED:\n"
-                      f"{state['last_error']}\n\nWrite a corrected query.")
+        prompt = plan_prompt(state["question"], state.get("last_error"))  # item 67
         with self._traced(state), self.tracer.span(
                 "plan", attempt=attempt, retry_context=bool(state.get("last_error"))) as sp:
             sql, m = self.planner.generate_sql_with_metrics(prompt)

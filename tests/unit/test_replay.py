@@ -52,14 +52,15 @@ def test_without_record_mode_a_source_is_never_called(tmp_path):
 
 
 def test_the_planner_replays_plan_and_critic_calls(tmp_path, monkeypatch):
-    from nl_to_sql_planner import SYSTEM_PROMPT, build_critic_prompt, SCHEMA_DOC
+    from nl_to_sql_planner import SYSTEM_PROMPT, build_critic_prompt, SCHEMA_DOC, delimit, plan_prompt
     path = tmp_path / "llm.json"
     entries = {
-        replay.request_key("plan", SYSTEM_PROMPT, "how many?"):
+        replay.request_key("plan", SYSTEM_PROMPT, plan_prompt("how many?")):
             {"role": "plan", "user": "how many?", "text": "```sql\nSELECT 1;\n```",
              "prompt_tokens": 900, "completion_tokens": 12, "model": "recorded"},
         replay.request_key("critic", build_critic_prompt(SCHEMA_DOC),
-                           "Question:\nhow many?\n\nProposed SQL:\nSELECT 1"):
+                           delimit("question", "how many?") + "\n\n"
+                           + delimit("proposed_sql", "SELECT 1")):
             {"role": "critic", "user": "", "text": '{"verdict": "approve", "reason": "ok"}',
              "prompt_tokens": 950, "completion_tokens": 20, "model": "recorded"},
     }
