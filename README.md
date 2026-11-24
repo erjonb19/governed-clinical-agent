@@ -337,7 +337,7 @@ Every run above is committed under `eval_runs/`:
 `eval_single_hospital_20261030T141101Z.json` (FHIR the same day:
 `eval_single_fhir_20261030T141840Z.json`, 72/72 completed runs correct).
 
-**Scoring the whole path, and thirteen adversarial cases.** `--trajectory` runs every
+**Scoring the whole path, and sixteen adversarial cases.** `--trajectory` runs every
 case through the self-correcting graph and scores the run, not just its rows
 (`trajectory_eval.py`, deterministic, no LLM judge):
 
@@ -858,6 +858,11 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   `APPROVAL_RETENTION_DAYS` (90).
 - [x] **Redaction knows this repo's key formats** (audit item 62): Gemini, Groq, xAI,
   Anthropic, OpenAI project, Langfuse and Databricks keys are masked in redacted text.
+- [x] **Adversarial gate on every push** (audit item 68): `scripts/adversarial_gate.py` runs all
+  16 adversarial cases (prompt injection, PHI exfiltration, allowlist bypass, file read, ATTACH,
+  URL) with no model: the attack is written on every attempt and the critic always approves, so
+  `sql_guard` itself must refuse every attempt (the database refusing does not count). A test
+  shows it fails, naming every case, when the guard lets everything through.
 - [x] **Untrusted text is delimited in prompts** (audit item 67): the question, a retry's
   rejection reason and the SQL under review sit in labelled tags the model is told are data.
 - [x] **Comments never run** (audit item 66): the guard drops every SQL comment from the
