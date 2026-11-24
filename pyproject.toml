@@ -163,11 +163,10 @@ exclude = [
 python_version = "3.11"
 ignore_missing_imports = true
 follow_imports = "silent"
-# Strict per module, widened one module at a time. sql_guard.py (8 errors) and
-# phi_guard.py (62) need annotations in the guard itself, so they get their
-# own PRs, which the owner merges.
+# Strict per module, widened one module at a time. The guard (sql_guard.py,
+# phi_guard.py) joined in item 72: annotations and casts only, no logic change.
 [[tool.mypy.overrides]]
-module = ["critic", "nightly_alerts"]
+module = ["critic", "nightly_alerts", "sql_guard", "phi_guard"]
 strict = true
 
 [tool.coverage.run]

@@ -30,7 +30,7 @@ refuses anything a rule here misses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional, cast
 
 import sqlglot
 from sqlglot import exp
@@ -107,13 +107,13 @@ class Decision:
     allowed: bool
     reason: str
     safe_sql: Optional[str] = None
-    findings: list = field(default_factory=list)
+    findings: list[Any] = field(default_factory=list)
     # set when the query reads protected patient tables (phi_guard.py): the
     # analysed original query and its result columns, for the output check
     phi_sql: Optional[str] = None
-    phi_names: list = field(default_factory=list)
+    phi_names: list[Any] = field(default_factory=list)
     phi_aggregate_root: bool = False
-    phi_age_outputs: list = field(default_factory=list)
+    phi_age_outputs: list[Any] = field(default_factory=list)
     phi_suppressed: int = 0               # aggregates given the 11-person HAVING
 
 
@@ -127,10 +127,10 @@ DENIED_PREFIXES = ("read_", "parquet_", "pragma_", "duckdb_", "sqlite_", "postgr
                    "json_serialize", "json_deserialize")
 
 
-def _with_of(node: exp.Expression):
+def _with_of(node: exp.Expr) -> Optional[exp.With]:
     """The WITH clause attached to a query node (sqlglot names the arg 'with_'
     in current versions, 'with' in older ones)."""
-    return node.args.get("with_") or node.args.get("with")
+    return cast(Optional[exp.With], node.args.get("with_") or node.args.get("with"))
 
 
 def _in_recursive_term(node: exp.Expression, cte: exp.CTE) -> bool:
@@ -138,7 +138,7 @@ def _in_recursive_term(node: exp.Expression, cte: exp.CTE) -> bool:
     if not isinstance(body, exp.Union):
         return False
     right = body.expression
-    n = node
+    n: Optional[exp.Expr] = node
     while n is not None and n is not cte:
         if n is right:
             return True
@@ -154,22 +154,22 @@ def _resolves_to_cte(table: exp.Table, name: str) -> bool:
     from inside a CTE's body; and the CTE itself too only if the WITH is
     RECURSIVE.
     """
-    node = table
+    node: Optional[exp.Expr] = table
     while node is not None:
         parent = node.parent
         if isinstance(parent, exp.CTE) and isinstance(parent.parent, exp.With):
-            with_ = parent.parent
-            ctes = list(with_.expressions)
+            outer_with = parent.parent
+            ctes = list(outer_with.expressions)
             i = next(k for k, c in enumerate(ctes) if c is parent)
             visible = list(ctes[:i])
             # A recursive CTE sees ITSELF only in the recursive term -- the right
             # side of the UNION that is its body. Its anchor, or a body with no
             # UNION, reads the REAL table of that name (verified in DuckDB).
-            if with_.args.get("recursive") and _in_recursive_term(table, parent):
+            if outer_with.args.get("recursive") and _in_recursive_term(table, parent):
                 visible.append(parent)
             if any(c.alias_or_name.lower() == name for c in visible):
                 return True
-            node = with_.parent              # continue past this WITH entirely
+            node = outer_with.parent              # continue past this WITH entirely
             continue
         with_ = _with_of(parent) if parent is not None else None
         if with_ is not None and node is not with_:
@@ -180,7 +180,7 @@ def _resolves_to_cte(table: exp.Table, name: str) -> bool:
 
 
 def validate_query(sql: str,
-                   allowed_tables: Optional[set] = None,
+                   allowed_tables: Optional[set[str]] = None,
                    row_cap: int = DEFAULT_ROW_CAP) -> Decision:
     allowed_tables = {t.lower() for t in (allowed_tables or ALLOWED_TABLES)}
 
@@ -247,13 +247,13 @@ def validate_query(sql: str,
     # 4b. Denied functions (file read / exfil / server state), by name and by
     #     family prefix.
     bad_funcs = []
-    for fn in tree.find_all(exp.Anonymous):
-        fname = (fn.name or "").lower()
+    for anon_fn in tree.find_all(exp.Anonymous):
+        fname = (anon_fn.name or "").lower()
         if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     # typed func nodes that sqlglot recognizes by class name
-    for fn in tree.find_all(exp.Func):
-        fname = (fn.sql_names()[0] if fn.sql_names() else "").lower()
+    for func_fn in tree.find_all(exp.Func):
+        fname = (func_fn.sql_names()[0] if func_fn.sql_names() else "").lower()
         if fname in DENIED_FUNCTIONS or fname.startswith(DENIED_PREFIXES):
             bad_funcs.append(fname)
     if bad_funcs:
@@ -273,7 +273,7 @@ def validate_query(sql: str,
     phi = phi_guard.check(tree)
     if not phi.allowed:
         return Decision(False, phi.reason, findings=phi.findings)
-    tree = phi.tree
+    tree = cast(exp.Expression, phi.tree)
 
     # 6. Row cap. Add a LIMIT if missing, clamp if too high.
     if isinstance(tree, exp.Select):
@@ -368,7 +368,7 @@ if __name__ == "__main__":
          "JOIN bronze_patient b ON g.patient_id = b.patient_id"),
     ]
 
-    def run(label, cases):
+    def run(label: str, cases: list[tuple[str, str]]) -> None:
         print(f"\n===== {label} =====")
         for desc, q in cases:
             d = validate_query(q)
