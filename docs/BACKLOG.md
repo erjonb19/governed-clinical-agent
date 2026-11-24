@@ -36,8 +36,11 @@ The original order (2026-11-08), kept for its remaining steps:
 9. **27** (one-page architecture and a recorded walkthrough) last.
 
 **Waiting on the owner**, built as soon as they are unblocked: **9** (the owner approves the
-written UI plan first), **10** (Databricks secrets), **12** (the Render variables for
-Langfuse), **26** (the data intake platform's Stage 22).
+written UI plan first), **10** (Databricks secrets: waits for a new Databricks token after
+2026-11-25, owner 2026-11-24), **26** (the data intake platform's Stage 22). **12** is skipped
+(owner, 2026-11-24).
+
+**Owner, 2026-11-24:** item 19 approved on a free hosted Postgres, then 19, 39 and 22 built on it.
 
 **Rules for the new items (15 to 27), owner 2026-11-08:**
 - Anything marked **(ask)** waits for the owner: a new account or hosted service, anything
@@ -120,6 +123,7 @@ Langfuse), **26** (the data intake platform's Stage 22).
   - Done when: one monthly (or dispatched) run publishes, the parity subset passes on both backends, and a mismatch turns the run red.
   - Today: verified once by hand; `scripts/publish_gold_to_databricks.py` is manual and no workflow touches Databricks, so Delta goes stale after each refresh.
   - Needs: the owner adds `DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`, `DATABRICKS_CATALOG` and `DATABRICKS_SCHEMA` as repository secrets. $0 (Free Edition plus GitHub Actions).
+  - **Waiting (owner, 2026-11-24):** a new Databricks token after 2026-11-25; then the owner adds the five secrets.
 
 - [x] **11. The manual FHIR eval compares against main instead of requiring every case to pass** (owner, 2026-11-06; don't change it before then).
   - Done when: `eval-fhir-manual.yml` scores the chosen branch and `main` in the same workflow, and passes only if the branch's accuracy over completed runs is at least `main`'s (and still fails on an inconclusive run); the report shows both scores side by side.
@@ -136,6 +140,7 @@ Langfuse), **26** (the data intake platform's Stage 22).
 - [ ] **12. Send the deployed app's traces to a free hosted backend** (owner, 2026-11-06), instead of running Phoenix on Render. Phoenix Cloud's free tier, falling back to Langfuse Cloud Hobby if Phoenix Cloud doesn't fit. Keep the SQLite traces as they are.
   - Done when: with the owner's two Render environment variables set, a question asked on the deploy appears in the hosted backend with its steps; the SQLite traces and Traces view are unchanged; a test shows a down, refusing or hanging backend never breaks or slows a request; what can leave the server is documented and pinned.
   - Status (2026-11-07): code, tests and setup steps in PR #55 (US region). **Phoenix Cloud no longer appears in Arize's docs** (self-hosting only; the hosted product is Arize AX, free tier 25k spans / 15 days), so Langfuse Cloud Hobby (50k units / month, 30 days, no card) is used. Owner's decision 2026-11-07: the hosted export drops the approval reason and reviewer/escalation identities and masks SQL literals; the question was to go "after the existing PHI redaction", but no free-text PHI redactor exists, so it is withheld (hash only) until the owner decides whether to build one. Remaining: the owner adds `TRACE_OTLP_ENDPOINT` and `TRACE_OTLP_HEADERS` in Render, then one live trace is checked.
+  - **Skipped (owner, 2026-11-24).** No hosted tracing for now; the code from #55 stays (off unless `TRACE_OTLP_ENDPOINT` is set), and the SQLite traces and Traces view are unchanged.
 
 - [x] **13. Push gate on replayed answers, plus a small live Groq check; nightly stays on Gemini** (owner, 2026-11-07; **rewritten by the owner 2026-11-08**). Pushes and the nightly share one Gemini free daily quota; on 2026-11-06 the nightly found it spent and ended inconclusive.
   - **Owner's decision (2026-11-08), replacing the Groq-only plan below:** running the full push gate live on Groq is a poor fit (5-8 pushes a day, ~6 minutes each, and one Groq organisation's 200K tokens/day shared with the Render fallback, which matters more). Instead:

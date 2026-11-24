@@ -14,8 +14,16 @@
 #
 # The branch's own code runs with the Gemini secret, so only dispatch branches
 # you trust (only collaborators can dispatch at all).
+#
+# Every run is dispatched FROM main (the workflow file lives there), so GitHub
+# lists it under branch "main" whatever it compares. The scheduled daily runs
+# are the agent's branch comparisons for open guard/prompt PRs, not main
+# against main: run-name below puts the compared ref in the title, and a red run
+# means "that branch scored below main", never "main is broken" (owner,
+# 2026-11-24).
 
 name: eval (FHIR, manual, any branch)
+run-name: "FHIR eval on ${{ inputs.ref }}${{ inputs.compare_main && ' vs main' || '' }}"
 
 on:
   workflow_dispatch:
