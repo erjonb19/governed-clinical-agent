@@ -861,8 +861,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 - [x] **Adversarial gate on every push** (audit item 68): `scripts/adversarial_gate.py` runs all
   16 adversarial cases (prompt injection, PHI exfiltration, allowlist bypass, file read, ATTACH,
   URL) with no model: the attack is written on every attempt and the critic always approves, so
-  the guard alone must stop each one. A test shows it fails when the guard is made to allow
-  everything.
+  `sql_guard` itself must refuse every attempt (the database refusing does not count). A test
+  shows it fails, naming every case, when the guard lets everything through.
 - [x] **Untrusted text is delimited in prompts** (audit item 67): the question, a retry's
   rejection reason and the SQL under review sit in labelled tags the model is told are data.
 - [x] **Comments never run** (audit item 66): the guard drops every SQL comment from the

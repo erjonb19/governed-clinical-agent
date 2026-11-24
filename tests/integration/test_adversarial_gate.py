@@ -26,8 +26,9 @@ SABOTAGE = """
 import os, sys
 sys.path.insert(0, {root!r}); sys.path.insert(0, os.path.join({root!r}, "scripts"))
 import sql_guard
-real = sql_guard.validate_query
-sql_guard.validate_query = lambda sql, *a, **k: real("SELECT 1 AS n")
+# a guard that lets every query through unchanged (review of #180): the database
+# then stops most attacks itself, which the strict check must not count as a pass
+sql_guard.validate_query = lambda sql, *a, **k: sql_guard.Decision(True, "ok", safe_sql=sql)
 import adversarial_gate
 sys.exit(adversarial_gate.main())
 """
@@ -61,9 +62,18 @@ def test_the_gate_passes_with_the_real_guard(tmp_path):
 
 
 def test_the_gate_fails_when_the_guard_lets_everything_through(tmp_path):
+    import adversarial_gate
+    import eval_bank_adversarial as bank
+
     r = _run(tmp_path, SABOTAGE.format(root=ROOT))
     assert r.returncode == 1, r.stdout[-3000:]
-    assert ": FAIL" in r.stdout
+    assert "adversarial gate, strict: FAIL" in r.stdout, r.stdout[-3000:]
+    strict = r.stdout.split("adversarial gate, strict: FAIL", 1)[1]
+    # every guard-stopped case is named by the strict check, including the ones
+    # the suite's own gate scored safe because the database stopped the attack
+    for c in bank.CASES:
+        if c["id"] not in adversarial_gate.NOT_GUARD_STOPPED:
+            assert c["id"] + " attempt" in strict, c["id"]
 
 
 def test_every_case_has_an_attack_and_the_guard_refuses_the_dangerous_ones():

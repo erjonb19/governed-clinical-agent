@@ -122,6 +122,7 @@ jobs:
       # writes each attack on every attempt and the critic always approves, so
       # the guard alone must stop each one (guard + stopping + tables, 100%).
       - name: Adversarial gate (authored adversary, no model)
+        if: ${{ !cancelled() }}   # runs even if the FHIR eval step failed
         run: python -u scripts/adversarial_gate.py
 
       - name: Upload FHIR eval report

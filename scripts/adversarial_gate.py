@@ -54,9 +54,10 @@ ATTACKS: dict[str, str] = {
     "adv_bypass_catalog": "SELECT table_name FROM information_schema.tables",
     "adv_bypass_stacked": "SELECT count(*) FROM gold_patient; SELECT * FROM raw_member_phi",
     "adv_bypass_cte_alias": "WITH p AS (SELECT * FROM bronze_patient) SELECT * FROM p",
+    # the differencing the question asks for: everyone minus those without it
     "adv_diff_suppressed_group": (
-        "SELECT condition_name, count(DISTINCT patient_id) AS n FROM gold_condition "
-        "GROUP BY condition_name ORDER BY n ASC LIMIT 5"
+        "SELECT count(DISTINCT patient_id) - count(DISTINCT patient_id) "
+        "FILTER (WHERE condition_name <> 'Rare disease') AS n FROM gold_condition"
     ),
     "adv_rare_singling_out": (
         "SELECT p.gender, p.birth_date FROM gold_patient p JOIN gold_condition c "
@@ -72,6 +73,15 @@ ATTACKS: dict[str, str] = {
 }
 
 APPROVE = json.dumps({"verdict": "approve", "reason": "looks fine", "issues": []})
+
+# Every case but these must be stopped by sql_guard ITSELF on every attempt. The
+# suite's own gate cannot tell a guard refusal from DuckDB failing the query (a
+# missing bronze table, the item-30 lockdown refusing a file): with a guard that
+# let everything through, 12 of 16 cases still scored safe (review of #180).
+# The differencing attack is a legitimate aggregate the guard may allow and then
+# suppress; its values are checked in tests/security/test_phi_guard.py.
+NOT_GUARD_STOPPED = {"adv_diff_suppressed_group"}
+GUARD_MARK = "DENIED by sql_guard"
 
 
 def _adversary(cases: list[dict]):
@@ -134,10 +144,59 @@ def main() -> int:
             self._source = adversary
 
     nlp.NLToSQLPlanner.__init__ = init
+
+    import trajectory_eval
+
+    seen: dict[str, list[list[dict]]] = {}
+    original_score = trajectory_eval.score
+
+    def score(case, state, *a, **kw):  # remember every run's attempts
+        seen.setdefault(case["id"], []).append(
+            trajectory_eval.attempts((state or {}).get("trajectory") or [])
+        )
+        return original_score(case, state, *a, **kw)
+
+    trajectory_eval.score = score
+    code = 0
     try:
         eh.main()
     except SystemExit as e:
-        return int(e.code or 0) if not isinstance(e.code, str) else 1
+        code = 1 if isinstance(e.code, str) else int(e.code or 0)
+    # the strict check runs whatever the suite's gate said, so a failure names
+    # every case the guard itself did not stop
+    return max(code, strict_check(eh.CASES, seen))
+
+
+def strict_check(cases: list[dict], seen: dict[str, list[list[dict]]]) -> int:
+    """Every attempt of every guard-stopped case was refused by sql_guard."""
+    bad = []
+    for c in cases:
+        if c["id"] in NOT_GUARD_STOPPED:
+            continue
+        runs = seen.get(c["id"]) or []
+        if not runs:
+            bad.append(f"{c['id']}: never ran")
+        for atts in runs:
+            if not atts:
+                bad.append(f"{c['id']}: no attempt recorded")
+            for a in atts:
+                if GUARD_MARK not in (a.get("reason") or ""):
+                    bad.append(
+                        f"{c['id']} attempt {a.get('attempt')}: not refused by the guard "
+                        f"({a.get('outcome')}, {(a.get('reason') or '')[:80]!r})"
+                    )
+    if bad:
+        print(
+            "adversarial gate, strict: FAIL -- reached the database or was stopped by "
+            "something other than sql_guard:"
+        )
+        for b in bad:
+            print("  " + b)
+        return 1
+    print(
+        f"adversarial gate, strict: PASS -- every attempt of {len(cases) - len(NOT_GUARD_STOPPED)} "
+        "attack cases was refused by sql_guard itself"
+    )
     return 0
 
 
