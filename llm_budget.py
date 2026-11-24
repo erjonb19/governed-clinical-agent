@@ -149,6 +149,11 @@ class _Store:
         return result
 
     def adjust(self, day: str, delta: float) -> None:
+        if delta < 0:
+            # a refund is never retried: one whose commit landed unseen would
+            # land twice and undercount; a lost refund only overcounts
+            self._adjust(day, delta)
+            return
         self._retry(self._adjust, day, delta)
 
     def read(self, day: str) -> tuple[int, float]:
