@@ -557,10 +557,10 @@ that names it.
 
 ## CI
 
-Fifteen GitHub Actions workflows:
+Sixteen GitHub Actions workflows:
 
 - **The wake-up page** (`pages.yml`, backlog item 9): on a push to `main` that touches `site/`, publishes the static GitHub Pages page that says the free-plan service may be waking up and opens it once it answers. No secrets; it needs Pages set to deploy from GitHub Actions (owner step 6 in `docs/OWNER_STEPS.md`).
-- **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py` and `nightly_alerts.py` (the guard modules come next, in PRs the owner merges), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
+- **Tests on every push to any branch, every PR, and nightly** (`tests.yml`) — the full unit / integration / adversarial-security suite, no deselects, plus the guard tests from a clean `pip install -e ".[dev]"`. No API keys needed; only the opt-in `network` marker is skipped. **Code quality gates** in the same job (backlog item 15, config in `pyproject.toml`, each at today's level and only ratcheting up): `ruff check` (syntax errors and undefined names today; unused imports next), `ruff format --check` on every Python file except a shrinking list of files that predate the gate, `mypy` strict on `critic.py`, `nightly_alerts.py` and the guard itself (`sql_guard.py`, `phi_guard.py`, item 72), and a **coverage floor of 67%** of the app code (measured 68.8% on 2026-11-09). A lint error, a type error in a strict module or coverage under the floor turns the push red. The same checks run locally before each commit with `pre-commit install` (`.pre-commit-config.yaml`).
 - **Quick eval gate on every push to any branch** (`eval-on-push.yml`, backlog item 13). Which gate tests what:
   - **Hospital 6-case and FHIR 13-case subsets, on replayed answers** (`PLANNER_PROVIDER=replay`, `tests/evals/recordings/push_gate.json`). No model is called, so they cost no tokens and none of Gemini's daily quota. They run the real harness, guard, Gold and scoring, so a broken guard, schema note, harness or Gold turns them red. The recorded answers are each case's reference SQL (marked `"authored"`), so these gates **do not measure a model**.
   - **A prompt, schema note or question changed without re-recording fails the push** (a `REPLAY MISS`, and `tests/unit/test_push_gate_recordings.py` in pytest). Fix: `python scripts/record_push_gate.py` in the same PR (`--live groq` records a real model instead).
@@ -589,8 +589,8 @@ Fifteen GitHub Actions workflows:
 - **Weekly standing questions** (`scheduled-runs.yml`) — runs `schedules.yaml` through the graph, checks each answer against ground truth and against last week's, and opens an issue on `failed` or `drift` (see [Runs, traces and schedules](#runs-traces-and-schedules)).
 - **API + UI end to end on every push** (`e2e.yml`) — a real server and Chromium (Playwright) on **recorded** LLM responses (`PLANNER_PROVIDER=replay` with `ALLOW_REPLAY=1`, `replay.py`; without that opt-in the provider refuses to start, so a deploy cannot run on it by accident): ask a question and open its trace (plan, critic, guard, execute), a guard denial that names the rule with its retries traced, an approval committed under a reviewer's name, an escalation that stays pending, and the API's 401 and `/traces`. A request with no recording fails the job; nothing reaches a provider, $0. Re-recording: `tests/e2e/README.md`.
 - **MCP end to end on every push** (`mcp-e2e.yml`) — a real MCP client connects over stdio, standalone Streamable HTTP and `/mcp` in the API; on each it lists tools, runs one allowed and one blocked query, and over HTTP checks the 401 and both key headers. No LLM, $0.
-- **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it.
 - **Nightly security alerts** (`security-alerts.yml`, backlog item 59) — at 23:30 UTC, `security_alerts.py` reads `/v1/metrics` on the deploy with the repo secret `ALERT_API_KEY` and opens one `security-alert` issue per kind: a client over the failed-key limit in the current 5-minute window, or 50+ refused keys since the service last started; and model runs or estimated spend at 80% of the day's caps. A quiet night closes it. It is a coarse check, not monitoring: the counters live in memory, so a restart (Render free sleeps when idle) resets them and an attack between restarts can go unseen. Without the secret it warns and does nothing (`docs/OWNER_STEPS.md` step 10). Standard library only.
+- **Workflow audit** (`zizmor.yml`) — on every change under `.github/workflows/`, `zizmor` (a pinned, hash-checked release) audits the workflows for template injection, persisted checkout credentials, unpinned actions and over-broad permissions, after a self-test that it still catches a planted injection. Every checkout sets `persist-credentials: false` except the data refresh, which pushes its branch.
 - **Nightly live check** (`live-check.yml`) — `live_check.py` loads `/health` and `/ui` on the Render deploy in headless Chromium, with no API key ($0). Pass means HTTP 200, the app shell renders and the console is free of errors. Render's free tier sleeps, so it retries (3 attempts, 90s each) and only an all-attempts failure opens an issue (label `live-check`; an open one gets a comment, never a duplicate). The next pass closes it. Then `deploy_lag.py` checks that the deploy serves main's head (the `git_commit` in `/v1/health`): when main has moved more than 60 minutes ago and the deploy has not followed, it opens one `deploy-lag` issue, which closes once the deploy catches up.
 - **Monthly data refresh** (`data-refresh.yml`) — re-fetches the CMS sources, rebuilds the hospital Gold, **validates it with the eval gate before committing**, and stamps `medallion/REFRESH.json`. A regression (exit 1) blocks the commit; a provider outage (exit 2) does not.
 
@@ -716,6 +716,12 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **Strict types on the guard** (backlog item 72): `sql_guard.py` and `phi_guard.py` pass
+  `mypy --strict` in CI, with annotations and casts only; the same 983 test and eval queries get
+  identical guard decisions before and after.
+- [x] **Workflow audit and supply-chain gaps closed** (audit item 69): `zizmor` checks every
+  workflow change, checkouts drop their token, Dependabot opens security fixes, and an
+  `AGENT_DISABLED=1` kill switch stops the agent endpoints.
 - [x] **Feedback on answers** (backlog item 24): thumbs up or down on each answer, stored with
   its trace; `/metrics` shows the share rated down, and `scripts/feedback_to_cases.py` turns each
   thumbs-down into a candidate eval case for review.
@@ -800,8 +806,12 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   the trace id; the details are in the trace and the server log; `/health` shows types only.
 - [x] **Daily model budget** (audit item 37): every run that calls the model reserves its
   worst case against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` ($1.00, estimated) per UTC day;
-  past either it gets 429 until midnight UTC. In memory, so a restart resets the count;
-  provider-side spend caps are the backstop. `/metrics` shows `llm_budget`.
+  past either it gets 429 until midnight UTC. With `STATE_DB_URL` set the count lives in
+  Postgres (one conditional UPDATE per run, so a redeploy no longer resets it and two
+  processes cannot both pass a cap; an unreachable database refuses the run with 503 after a
+  `STATE_DB_CONNECT_TIMEOUT`-second connect timeout, default 5); without it, in
+  memory, and a restart resets it. Provider-side spend caps are the backstop. `/metrics`
+  shows `llm_budget`.
 - [x] **`/datasets` cached and rate-limited** (audit item 36): open as before, but its row
   counts run once per data vintage and the endpoint is limited by `RATE_LIMIT_READ`.
 - [x] **Failed API keys counted and audited** (audit item 35): every refused key on the API
@@ -898,7 +908,8 @@ A working reference implementation, described plainly:
   Synthea sample and is built on demand (it is a gitignored derived artifact, so
   the deployed instance serves the hospital dataset only).
 - Cost figures are **estimates** (tokens × a configurable rate), not billing data.
-- **State on Render's free plan does not last** across a restart or redeploy while it is in SQLite. That covers traces, the answer cache, the audit log and usage. **Approvals, their decision chain and the graph checkpoints can live in Postgres** instead: set `STATE_DB_URL=postgresql://...` (`state_db.py`, backlog item 19). Tests never read `STATE_DB_URL`: they use only `TEST_STATE_DB_URL`, on a database whose name contains `test`, because the suite drops its tables. Without it they are SQLite files too. CI runs the whole suite against a Postgres service container. The deploy needs a free hosted Postgres, which the owner chooses and creates; until then the deployed queue resets on a redeploy.
+- **State on Render's free plan does not last** across a restart or redeploy while it is in SQLite. That covers traces, the answer cache, the audit log and usage. With `STATE_DB_URL` set, every audit event also goes to an append-only, hash-chained `audit_events` table (`audit_store.py`, item 39; restore and verify in `docs/runbooks/audit-restore.md`). **Approvals, their decision chain and the graph checkpoints can live in Postgres** instead: set `STATE_DB_URL=postgresql://...` (`state_db.py`, backlog item 19). Tests never read `STATE_DB_URL`: they use only `TEST_STATE_DB_URL`, on a database whose name contains `test`, because the suite drops its tables. Without it they are SQLite files too. CI runs the whole suite against a Postgres service container. The deploy needs a free hosted Postgres, which the owner chooses and creates; until then the deployed queue resets on a redeploy.
+- **State on Render's free plan does not last** across a restart or redeploy while it is in SQLite. That covers traces, the answer cache and the audit log. **Approvals, their decision chain, the graph checkpoints and the day's model-budget count can live in Postgres** instead: set `STATE_DB_URL=postgresql://...` (`state_db.py`, backlog item 19). Traces and the answer cache stay on local SQLite by design (bounded, rebuildable, and on the request path). Tests never read `STATE_DB_URL`: they use only `TEST_STATE_DB_URL`, on a database whose name contains `test`, because the suite drops its tables. Without it they are SQLite files too. CI runs the whole suite against a Postgres service container. The deploy's free hosted Postgres is Neon Free (as of 2026-11-24: no card, never paused for inactivity; owner step 14 creates it); until `STATE_DB_URL` is set there, the deployed queue resets on a redeploy.
 
 ## Roadmap
 

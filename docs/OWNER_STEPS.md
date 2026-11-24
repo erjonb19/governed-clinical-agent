@@ -296,7 +296,9 @@ Or on GitHub: the repo -> Branches -> the trash icon beside it. Tell the agent
 
 ---
 
-## [ ] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+## [x] 12. Turn on private vulnerability reporting and Dependabot security updates (backlog item 69)
+
+**Done 2026-11-22:** Dependabot security updates are on (`automated-security-fixes` reports `true`); private vulnerability reporting was already on.
 
 **Why:** `SECURITY.md` asks people to report problems privately through the
 repository's **Security** tab, which only works once private vulnerability reporting
@@ -322,3 +324,128 @@ gh api repos/erjonb19/governed-clinical-agent/automated-security-fixes --jq .ena
 Or in the browser: the repo -> Settings -> Code security -> turn on "Private
 vulnerability reporting" and "Dependabot security updates". Tell the agent "step 12
 done".
+
+---
+
+## [ ] 13. Ask GitHub Support to purge the old commits of PR #150
+
+**Why:** PR #150 (client address behind Cloudflare) was squash-merged, and its branch
+`claude/jolly-hopper-8ly9iq-clientip` is deleted (step 11). But a real IP address was
+committed in `tests/unit/test_client_ip.py` in the PR's first commit and stayed in the
+file's tree through the next two; the fourth removed it, so its diff still shows it. All
+four commits are still reachable through the PR's own ref (`refs/pull/150/head`), even
+after the branch is gone. Only GitHub Support can remove them, along with their cached
+views. The address is deliberately not written here.
+
+1. Open https://support.github.com/request and choose the repository
+   `erjonb19/governed-clinical-agent`. Pick the option for **removing sensitive data**
+   (sometimes listed as "Remove data from a pull request" / "sensitive data removal").
+2. Paste this, then put the address itself only in Support's private form if they ask for it:
+
+```text
+Subject: Remove the commits of pull request #150 (personal data)
+
+Repository: erjonb19/governed-clinical-agent (public)
+Pull request: #150, merged by squash; its head branch
+claude/jolly-hopper-8ly9iq-clientip has been deleted.
+
+All four of the PR's original commits expose my personal IP address in
+tests/unit/test_client_ip.py (added in the first, still in the file tree of
+the next two, shown as a removed line in the last):
+  eecea1e4bec9b635fa84fd9b55fa6ed31241738b
+  57103a1bad5c74e193dc143e995ed3f7a1179104
+  e2ee6c135f4d74b2bf01168b7b8cdb6b3cdf5b80
+  2bf842e303e343dc84d63539ef06da9cc5c5adaf
+
+The squash commit on main does not contain the address (it was replaced with
+a documentation address before merging). Please remove refs/pull/150/head and
+these four commits, and purge any cached views of them, so they are no longer
+reachable by SHA. Nothing on main or any live branch needs rewriting.
+
+Thank you.
+```
+
+3. When Support confirms, check that none of the four opens any more (each should give 404):
+
+```powershell
+"eecea1e4","57103a1b","e2ee6c13","2bf842e3" | ForEach-Object {
+  $sha = $_
+  $u = "https://github.com/erjonb19/governed-clinical-agent/commit/$sha"
+  try { $null = Invoke-WebRequest $u -Method Head -UseBasicParsing; "$sha still opens" }
+  catch {
+    if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { "$sha gone" }
+    else { "$sha check failed: $($_.Exception.Message)" }
+  }
+}
+```
+
+   Then tell the agent "step 13 done".
+
+---
+
+## [ ] 14. Create the free Postgres (Neon) and give its URL to Render (backlog items 19, 39, 22)
+
+**Why:** Render's free disk is wiped on every restart and redeploy, and today that takes the
+approval queue, the graph checkpoints and the day's model-spend count with it. With
+`STATE_DB_URL` set, they live in Postgres and survive. Items 39 (an audit trail that
+survives) and 22 (per-user keys) are built on the same database.
+
+**Why Neon (compared on 2026-11-24 from each provider's own pricing page):** the Neon Free
+plan is permanent, needs **no card**, and **never pauses a project for inactivity**: compute
+sleeps after 5 minutes idle and wakes on the next query in well under a second. It gives
+1 GB of storage per project, 100 compute-hours a month (about 400 hours at the smallest size,
+more than a demo that sleeps between visits uses) and 5 GB of transfer a month. Hitting a
+limit suspends or blocks writes; it never deletes data and never bills. Supabase Free was the
+other candidate: 500 MB, and a project is **paused after a week without activity**, which a
+quiet demo would hit.
+
+1. Sign up at https://neon.com/signup (GitHub sign-in is fine). Do **not** add a card.
+2. Create a project named `governed-clinical-agent`, Postgres 16 or newer. For the region,
+   open your Render service's **Settings** page, see its region, and pick the Neon region
+   in the same place (Render "Oregon" is AWS **US West 2 (Oregon)**; "Ohio" is US East 2;
+   "Virginia" is US East 1; "Frankfurt" is EU Central 1). Then **Branches -> main -> Compute
+   -> Edit** and set both the minimum and maximum size to **0.25 CU**: the free 100
+   compute-hours last about 400 running hours at that size, far fewer if it scales up.
+3. On the project's **Dashboard -> Connect**, choose the default branch and database and copy
+   the connection string with **"Connection pooling" switched OFF** (the direct one). It looks
+   like `postgresql://USER:PASSWORD@ep-....REGION.aws.neon.tech/neondb?sslmode=require...`.
+   It holds a password: paste it only into Render, never into chat, a file or git.
+4. In the Render dashboard: your service -> **Environment** -> `STATE_DB_URL` (add it if it
+   is not listed: `render.yaml` declares it, but Render does not always create such a variable
+   on an existing service) -> paste the string -> **Save, rebuild and deploy**.
+5. When the deploy is live, check the store (no key needed):
+
+```powershell
+(Invoke-RestMethod https://governed-clinical-agent.onrender.com/v1/health).state_store
+```
+
+   It should print `postgres`.
+
+6. Check that an approval survives a redeploy. Put your API key in a variable for this
+   window only (it is not saved), queue one approval, redeploy, and look for it again:
+
+```powershell
+$k = Read-Host "API key" -AsSecureString
+$h = @{ "X-API-Key" = [System.Net.NetworkCredential]::new("", $k).Password }
+$b = '{"question": "How many hospitals are in the data?", "proposed_by": "owner-check"}'
+$p = Invoke-RestMethod -Method Post -Uri https://governed-clinical-agent.onrender.com/v1/propose -Headers $h -ContentType application/json -Body $b
+$p.status
+$p.approval_id
+```
+
+   `$p.status` should print `pending_approval` and `$p.approval_id` an id. If it prints
+   `completed`, the agent drafted nothing to approve: run the three lines again.
+
+   Then Render dashboard -> **Manual Deploy -> Deploy latest commit**, wait until it is live,
+   and run (in the same window):
+
+```powershell
+(Invoke-RestMethod -Uri "https://governed-clinical-agent.onrender.com/v1/approvals/$($p.approval_id)" -Headers $h).status
+```
+
+   It should print `pending` -- the approval outlived the redeploy. You can reject it in the
+   UI's **Review** view afterwards.
+
+Then tell the agent "step 14 done". If you ever need to rotate the password: Neon ->
+**Roles** -> reset password, then repeat steps 3 and 4.
+
