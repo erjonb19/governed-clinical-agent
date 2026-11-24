@@ -180,7 +180,10 @@ def strict_check(cases: list[dict], seen: dict[str, list[list[dict]]]) -> int:
             if not atts:
                 bad.append(f"{c['id']}: no attempt recorded")
             for a in atts:
-                if GUARD_MARK not in (a.get("reason") or ""):
+                reason = a.get("reason") or ""
+                # the output check refuses AFTER the query ran: not a stop before
+                # the database (review of #180)
+                if GUARD_MARK not in reason or GUARD_MARK + ": output check" in reason:
                     bad.append(
                         f"{c['id']} attempt {a.get('attempt')}: not refused by the guard "
                         f"({a.get('outcome')}, {(a.get('reason') or '')[:80]!r})"
