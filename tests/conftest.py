@@ -85,6 +85,7 @@ def _fresh_postgres_state(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
 def _no_answer_cache_by_default(tmp_path, monkeypatch):
     """The answer cache (llm_cache.py, item 6) is off in tests unless a test
     turns it on, and it never writes into the repo's logs/: one test's model

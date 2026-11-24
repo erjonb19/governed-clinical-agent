@@ -40,7 +40,7 @@ written UI plan first), **10** (Databricks secrets: waits for a new Databricks t
 2026-11-25, owner 2026-11-24), **26** (the data intake platform's Stage 22). **12** is skipped
 (owner, 2026-11-24).
 
-**Owner, 2026-11-24:** item 19 approved on a free hosted Postgres, then 19, 39 and 22 built on it.
+**Owner, 2026-11-24:** item 19 approved on a free hosted Postgres (the owner creates the account); items 19, 39 and 22 are to be built on it, in that order (this replaces step 3's order of 22 before 39 for these two).
 
 **Rules for the new items (15 to 27), owner 2026-11-08:**
 - Anything marked **(ask)** waits for the owner: a new account or hosted service, anything

@@ -16,8 +16,8 @@
 # you trust (only collaborators can dispatch at all).
 #
 # Every run is dispatched FROM main (the workflow file lives there), so GitHub
-# lists it under branch "main" whatever it compares. The scheduled daily runs
-# are the agent's branch comparisons for open guard/prompt PRs, not main
+# lists it under branch "main" whatever it compares. The daily dispatched runs
+# (from the agent's scheduled tasks) are its branch comparisons for open guard/prompt PRs, not main
 # against main: run-name below puts the compared ref in the title, and a red run
 # means "that branch scored below main", never "main is broken" (owner,
 # 2026-11-24).
