@@ -25,11 +25,16 @@ _failure_lock = Lock()
 _failure_count = 0
 
 
-def record_failure(where: str, exc: BaseException) -> None:
+def record_failure(where: str, exc: BaseException, events: int = 1) -> None:
+    """Count `events` lost audit writes (a batch counts each of its events)."""
     global _failure_count
     with _failure_lock:
-        _failure_count += 1
-    _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
+        _failure_count += max(1, events)
+    if events > 1:
+        _failure_log.warning("audit write failed (%s, %d events): %s", where, events,
+                             type(exc).__name__)
+    else:
+        _failure_log.warning("audit write failed (%s): %s", where, type(exc).__name__)
 
 
 def failure_count() -> int:

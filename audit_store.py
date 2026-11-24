@@ -4,27 +4,39 @@ Before this, the audit log was JSONL under logs/ on Render's disk: lost on
 every redeploy, editable by the app, never backed up. With STATE_DB_URL set
 (the item-19 Postgres), every audit event is ALSO written to `audit_events`:
 
-* append-only: a trigger refuses every UPDATE, DELETE and TRUNCATE on the
-  table, whoever runs it (in Postgres and in SQLite);
-* tamper-evident: each row carries `hash = sha256(prev_hash + its content)`,
-  so editing, removing or reordering a row (for instance after someone with
-  DDL rights disables the trigger) breaks the chain, and `verify()` names the
-  first bad row;
+* append-only: triggers refuse every UPDATE, DELETE and TRUNCATE on the table
+  for anyone who has not first switched them off -- which the table's owner can
+  (that is the app's own STATE_DB_URL role: anyone holding that connection
+  string can disable the triggers; see the runbook's limits);
+* tamper-evident: each row carries `hash = sha256(prev_hash + its content)`, so
+  editing, removing from the middle or reordering rows breaks the chain, and
+  `verify()` names the first bad row. Removing the NEWEST rows leaves a valid
+  shorter chain: that is caught only against an anchor kept elsewhere -- note
+  `last_hash` from `verify` (or a dated dump) and later run
+  `verify --anchor <hash>`, which fails if that row is gone;
 * off the request path: AuditLogger hands events to one background writer per
   process (a bounded queue), so a slow or sleeping database never slows a
-  request. A failed or dropped write is counted by `record_failure`
-  (item 63) and shows on /metrics; the JSONL still has the event.
+  request. Every event that does not reach the table -- a failed batch, a full
+  queue, a queue still holding events at exit -- is counted, one per event, by
+  `record_failure` (item 63, on /metrics); the JSONL still has it.
 
-    python audit_store.py verify      # checks the chain on STATE_DB_URL
+A batch whose COMMIT outcome is unknown (the connection dropped as it
+committed) is written again, so an event can appear twice: readers dedupe on
+`event_id`. A duplicate is better than a loss for an audit trail. The table
+never holds query results: `rows` are dropped here whatever logger sent them.
+
+    python audit_store.py verify [--anchor <hash>]   # read-only check on STATE_DB_URL
 
 AUDIT_DB=0 turns the table off (the test suite does, except in its own tests).
 Without STATE_DB_URL nothing is written here and the JSONL is the only record,
-as before. Restore steps and a dated restore test: docs/runbooks/audit-restore.md.
+as before. The SQLite form exists for tests only; it has no cross-process lock.
+Restore steps and a dated restore test: docs/runbooks/audit-restore.md.
 """
 
 from __future__ import annotations
 
 import atexit
+import copy
 import hashlib
 import json
 import os
@@ -35,6 +47,7 @@ from typing import Any, Optional
 
 GENESIS = "0" * 64
 _COLUMNS = ("event_id", "ts", "event_type", "decision", "capability", "principal", "payload")
+_LOCK_ID = 390039  # pg_advisory_xact_lock key: one writer (and one DDL run) at a time
 
 _PG_GUARD = """
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger AS $$
@@ -53,15 +66,31 @@ def chain_hash(prev: str, row: dict[str, Any]) -> str:
     return hashlib.sha256((prev + _canonical(row)).encode("utf-8")).hexdigest()
 
 
+def _text(v: Any) -> str:
+    # Postgres TEXT refuses NUL: one would fail the whole batch
+    return str(v).replace("\x00", "")
+
+
+def _without_rows(event: dict[str, Any]) -> dict[str, Any]:
+    out = event.get("execution_result")
+    inner = out.get("output") if isinstance(out, dict) else None
+    if isinstance(inner, dict) and "rows" in inner:
+        event = copy.deepcopy(event)
+        event["execution_result"]["output"].pop("rows", None)
+    return event
+
+
 def row_from_event(event: dict[str, Any]) -> dict[str, Any]:
-    """An AuditEvent.to_dict() (already redacted) as a table row."""
+    """An AuditEvent.to_dict() (already redacted) as a table row, without rows."""
+    event = _without_rows(event)
+    principal = event.get("principal")
     return {
-        "event_id": str(event.get("event_id") or ""),
-        "ts": str(event.get("timestamp") or ""),
-        "event_type": str(event.get("event_type") or ""),
-        "decision": str(event.get("decision") or ""),
-        "capability": str(event.get("capability") or ""),
-        "principal": event.get("principal"),
+        "event_id": _text(event.get("event_id") or ""),
+        "ts": _text(event.get("timestamp") or ""),
+        "event_type": _text(event.get("event_type") or ""),
+        "decision": _text(event.get("decision") or ""),
+        "capability": _text(event.get("capability") or ""),
+        "principal": None if principal is None else _text(principal),
         "payload": json.dumps(event, sort_keys=True, default=str),
     }
 
@@ -75,6 +104,10 @@ class AuditStore:
         self._ready = False
 
     def _ensure(self, con: Any) -> None:
+        """Create the table and its guards once. On Postgres the caller holds
+        the advisory lock first, so two processes starting together (Render
+        overlaps instances on a deploy; the MCP server shares the database)
+        never run this DDL at the same moment."""
         if self._ready:
             return
         import state_db
@@ -88,15 +121,13 @@ class AuditStore:
         )
         if con.dialect == "postgres":
             con.execute(_PG_GUARD)
-            con.execute("DROP TRIGGER IF EXISTS audit_events_no_change ON audit_events")
             con.execute(
-                "CREATE TRIGGER audit_events_no_change BEFORE UPDATE OR DELETE ON audit_events "
-                "FOR EACH ROW EXECUTE FUNCTION audit_events_append_only()"
+                "CREATE OR REPLACE TRIGGER audit_events_no_change BEFORE UPDATE OR DELETE "
+                "ON audit_events FOR EACH ROW EXECUTE FUNCTION audit_events_append_only()"
             )
-            con.execute("DROP TRIGGER IF EXISTS audit_events_no_truncate ON audit_events")
             con.execute(
-                "CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON audit_events "
-                "FOR EACH STATEMENT EXECUTE FUNCTION audit_events_append_only()"
+                "CREATE OR REPLACE TRIGGER audit_events_no_truncate BEFORE TRUNCATE "
+                "ON audit_events FOR EACH STATEMENT EXECUTE FUNCTION audit_events_append_only()"
             )
         else:
             for op in ("UPDATE", "DELETE"):
@@ -108,14 +139,14 @@ class AuditStore:
         self._ready = True
 
     def append(self, events: list[dict[str, Any]]) -> int:
-        """Append events (AuditEvent dicts) in one transaction, chained."""
+        """Append events (AuditEvent dicts) in one transaction, chained. One
+        retry, after re-creating the DDL (the table may have been dropped
+        under us, or the connection lost); see the module note on duplicates."""
         if not events:
             return 0
         try:
             return self._append(events)
         except Exception:
-            # the table may have been dropped under us (tests) or the
-            # connection lost: rebuild the DDL once, then give up loudly
             self._ready = False
             return self._append(events)
 
@@ -123,10 +154,11 @@ class AuditStore:
         import state_db
 
         with state_db.connect(self.path) as con:
-            self._ensure(con)
             if con.dialect == "postgres":
-                # one writer at a time per database: the chain has one order
-                con.execute("SELECT pg_advisory_xact_lock(390039)")
+                # never wait forever on a writer whose connection hangs
+                con.execute("SET LOCAL lock_timeout = '10s'")
+                con.execute(f"SELECT pg_advisory_xact_lock({_LOCK_ID})")
+            self._ensure(con)
             last = con.execute("SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1").fetchone()
             prev = last["hash"] if last else GENESIS
             for ev in events:
@@ -140,46 +172,60 @@ class AuditStore:
                 prev = h
         return len(events)
 
-    def verify(self) -> dict[str, Any]:
-        """Walk the chain: {'ok', 'rows', 'first_bad_seq'}."""
+    def verify(self, anchor: Optional[str] = None) -> dict[str, Any]:
+        """Walk the chain, read-only (no DDL, no locks beyond a read):
+        {'ok', 'rows', 'first_bad_seq', 'last_hash', 'anchor_found'}."""
         import state_db
 
         with state_db.connect(self.path) as con:
-            self._ensure(con)
-            rows = con.execute(
-                "SELECT seq, event_id, ts, event_type, decision, capability, principal, "
-                "payload, prev_hash, hash FROM audit_events ORDER BY seq"
-            ).fetchall()
+            try:
+                rows = con.execute(
+                    "SELECT seq, event_id, ts, event_type, decision, capability, principal, "
+                    "payload, prev_hash, hash FROM audit_events ORDER BY seq"
+                ).fetchall()
+            except Exception:
+                rows = None  # no table yet
+        out: dict[str, Any] = {"ok": True, "rows": 0, "first_bad_seq": None, "last_hash": None}
+        if anchor is not None:
+            out["anchor_found"] = False
         prev = GENESIS
-        for r in rows:
+        for r in rows or []:
             r = dict(r)
-            if r["prev_hash"] != prev or chain_hash(prev, r) != r["hash"]:
-                return {"ok": False, "rows": len(rows), "first_bad_seq": r["seq"]}
+            out["rows"] += 1
+            if out["ok"] and (r["prev_hash"] != prev or chain_hash(prev, r) != r["hash"]):
+                out["ok"], out["first_bad_seq"] = False, r["seq"]
+            if anchor is not None and r["hash"] == anchor:
+                out["anchor_found"] = True
             prev = r["hash"]
-        return {"ok": True, "rows": len(rows), "first_bad_seq": None}
+        out["last_hash"] = prev if rows else None
+        if anchor is not None and not out["anchor_found"]:
+            out["ok"] = False  # the anchored row (or everything after it) is gone
+        return out
 
 
 class Writer:
     """One background thread per process that drains a bounded queue into the
-    store. Never blocks or raises into the caller."""
+    store. Never blocks or raises into the caller; every event that does not
+    reach the store is counted."""
 
     def __init__(self, store: AuditStore, maxsize: int = 10_000):
         self.store = store
         self._q: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=maxsize)
-        self._idle = threading.Event()
-        self._idle.set()
         self._t = threading.Thread(target=self._run, name="audit-store", daemon=True)
         self._t.start()
-        atexit.register(self.flush, 5.0)
+        atexit.register(self._at_exit)
+
+    @staticmethod
+    def _count(where: str, exc: BaseException, events: int) -> None:
+        from src.runtime.audit_logger import record_failure
+
+        record_failure(where, exc, events)
 
     def put(self, event: dict[str, Any]) -> None:
         try:
-            self._idle.clear()
             self._q.put_nowait(event)
         except queue.Full as e:
-            from src.runtime.audit_logger import record_failure
-
-            record_failure("audit_store_queue_full", e)
+            self._count("audit_store_queue_full", e, 1)
 
     def _run(self) -> None:
         while True:
@@ -192,18 +238,20 @@ class Writer:
             try:
                 self.store.append(batch)
             except Exception as e:  # noqa: BLE001 -- counted, never raised
-                from src.runtime.audit_logger import record_failure
-
-                record_failure("audit_store", e)
+                self._count("audit_store", e, len(batch))
             finally:
                 for _ in batch:
                     self._q.task_done()
-                if self._q.empty():
-                    self._idle.set()
 
     def flush(self, timeout: float = 10.0) -> bool:
-        """Wait until everything queued so far is written (or failed)."""
-        return self._idle.wait(timeout)
+        """Wait until every event queued so far is written or counted as lost."""
+        with self._q.all_tasks_done:
+            return self._q.all_tasks_done.wait_for(lambda: self._q.unfinished_tasks == 0, timeout)
+
+    def _at_exit(self) -> None:
+        if not self.flush(5.0):
+            left = self._q.unfinished_tasks
+            self._count("audit_store_shutdown", TimeoutError("unwritten at exit"), left)
 
 
 _WRITER: Optional[Writer] = None
@@ -228,15 +276,19 @@ def writer() -> Optional[Writer]:
 
 
 def main(argv: list[str]) -> int:
-    if argv[1:] != ["verify"]:
-        print("usage: python audit_store.py verify", file=sys.stderr)
+    args = argv[1:]
+    anchor = None
+    if args[:1] == ["verify"] and len(args) == 3 and args[1] == "--anchor":
+        anchor = args[2]
+    elif args != ["verify"]:
+        print("usage: python audit_store.py verify [--anchor <hash>]", file=sys.stderr)
         return 2
     import state_db
 
     if not state_db.is_postgres():
         print("STATE_DB_URL is not a Postgres URL: no audit table to verify", file=sys.stderr)
         return 2
-    out = AuditStore().verify()
+    out = AuditStore().verify(anchor)
     print(json.dumps(out))
     return 0 if out["ok"] else 1
 
