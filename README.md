@@ -803,8 +803,11 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   the trace id; the details are in the trace and the server log; `/health` shows types only.
 - [x] **Daily model budget** (audit item 37): every run that calls the model reserves its
   worst case against `LLM_DAILY_RUNS` (300) and `LLM_DAILY_USD` ($1.00, estimated) per UTC day;
-  past either it gets 429 until midnight UTC. In memory, so a restart resets the count;
-  provider-side spend caps are the backstop. `/metrics` shows `llm_budget`.
+  past either it gets 429 until midnight UTC. With `STATE_DB_URL` set the count lives in
+  Postgres (one conditional UPDATE per run, so a redeploy no longer resets it and two
+  processes cannot both pass a cap; an unreachable database refuses the run with 503); without it, in
+  memory, and a restart resets it. Provider-side spend caps are the backstop. `/metrics`
+  shows `llm_budget`.
 - [x] **`/datasets` cached and rate-limited** (audit item 36): open as before, but its row
   counts run once per data vintage and the endpoint is limited by `RATE_LIMIT_READ`.
 - [x] **Failed API keys counted and audited** (audit item 35): every refused key on the API
@@ -899,7 +902,7 @@ A working reference implementation, described plainly:
   Synthea sample and is built on demand (it is a gitignored derived artifact, so
   the deployed instance serves the hospital dataset only).
 - Cost figures are **estimates** (tokens × a configurable rate), not billing data.
-- **State on Render's free plan does not last** across a restart or redeploy while it is in SQLite. That covers traces, the answer cache, the audit log and usage. **Approvals, their decision chain and the graph checkpoints can live in Postgres** instead: set `STATE_DB_URL=postgresql://...` (`state_db.py`, backlog item 19). Tests never read `STATE_DB_URL`: they use only `TEST_STATE_DB_URL`, on a database whose name contains `test`, because the suite drops its tables. Without it they are SQLite files too. CI runs the whole suite against a Postgres service container. The deploy needs a free hosted Postgres, which the owner chooses and creates; until then the deployed queue resets on a redeploy.
+- **State on Render's free plan does not last** across a restart or redeploy while it is in SQLite. That covers traces, the answer cache and the audit log. **Approvals, their decision chain, the graph checkpoints and the day's model-budget count can live in Postgres** instead: set `STATE_DB_URL=postgresql://...` (`state_db.py`, backlog item 19). Traces and the answer cache stay on local SQLite by design (bounded, rebuildable, and on the request path). Tests never read `STATE_DB_URL`: they use only `TEST_STATE_DB_URL`, on a database whose name contains `test`, because the suite drops its tables. Without it they are SQLite files too. CI runs the whole suite against a Postgres service container. The deploy's free hosted Postgres is Neon Free (no card, never paused for inactivity; owner step 14 creates it); until `STATE_DB_URL` is set there, the deployed queue resets on a redeploy.
 
 ## Roadmap
 

@@ -18,9 +18,15 @@ uses the dearer of the primary and fallback rates, and a run that somehow
 cost more is charged in full, so the count never undercounts. Past either
 cap the caller gets 429 with a Retry-After that runs to the next UTC midnight.
 
-Per process and in memory: a restart (or a Render redeploy) starts a fresh
-day's count. Provider-side spend caps, set in each provider's console, are
-the backstop for that; they are the owner's to set.
+Where the count lives (item 19, part 2, 2026-11-24): with STATE_DB_URL set
+(Postgres), in the `llm_budget_day` table -- one row per UTC day, charged by
+one conditional UPDATE, so a restart or a Render redeploy no longer starts a
+fresh day, and two processes cannot both slip under a cap. If that database
+cannot be reached, the run is REFUSED (fail closed: a run that cannot be
+counted does not happen). Without STATE_DB_URL the count is per process and
+in memory, as before: a restart starts a fresh day. Provider-side spend caps,
+set in each provider's console, stay the backstop; they are the owner's to
+set.
 """
 
 from __future__ import annotations
@@ -67,9 +73,117 @@ def worst_case_usd(planner: Any, max_attempts: int) -> float:
 
 
 class BudgetExceeded(Exception):
-    def __init__(self, reason: str, retry_after: int):
+    def __init__(self, reason: str, retry_after: int, unavailable: bool = False):
         super().__init__(reason)
         self.reason, self.retry_after = reason, retry_after
+        self.unavailable = unavailable  # the store could not be reached (503, not 429)
+
+
+BUDGET_DB = os.environ.get("LLM_BUDGET_DB", "logs/llm_budget.sqlite")
+_EPS = 1e-12
+
+
+class _Store:
+    """The day's count in the state database (state_db: Postgres, or a SQLite
+    file when a test names one). Every call is one short transaction."""
+
+    _DDL_LOCK = threading.Lock()
+
+    def __init__(self, sqlite_path: str):
+        self.path = sqlite_path
+        self._ready = False
+
+    def _create(self) -> None:
+        """The table, once per store. In its own transaction, serialised in
+        this process and retried once: two processes running Postgres's
+        CREATE TABLE IF NOT EXISTS at the same moment can still collide."""
+        import state_db
+
+        with self._DDL_LOCK:
+            if self._ready:
+                return
+            for attempt in (1, 2):
+                try:
+                    with state_db.connect(self.path) as con:
+                        real = "DOUBLE PRECISION" if con.dialect == "postgres" else "REAL"
+                        con.execute(
+                            "CREATE TABLE IF NOT EXISTS llm_budget_day ("
+                            f"day TEXT PRIMARY KEY, runs INTEGER NOT NULL, usd {real} NOT NULL)"
+                        )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+            self._ready = True
+
+    def _ensure(self, con: Any) -> None:
+        if not self._ready:
+            self._create()
+
+    def _retry(self, fn: Callable[..., Any], *args: Any) -> Any:
+        """Once more after re-creating the table (it can be dropped under a
+        long-lived process, as the test suite does). A failed first attempt
+        rolled back, so a charge is never applied twice by this retry."""
+        try:
+            return fn(*args)
+        except Exception:
+            self._ready = False
+            return fn(*args)
+
+    def charge(self, day: str, worst: float, max_runs: int, max_usd: float) -> Optional[str]:
+        """Charge one run: None on success, else which cap refused it."""
+        result: Optional[str] = self._retry(self._charge, day, worst, max_runs, max_usd)
+        return result
+
+    def adjust(self, day: str, delta: float) -> None:
+        self._retry(self._adjust, day, delta)
+
+    def read(self, day: str) -> tuple[int, float]:
+        result: tuple[int, float] = self._retry(self._read, day)
+        return result
+
+    def _charge(self, day: str, worst: float, max_runs: int, max_usd: float) -> Optional[str]:
+        import state_db
+
+        with state_db.connect(self.path) as con:
+            self._ensure(con)
+            con.execute(
+                "INSERT INTO llm_budget_day (day, runs, usd) VALUES (?, 0, 0) "
+                "ON CONFLICT (day) DO NOTHING",
+                (day,),
+            )
+            # one statement checks both caps and charges: concurrent runs are
+            # serialised on the row, and the losing one sees the new totals
+            row = con.execute(
+                "UPDATE llm_budget_day SET runs = runs + 1, usd = usd + ? "
+                "WHERE day = ? AND runs + 1 <= ? AND usd + ? <= ? RETURNING runs",
+                (worst, day, max_runs, worst, max_usd + _EPS),
+            ).fetchone()
+            if row is not None:
+                return None
+            cur = con.execute("SELECT runs FROM llm_budget_day WHERE day = ?", (day,)).fetchone()
+        return "runs" if cur is None or int(cur["runs"]) + 1 > max_runs else "usd"
+
+    def _adjust(self, day: str, delta: float) -> None:
+        import state_db
+
+        with state_db.connect(self.path) as con:
+            self._ensure(con)
+            con.execute(
+                "UPDATE llm_budget_day SET usd = CASE WHEN usd + ? < 0 THEN 0 ELSE usd + ? END "
+                "WHERE day = ?",
+                (delta, delta, day),
+            )
+
+    def _read(self, day: str) -> tuple[int, float]:
+        import state_db
+
+        with state_db.connect(self.path) as con:
+            self._ensure(con)
+            row = con.execute(
+                "SELECT runs, usd FROM llm_budget_day WHERE day = ?", (day,)
+            ).fetchone()
+        return (int(row["runs"]), float(row["usd"])) if row else (0, 0.0)
 
 
 class DailyBudget:
@@ -78,6 +192,7 @@ class DailyBudget:
         max_runs: Optional[int] = None,
         max_usd: Optional[float] = None,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        store_path: Optional[str] = None,
     ):
         self.max_runs = int(max_runs if max_runs is not None else _float_env("LLM_DAILY_RUNS", 300))
         self.max_usd = float(max_usd if max_usd is not None else _float_env("LLM_DAILY_USD", 1.0))
@@ -86,6 +201,24 @@ class DailyBudget:
         self._day = ""
         self.runs = 0
         self.usd = 0.0
+        # a SQLite path given here persists the count (tests); otherwise only
+        # STATE_DB_URL does, checked on every call so the setting is live
+        self._file_store = _Store(store_path) if store_path else None
+        self._pg_store: Optional[_Store] = None
+
+    def _store(self) -> Optional[_Store]:
+        if self._file_store is not None:
+            return self._file_store
+        import state_db
+
+        if not state_db.is_postgres():
+            return None
+        if self._pg_store is None:
+            self._pg_store = _Store(BUDGET_DB)
+        return self._pg_store
+
+    def _today(self) -> str:
+        return self.now().strftime("%Y-%m-%d")
 
     def _roll(self) -> None:
         day = self.now().strftime("%Y-%m-%d")
@@ -99,6 +232,26 @@ class DailyBudget:
 
     def reserve(self, worst_usd: float) -> float:
         """Charge one run at its worst case, or raise BudgetExceeded."""
+        store = self._store()
+        if store is not None:
+            try:
+                refused = store.charge(self._today(), worst_usd, self.max_runs, self.max_usd)
+            except Exception:
+                # fail closed: a run the budget cannot count does not happen
+                raise BudgetExceeded(
+                    "the model budget could not be checked", 60, unavailable=True
+                ) from None
+            if refused == "runs":
+                raise BudgetExceeded(
+                    f"daily limit of {self.max_runs} model runs reached",
+                    self._seconds_to_midnight(),
+                )
+            if refused == "usd":
+                raise BudgetExceeded(
+                    f"daily model budget of ${self.max_usd:.2f} reached",
+                    self._seconds_to_midnight(),
+                )
+            return worst_usd
         with self._lock:
             self._roll()
             if self.runs + 1 > self.max_runs:
@@ -106,7 +259,7 @@ class DailyBudget:
                     f"daily limit of {self.max_runs} model runs reached",
                     self._seconds_to_midnight(),
                 )
-            if self.usd + worst_usd > self.max_usd + 1e-12:
+            if self.usd + worst_usd > self.max_usd + _EPS:
                 raise BudgetExceeded(
                     f"daily model budget of ${self.max_usd:.2f} reached",
                     self._seconds_to_midnight(),
@@ -121,11 +274,32 @@ class DailyBudget:
         must never undercount. (The check before the NEXT run then sees it.)"""
         if actual_usd is None or actual_usd < 0:
             return
+        store = self._store()
+        if store is not None:
+            try:
+                store.adjust(self._today(), actual_usd - reserved)
+            except Exception:  # noqa: BLE001
+                pass  # the worst case stays charged: never an undercount
+            return
         with self._lock:
             self._roll()
             self.usd = max(0.0, self.usd - reserved + actual_usd)
 
     def status(self) -> dict:
+        store = self._store()
+        if store is not None:
+            day = self._today()
+            try:
+                runs, usd = store.read(day)
+            except Exception:  # noqa: BLE001
+                runs, usd = -1, -1.0  # unknown: shown as such, never as zero
+            return {
+                "day": day,
+                "runs": runs,
+                "max_runs": self.max_runs,
+                "est_usd": round(usd, 6),
+                "max_usd": self.max_usd,
+            }
         with self._lock:
             self._roll()
             return {

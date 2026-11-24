@@ -282,6 +282,9 @@ def _model_budget(planner: Any):
     try:
         reserved = llm_budget.BUDGET.reserve(llm_budget.worst_case_usd(planner, MAX_ATTEMPTS))
     except llm_budget.BudgetExceeded as e:
+        if e.unavailable:  # the budget's database is unreachable: refused, not "spent"
+            raise HTTPException(status_code=503, detail=f"{e.reason}; try again shortly",
+                                headers={"Retry-After": str(e.retry_after)}) from None
         raise HTTPException(status_code=429, detail=f"{e.reason}; try again tomorrow (UTC)",
                             headers={"Retry-After": str(e.retry_after)}) from None
     settled = []

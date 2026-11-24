@@ -142,3 +142,111 @@ def test_the_fallback_is_priced_with_its_own_output_cap():
     per_fb = (4000 * r_fb["input"] + out * r_fb["output"]) / 1e6  # whatever ANTHROPIC_MODEL is
     per_g = (4000 * r_g["input"] + 800 * r_g["output"]) / 1e6
     assert worst_case_usd(gemini, 3) == pytest.approx(6 * max(per_fb, per_g))
+
+
+# ---- item 19, part 2: the count outlives the process ----------------------
+
+
+def _stored(tmp_path, now, **caps):
+    import state_db
+
+    path = str(tmp_path / "budget.sqlite")
+    if state_db.is_postgres():
+        path = None  # the Postgres CI job: STATE_DB_URL is the store
+    return DailyBudget(now=now, store_path=path, **caps)
+
+
+def test_the_count_survives_a_restart(tmp_path):
+    _, now = _clock(datetime(2026, 11, 24, 12, tzinfo=timezone.utc))
+    first = _stored(tmp_path, now, max_runs=2, max_usd=100)
+    first.reserve(0.0)
+    first.reserve(0.0)
+    restarted = _stored(tmp_path, now, max_runs=2, max_usd=100)  # a redeploy
+    with pytest.raises(BudgetExceeded):
+        restarted.reserve(0.0)
+    assert restarted.status()["runs"] == 2
+
+
+def test_the_stored_cost_cap_and_settle(tmp_path):
+    _, now = _clock(datetime(2026, 11, 24, 12, tzinfo=timezone.utc))
+    b = _stored(tmp_path, now, max_runs=100, max_usd=1.0)
+    r = b.reserve(0.6)
+    with pytest.raises(BudgetExceeded) as e:
+        b.reserve(0.6)
+    assert "$1.00" in e.value.reason
+    b.settle(r, 0.01)
+    assert b.status()["est_usd"] == pytest.approx(0.01)
+    r = b.reserve(0.5)
+    b.settle(r, 0.9)  # cost more than the estimate: charged in full
+    assert b.status()["est_usd"] == pytest.approx(0.91)
+
+
+def test_the_stored_day_rolls_over_at_utc_midnight(tmp_path):
+    t, now = _clock(datetime(2026, 11, 24, 23, 59, tzinfo=timezone.utc))
+    b = _stored(tmp_path, now, max_runs=1, max_usd=100)
+    b.reserve(0.0)
+    with pytest.raises(BudgetExceeded):
+        b.reserve(0.0)
+    t[0] = datetime(2026, 11, 25, 0, 0, 1, tzinfo=timezone.utc)
+    b.reserve(0.0)
+    assert b.status() ["runs"] == 1
+
+
+def test_concurrent_runs_never_pass_the_cap(tmp_path):
+    import threading
+
+    _, now = _clock(datetime(2026, 11, 24, 12, tzinfo=timezone.utc))
+    path = None
+    import state_db
+
+    if not state_db.is_postgres():
+        path = str(tmp_path / "budget.sqlite")
+        DailyBudget(now=now, store_path=path).status()  # create the table first
+    ok, refused = [], []
+
+    def run():
+        # each thread is its own "process": a separate budget on one store
+        b = DailyBudget(now=now, store_path=path, max_runs=5, max_usd=100)
+        try:
+            b.reserve(0.0)
+            ok.append(1)
+        except BudgetExceeded:
+            refused.append(1)
+
+    threads = [threading.Thread(target=run) for _ in range(20)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert len(ok) == 5 and len(refused) == 15
+
+
+def test_an_unreachable_store_refuses_the_run(tmp_path, monkeypatch):
+    _, now = _clock(datetime(2026, 11, 24, 12, tzinfo=timezone.utc))
+    b = DailyBudget(now=now, store_path=str(tmp_path / "budget.sqlite"))
+
+    def down(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(llm_budget._Store, "charge", down)
+    with pytest.raises(BudgetExceeded) as e:
+        b.reserve(0.0)
+    assert "could not be checked" in e.value.reason
+
+
+def test_without_state_db_url_the_count_stays_in_memory(monkeypatch):
+    monkeypatch.delenv("STATE_DB_URL", raising=False)
+    b = DailyBudget(max_runs=3, max_usd=1)
+    assert b._store() is None
+
+
+def test_an_unreachable_budget_store_is_503_not_429(client, monkeypatch):
+    def down(*a, **k):
+        raise BudgetExceeded("the model budget could not be checked", 60, unavailable=True)
+
+    monkeypatch.setattr(llm_budget.BUDGET, "reserve", down)
+    r = client.post(
+        "/query", json={"question": "how many hospitals?"}, headers={"X-API-Key": "test-key"}
+    )
+    assert r.status_code == 503 and "tomorrow" not in r.text
+    assert r.headers["Retry-After"] == "60"
