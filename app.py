@@ -1568,7 +1568,11 @@ def decide_approval(request: Request, approval_id: str, req: DecisionRequest) ->
     if ident is not None and ident.source == "key" and req.decision == "escalate":
         # a key user may hand an item only to someone who can decide it (N3)
         store_k = _STATE.get("key_store") or user_keys.KeyStore()
-        if not store_k.has_active(req.escalated_to or "", "reviewer"):
+        try:
+            reviewer_ok = store_k.has_active(req.escalated_to or "", "reviewer")
+        except Exception:  # noqa: BLE001 -- the store is down: refuse, as everywhere
+            raise HTTPException(status_code=503, detail="key store unavailable; try again shortly")
+        if not reviewer_ok:
             raise HTTPException(status_code=400,
                                 detail="escalated_to must be an active user with the reviewer role")
     try:
