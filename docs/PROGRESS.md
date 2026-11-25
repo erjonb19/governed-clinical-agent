@@ -82,4 +82,4 @@ Two aggregate scopes over patient rows joined by a correlated subquery is a shap
 
 ## Questions for the owner
 
-None yet.
+1. **Item 25 (RAG over CMS measure definitions) is blocked by this session's network, not by a dependency.** CMS's sites are refused by the proxy here and there is no Gemini key, so the corpus, embeddings and eval cases cannot be built or checked. No new package is needed (DuckDB's core `array_cosine_similarity` plus Gemini embeddings through the existing `openai` SDK). Recommendation: allow `data.cms.gov` in the cloud environment, give the next session `GEMINI_API_KEY`, and name the source documents (suggested: the Care Compare data dictionary and the measure pages for the measures already in `gold_hospital_profile`, public domain).
