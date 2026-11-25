@@ -82,4 +82,4 @@ Two aggregate scopes over patient rows joined by a correlated subquery is a shap
 
 ## Questions for the owner
 
-None yet.
+1. **Item 18 (package layout): approve the plan?** `docs/plans/package-layout.md` is up to date and needs five answers: go or no-go; the package name (`governed_agent` proposed); shims (proposed) or a hard switch; leave `src/` as is (proposed); settings as a plain pydantic model with no new dependency (proposed) or pydantic-settings (new dependency). Recommendation: yes to all five proposals.
