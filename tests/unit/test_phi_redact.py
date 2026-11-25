@@ -173,3 +173,39 @@ def test_crafted_input_at_the_cap_is_fast():
 )
 def test_the_whole_identifier_is_replaced(text, expected):
     assert phi_redact.redact(text)[0] == expected
+
+
+# ---- item 23, the rest: every audit line is redacted ------------------------
+
+
+def test_audit_lines_lose_free_text_identifiers_but_keep_system_ids(tmp_path):
+    import json as _json
+
+    from src.runtime.audit_logger import AuditLogger
+
+    log = AuditLogger(log_dir=tmp_path, agent_id="t", max_buffer_size=1, enable_console=False)
+    trace_id = "3f2b9c1e-0a4d-4e8f-9b7a-1c2d3e4f5a6b"
+    log.log_critic_review(
+        capability="analytics.query_aggregate",
+        verdict="revise",
+        reason="question names MRN 00482913, born 1931-03-07, call 617-555-0142",
+        sql_sha256="a" * 64,
+    )
+    log.log_answer(
+        capability="analytics.query_aggregate",
+        allowed=True,
+        decided_by="guard",
+        version={"git_commit": "1234567890abcdef1234567890abcdef12345678"},
+        trace_id=trace_id,
+    )
+    log.log_approval_decision(
+        request_event_id="a1", capability="approve", approved=True, approver="rob",
+        comment="patient aged 93, zip 10467",
+    )
+    text = "".join(p.read_text() for p in tmp_path.glob("*.jsonl"))
+    for planted in ("00482913", "1931-03-07", "555-0142", "93,", "10467"):
+        assert planted not in text, planted
+    lines = [_json.loads(x) for x in text.splitlines()]
+    answer = next(e for e in lines if e["event_type"] == "answer")
+    assert answer["context"]["trace_id"] == trace_id  # a UUID, but a system id: kept
+    assert answer["context"]["git_commit"].startswith("1234567890")
