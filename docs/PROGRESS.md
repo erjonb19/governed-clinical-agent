@@ -82,4 +82,4 @@ Two aggregate scopes over patient rows joined by a correlated subquery is a shap
 
 ## Questions for the owner
 
-None yet.
+1. **Item 29 (overlapping groups from a GROUP BY on a column that varies within a person): which option?** Options (a) refuse, (b) region check, (c) accept are written up under the item in `docs/BACKLOG.md`. The same two numbers can be asked one query at a time today, so (a) and (b) only move the inference to two queries while refusing common "top N by patients" answers. Recommendation: (c), accept and document it, and decide it together with cross-query differencing.
