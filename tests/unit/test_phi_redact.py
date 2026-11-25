@@ -199,7 +199,10 @@ def test_audit_lines_lose_free_text_identifiers_but_keep_system_ids(tmp_path):
         trace_id=trace_id,
     )
     log.log_approval_decision(
-        request_event_id="a1", capability="approve", approved=True, approver="rob",
+        request_event_id="a1",
+        capability="approve",
+        approved=True,
+        approver="rob",
         comment="patient aged 93, zip 10467",
     )
     text = "".join(p.read_text() for p in tmp_path.glob("*.jsonl"))
@@ -228,8 +231,12 @@ def test_audit_errors_prompts_and_lists_are_redacted_too(tmp_path):
         validation_errors=["call 617-555-0142", "zip 10467"],
     )
     log.log_taint_violation(
-        capability="email.send", parameters={}, source_capability="analytics.query",
-        source_id="s1", parameter_path="body", matched_token="SSN 123-45-6789",
+        capability="email.send",
+        parameters={},
+        source_capability="analytics.query",
+        source_id="s1",
+        parameter_path="body",
+        matched_token="SSN 123-45-6789",
         reason="tainted",
     )
     text = "".join(p.read_text() for p in tmp_path.glob("*.jsonl"))
