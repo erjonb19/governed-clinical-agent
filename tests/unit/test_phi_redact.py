@@ -209,3 +209,30 @@ def test_audit_lines_lose_free_text_identifiers_but_keep_system_ids(tmp_path):
     answer = next(e for e in lines if e["event_type"] == "answer")
     assert answer["context"]["trace_id"] == trace_id  # a UUID, but a system id: kept
     assert answer["context"]["git_commit"].startswith("1234567890")
+
+
+def test_audit_errors_prompts_and_lists_are_redacted_too(tmp_path):
+    from src.runtime.audit_logger import AuditLogger
+
+    log = AuditLogger(log_dir=tmp_path, agent_id="t", max_buffer_size=1, enable_console=False)
+    log.log_tool_execution(
+        capability="analytics.query_aggregate",
+        parameters={"prompt": "patient MRN 00482913", "sql": "SELECT 1"},
+        success=False,
+        execution_time_ms=1.0,
+        error="Could not convert string '1931-03-07' for patient aged 93",
+    )
+    log.log_parameter_validation(
+        capability="analytics.query_aggregate",
+        parameters={},
+        validation_errors=["call 617-555-0142", "zip 10467"],
+    )
+    log.log_taint_violation(
+        capability="email.send", parameters={}, source_capability="analytics.query",
+        source_id="s1", parameter_path="body", matched_token="SSN 123-45-6789",
+        reason="tainted",
+    )
+    text = "".join(p.read_text() for p in tmp_path.glob("*.jsonl"))
+    for planted in ("00482913", "1931-03-07", "aged 93", "555-0142", "10467", "123-45-6789"):
+        assert planted not in text, planted
+    assert "SELECT 1" in text  # SQL stays SQL
