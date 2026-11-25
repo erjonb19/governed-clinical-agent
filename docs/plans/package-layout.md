@@ -3,7 +3,7 @@
 **Status: plan only, waiting for the owner's OK (written 2026-11-09, brought up to date
 2026-11-25).** Nothing has moved. The 2026-11-25 update maps the 13 modules added since
 (item 19's `state_db.py`, item 22's `user_keys.py`, item 39's `audit_store.py`, ...),
-corrects one wrong claim (pydantic-settings is NOT installed; see Settings) and adds the
+corrects one wrong claim (pydantic-settings is in no lockfile; see Settings) and adds the
 `Dockerfile` and the commands in workflows and `docs/OWNER_STEPS.md` to "What must survive".
 
 ## Where things are today (counted 2026-11-25 on `main`)
@@ -21,9 +21,11 @@ corrects one wrong claim (pydantic-settings is NOT installed; see Settings) and 
 - `app.py` builds the app at import (`app = FastAPI(...)`), with its state in a
   module-level `_STATE` dict; tests reload the module to get a fresh app.
 - Root scripts are run by name from workflows and owner steps: `user_keys.py` (owner step
-  15), `fetch_synthea.py`, `build_fhir_gold.py`, `build_hospital_gold.py`, `eval_harness.py`,
+  15), `fetch_synthea.py`, `fetch_cms.py` (run by `data-refresh.yml` through `subprocess`), `build_fhir_gold.py`, `build_hospital_gold.py`, `eval_harness.py`,
   `scheduled_runs.py`, `nightly_alerts.py`, `slo.py`, `security_alerts.py`, `live_check.py`,
-  `deploy_lag.py`, and `python sql_guard.py` (the adversarial harness).
+  `deploy_lag.py`; and `python sql_guard.py` (the adversarial harness, run by hand per CLAUDE.md).
+  `tests.yml` also runs `mypy` on four files by path (`critic.py`, `nightly_alerts.py`,
+  `sql_guard.py`, `phi_guard.py`).
 
 ## Target layout
 
@@ -64,14 +66,18 @@ That places all 60 root modules: 7 api, 12 agent, 3 guard (+ the YAML), 10 data,
 not SQL, and should not ride with the guard's last-and-alone PR. `question_screen.py`
 (refuses a question with an identifier before any model call) goes to api for the same reason.
 Every script that a workflow or owner step runs by name keeps a root file of that name (a
-shim, below), so no workflow or `docs/OWNER_STEPS.md` command changes until step 5.
+shim, below), so no workflow or `docs/OWNER_STEPS.md` command changes until step 5. A shim
+run as a script must also run the real module's entry point: replacing `sys.modules` does
+not run the moved module's `if __name__ == "__main__"` block, so such shims end with
+`if __name__ == "__main__": sys.exit(<real module>.main())` (a test runs each by name with
+`--help` or its dry-run flag).
 
 ### Settings
 
 A `Settings` class with every variable, its type, default and one-line meaning, in
 groups (planner, data, auth, tracing, approvals, evals). **Correction (2026-11-25):** the
 first version of this plan said pydantic-settings was already installed through `mcp`; it
-is not (`mcp` 2.3.0 does not pull it in, and no lockfile lists it), so it would be a new
+is not (`mcp` 2.3.0 does not pull it in, and no lockfile lists it; a developer machine may have it installed by hand), so it would be a new
 dependency (directive 11). Proposed instead: a plain `pydantic.BaseModel` (pydantic 2.14 is
 already pinned) filled by one small `from_env()` that reads each field's variable, so no
 new package; pydantic-settings stays an option if the owner prefers it (decision 5).
@@ -118,6 +124,9 @@ is edited by this work.
   needs the owner's OK).
 - Every command a workflow or `docs/OWNER_STEPS.md` runs by file name (listed above),
   through the shims, until step 5 updates them in the same PR that removes the shims.
+- The type check: `tests.yml`'s `mypy` step moves to the new paths in the same PR that moves
+  each of its files (a shim would leave mypy checking the shim, not the code), and the guard
+  files keep `mypy --strict`.
 - The state stores (item 19: `STATE_DB_URL`, Postgres or SQLite) and the audit hash chain
   (item 39): table names and schemas do not change, so a running deploy's data stays
   readable across every step.
