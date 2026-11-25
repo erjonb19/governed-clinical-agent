@@ -414,3 +414,54 @@ def test_one_key_lookup_per_request(env, monkeypatch):
     monkeypatch.setattr(user_keys.KeyStore, "lookup", counting)
     assert c.post("/raw-sql", headers=h, json={"sql": "SELECT 1 AS n"}).status_code == 200
     assert len(calls) == 1
+
+
+# ---- review of the key-file delivery (N1) --------------------------------
+
+
+def _cli_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(user_keys, "KEYS_DB", str(tmp_path / "cli.sqlite"))
+    monkeypatch.setattr(user_keys, "KEY_DIR", str(tmp_path / "keys"))
+    monkeypatch.delenv("STATE_DB_URL", raising=False)
+    return user_keys.KeyStore()
+
+
+def test_a_failed_rotate_leaves_the_old_key_working_and_no_new_key(tmp_path, monkeypatch):
+    store = _cli_env(tmp_path, monkeypatch)
+    old_id, path = user_keys.issue(store, "ro", "analyst")
+    old_key = open(path).read().strip()
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    assert user_keys.main(["user_keys.py", "--out", str(blocker), "rotate", old_id]) == 2
+    assert store.lookup(old_key) is not None  # still works
+    assert [r["key_id"] for r in store.list() if not r["revoked_at"]] == [old_id]
+
+
+def test_a_failed_write_leaves_no_active_key_and_no_file(tmp_path, monkeypatch):
+    store = _cli_env(tmp_path, monkeypatch)
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(user_keys.os, "fdopen", broken)
+    with pytest.raises(OSError):
+        user_keys.issue(store, "wf", "viewer")
+    assert all(r["revoked_at"] for r in store.list())
+    assert list((tmp_path / "keys").iterdir()) == []
+
+
+def test_a_failed_store_write_leaves_no_file(tmp_path, monkeypatch):
+    store = _cli_env(tmp_path, monkeypatch)
+
+    def down(*a, **k):
+        raise OSError("store down")
+
+    monkeypatch.setattr(user_keys.KeyStore, "create", down)
+    with pytest.raises(OSError):
+        user_keys.issue(store, "sf", "viewer")
+    assert list((tmp_path / "keys").iterdir()) == []
+
+
+def test_an_empty_out_folder_is_refused(tmp_path, monkeypatch, capsys):
+    _cli_env(tmp_path, monkeypatch)
+    assert user_keys.main(["user_keys.py", "--out", "", "create", "e", "viewer"]) == 2

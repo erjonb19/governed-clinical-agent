@@ -460,9 +460,10 @@ typed, and every audit event names the user. Keys live in the Neon database from
 they survive redeploys. The deploy's `API_KEY` keeps working as your admin key.
 
 Keys are made from your laptop, in the repo folder, against the Neon database. Each new key is
-written once to a new file in `%USERPROFILE%\.gca\keys\` (never printed on screen); only its
-hash is stored. Give each person their own key file's contents, never in a public place, then
-delete the file.
+written once to a new file in `$HOME\.gca\keys\` (never printed on screen); only its hash is
+stored. Send each person their own key file's contents over a private channel (never a public
+place or a shared folder), then delete the file. Keep the default folder: a `--out` folder that
+others can read (a network share, `C:\temp`) would let them read the key too.
 
 1. Load the Neon connection string for this window only (not shown, not saved):
 
@@ -485,7 +486,7 @@ python user_keys.py list
 3. Check one works (it reads the reviewer's key file; the key is never shown):
 
 ```powershell
-$f = Get-ChildItem "$HOME\.gca\keys\reviewer.one-*.key" | Select-Object -First 1
+$f = Get-ChildItem "$HOME\.gca\keys\reviewer.one-*.key" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $h = @{ "X-API-Key" = (Get-Content $f.FullName -Raw).Trim() }
 (Invoke-WebRequest -Uri https://governed-clinical-agent.onrender.com/v1/approvals -Headers $h -UseBasicParsing).StatusCode
 ```

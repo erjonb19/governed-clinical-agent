@@ -66,6 +66,11 @@ class Identity:
         return RANK[self.role] >= RANK[role]
 
 
+def new_material() -> tuple[str, str]:
+    """A fresh key id and secret, from a CSPRNG: 48 bits of id, 256 of secret."""
+    return secrets.token_hex(6), secrets.token_urlsafe(32)
+
+
 def looks_like_user_key(presented: Optional[str]) -> bool:
     return bool(presented) and _KEY.fullmatch(presented or "") is not None
 
@@ -95,16 +100,20 @@ class KeyStore:
         )
         self._ready = True
 
-    def create(self, user: str, role: str) -> tuple[str, str]:
-        """A new key for `user`: (key_id, the full key -- shown once, never stored)."""
+    def create(
+        self, user: str, role: str, key_id: Optional[str] = None, secret: Optional[str] = None
+    ) -> tuple[str, str]:
+        """A new key for `user`: (key_id, the full key -- never stored). The CLI
+        passes key material it made first (new_material), so the key's file
+        exists before the key does (review of #179, N1)."""
         if role not in RANK:
             raise ValueError(f"role must be one of {', '.join(ROLES)}")
         if not _USER.fullmatch(user or ""):
             raise ValueError(
                 "user: 1-64 of letters, digits and . _ @ -, starting with a letter or digit"
             )
-        key_id = secrets.token_hex(6)
-        secret = secrets.token_urlsafe(32)  # 43 chars, 256 bits
+        if key_id is None or secret is None:
+            key_id, secret = new_material()
         with self._con() as con:
             self._ensure(con)
             con.execute(
@@ -127,6 +136,17 @@ class KeyStore:
                 (datetime.now(timezone.utc).isoformat(), key_id),
             )
         return True
+
+    def get(self, key_id: str) -> Optional[dict[str, Any]]:
+        """One key's row, without its hash."""
+        with self._con() as con:
+            self._ensure(con)
+            row = con.execute(
+                "SELECT key_id, user_name, role, created_at, revoked_at FROM api_keys "
+                "WHERE key_id = ?",
+                (key_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def rotate(self, key_id: str) -> tuple[str, str]:
         with self._con() as con:
@@ -192,17 +212,73 @@ class KeyStore:
 KEY_DIR = os.environ.get("KEY_DIR", os.path.join(os.path.expanduser("~"), ".gca", "keys"))
 
 
-def deliver(user: str, key_id: str, key: str, out_dir: Optional[str] = None) -> str:
-    """Write a new key to a NEW file only its owner can read (0600 in a 0700
-    folder; refuses to overwrite) and return the path. The key is never printed:
-    a terminal's scrollback or a captured log would keep it (CodeQL, #179)."""
-    folder = out_dir or KEY_DIR
+def _key_folder(out_dir: Optional[str]) -> str:
+    folder = KEY_DIR if out_dir is None else out_dir
+    if not folder:
+        raise ValueError("--out needs a folder")
     os.makedirs(folder, mode=0o700, exist_ok=True)
-    path = os.path.join(folder, f"{user}-{key_id}.key")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    if os.name == "posix" and os.stat(folder).st_mode & 0o077:
+        # an existing shared folder: the file is still 0600, but another user
+        # could delete or swap it before it is handed over
+        print(
+            f"warning: {folder} is readable or writable by others; prefer a private folder",
+            file=sys.stderr,
+        )
+    return folder
+
+
+def _reserve(user: str, key_id: str, out_dir: Optional[str]) -> tuple[str, int]:
+    """Create the key's file, empty, before the key exists: O_EXCL refuses any
+    existing name (a planted symlink included), mode 0600."""
+    if not _USER.fullmatch(user or ""):  # the name goes into a file name
+        raise ValueError("user name is not valid for a key file")
+    path = os.path.join(_key_folder(out_dir), f"{user}-{key_id}.key")
+    return path, os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+
+def deliver(user: str, key_id: str, key: str, out_dir: Optional[str] = None) -> str:
+    """Write a key to a NEW file only its owner can read and return the path.
+    The key is never printed: a terminal's scrollback or a captured log would
+    keep it (CodeQL, #179). On Windows the folder's access list decides who can
+    read it; the default folder under the user's profile is private."""
+    path, fd = _reserve(user, key_id, out_dir)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(key + "\n")
     return path
+
+
+def issue(
+    store: "KeyStore",
+    user: str,
+    role: str,
+    out_dir: Optional[str] = None,
+    replaces: Optional[str] = None,
+) -> tuple[str, str]:
+    """Make a key and hand it over safely: the file first, then the key in the
+    store, then the key into the file, and only then (rotate) the old key
+    revoked. Any failure undoes what was done, so nobody is locked out and no
+    key is left active that nobody holds (review of #179, N1)."""
+    key_id, secret = new_material()
+    path, fd = _reserve(user, key_id, out_dir)
+    try:
+        store.create(user, role, key_id=key_id, secret=secret)
+    except BaseException:
+        os.close(fd)
+        os.unlink(path)
+        raise
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"gca_{key_id}_{secret}\n")
+    except BaseException:
+        store.revoke(key_id)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    if replaces:
+        store.revoke(replaces)
+    return key_id, path
 
 
 def main(argv: list[str]) -> int:
@@ -219,15 +295,17 @@ def main(argv: list[str]) -> int:
     cmd, args = (args[0] if args else ""), args[1:]
     try:
         if cmd == "create" and len(args) == 2:
-            key_id, key = store.create(args[0], args[1])
-            path = deliver(args[0], key_id, key, out_dir)
+            key_id, path = issue(store, args[0], args[1], out_dir)
             print(f"key_id: {key_id}")
-            print(f"the key is in {path} (readable by you only); give it to {args[0]} and")
-            print("then delete the file. Only its hash is kept here.")
+            print(f"the key is in {path} (readable by you only); give it to {args[0]} over a")
+            print("private channel, then delete the file. Only its hash is kept here.")
         elif cmd == "rotate" and len(args) == 1:
-            key_id, key = store.rotate(args[0])
-            user = next(r["user_name"] for r in store.list() if r["key_id"] == key_id)
-            path = deliver(user, key_id, key, out_dir)
+            old_row = store.get(args[0])
+            if old_row is None or old_row["revoked_at"]:
+                raise ValueError(f"no active key {args[0]}")
+            key_id, path = issue(
+                store, old_row["user_name"], old_row["role"], out_dir, replaces=args[0]
+            )
             print(f"old key {args[0]} revoked; new key_id: {key_id}")
             print(f"the new key is in {path} (readable by you only); delete it once handed over.")
         elif cmd == "revoke" and len(args) == 1:
@@ -244,7 +322,7 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
-    except (ValueError, FileExistsError) as e:
+    except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return 0
