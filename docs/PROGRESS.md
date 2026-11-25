@@ -64,3 +64,22 @@ One line per finished item from `docs/BACKLOG.md`, newest last:
 | 2026-11-19 | 71. Self-join of one table closed | A self-join of one one-to-many patient table is refused unless every aggregate is `count(DISTINCT patient_id)`; the FHIR comparison scored the branch level with main (95.2% each) | `pytest tests/security/test_phi_guard.py -k self_join`; Actions run 44488007242 | #145 |
 | 2026-11-22 | 69. Smaller supply-chain and setup gaps | The kill switch, opt-in MCP demo tools, secret patterns in `.gitignore`, every requirements file audited, exact dev pins, Trivy without the Docker socket, `SECURITY.md`, Dependabot security updates, and `zizmor` auditing every workflow change | `.github/workflows/zizmor.yml` run on this PR; `pytest tests/unit/test_supply_chain_setup.py tests/integration/test_agent_kill_switch.py` | see PR |
 | 2026-11-24 | 68. Adversarial gate on every push | All 16 adversarial cases (3 new: file read, ATTACH, URL) run on every push with no model -- an authored adversary writes each attack on every attempt and the critic always approves, and a strict check requires `sql_guard` itself (not the database) to refuse every attempt; with a guard that lets everything through it fails and names all 15 attack cases | `python scripts/adversarial_gate.py`; `pytest tests/integration/test_adversarial_gate.py` | see PR |
+
+## Findings
+
+### Why the guard refuses `f5_condition_burden_15plus` ("several aggregates") -- 2026-11-25
+
+**Noise from the model, not a guard change.** The question is "How many distinct patients have 15 or more DISTINCT active condition names?"; the reference SQL (`SELECT count(*) FROM (SELECT patient_id FROM gold_condition WHERE is_active GROUP BY patient_id HAVING count(DISTINCT condition_name) >= 15) t`) has one aggregate scope over patient rows and passes the guard (pinned by `test_every_fhir_eval_answer_is_reachable_through_the_guard`). In the refused runs the model added its own small-group filter as a second, correlated aggregate:
+
+```sql
+SELECT COUNT(*) AS patient_count FROM (SELECT patient_id FROM gold_condition
+  WHERE is_active = TRUE AND condition_name IS NOT NULL
+  GROUP BY patient_id HAVING COUNT(DISTINCT condition_name) >= 15) AS sub
+WHERE (SELECT COUNT(DISTINCT patient_id) FROM gold_patient WHERE patient_id = sub.patient_id) >= 11
+```
+
+Two aggregate scopes over patient rows joined by a correlated subquery is a shape whose overlap the guard cannot check, so it is refused by the single-query differencing rules (#83 and item 70, in place since 2026-11-11). The check: all 7 distinct SQL strings the model wrote for this case in the comparisons of 2026-11-23 and 2026-11-24 (taken from that case's own blocks in the run logs) get **the same decision**, refused with this reason, from the guard as of commit d8bf924 (committed 2026-11-19 00:47 -0500, before #145's self-join rule, #163 and #169) and from today's main. No guard change since then touches them. The case passes whenever the model writes the reference shape (main 1/3 on 2026-11-23). The prompt fix merged in #164 ("the system applies the 11-patient rule itself") targets exactly this habit; the comparison on 2026-11-24 still saw it, so the model has not fully dropped it. The case was not edited.
+
+## Questions for the owner
+
+None yet.
