@@ -826,8 +826,19 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   SSN, record number, patient id or full date is refused before any model call; only the
   kind is logged. Names need an NLP redactor (item 23).
 - [x] **Separation of duties in the approval queue** (audit item 32): no deciding your own
-  proposal, escalated items only by their new owner, edits cannot add figures; names are
-  marked self-asserted until per-user keys (item 22).
+  proposal, escalated items only by their new owner, edits cannot add figures. With a
+  per-user key the key's user is the proposer and reviewer (identity `key`); with the
+  owner's `API_KEY`, typed names are marked `self-asserted`.
+- [x] **Per-user keys and roles** (item 22, keys and roles part): `python user_keys.py
+  create|list|rotate|revoke`; keys from a CSPRNG, written once to a file only the admin can read (never printed), only a
+  hash stored, constant-time compare,
+  revoked at once. Roles viewer < analyst < reviewer < admin, one table of least roles per
+  route (an unlisted route needs admin); traces and `/metrics` are admin-only. Every audit
+  event names `user:<name>:<key_id>`. Keys live in the state database (`STATE_DB_URL`, so
+  they survive a redeploy only with Postgres). Not yet: per-key quotas, and per-user keys on
+  `/mcp`. **The owner's `API_KEY` is not bound to a person:** with it, any typed name can
+  propose or decide (marked `self-asserted`), so it can step around separation of duties and
+  put a key user's name on a decision. Use it to make keys, not to review.
 - [x] **Deny-by-default auth** (audit item 54): every route needs the API key unless it is on
   one public list (`/`, `/ui`, `/ui-config`, `/health`, `/public/findings`, `/datasets`);
   `/metrics` and `/schema` now need it.

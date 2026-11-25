@@ -285,7 +285,10 @@ class ApprovalStore:
 
     def decide(self, approval_id: str, decision: str, decided_by: str,
                reason: str | None = None, edited_proposal: str | None = None,
-               escalated_to: str | None = None) -> dict:
+               escalated_to: str | None = None, identity: str | None = None) -> dict:
+        """`identity`: how decided_by is known -- "key" when it came from the
+        caller's own key (item 22), else "self-asserted" (a typed name)."""
+        identity = identity if identity in ("key", IDENTITY) else IDENTITY
         if decision not in DECISIONS:
             raise ValueError(f"unknown decision {decision!r}; expected one of {sorted(DECISIONS)}")
         item = self.get(approval_id)
@@ -341,7 +344,7 @@ class ApprovalStore:
                 "decided_at, reason, edited_proposal, escalated_to, queue_seconds, identity) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (approval_id, decision, decided_by, now.isoformat(), reason,
-                 edited_proposal, escalated_to, hop_seconds, IDENTITY),
+                 edited_proposal, escalated_to, hop_seconds, identity),
             )
             if decision == ESCALATE:
                 # A HANDOFF, not a verdict. The item stays pending so it stays
@@ -366,7 +369,7 @@ class ApprovalStore:
                 )
         out = self.get(approval_id)
         if out is not None:
-            out["identity"] = IDENTITY
+            out["identity"] = identity
         return out
 
     def _last_event_at(self, approval_id: str) -> Optional[str]:

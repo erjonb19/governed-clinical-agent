@@ -449,3 +449,59 @@ $p.approval_id
 Then tell the agent "step 14 done". If you ever need to rotate the password: Neon ->
 **Roles** -> reset password, then repeat steps 3 and 4.
 
+---
+
+## [ ] 15. Make per-user keys (backlog item 22; after step 14)
+
+**Why:** until now everyone used the one `API_KEY`, so a reviewer was only a typed name. A
+per-user key carries a person and a role (viewer, analyst, reviewer, admin): the API refuses
+what the role may not do, the key's user is recorded as the proposer or reviewer whatever is
+typed, and every audit event names the user. Keys live in the Neon database from step 14, so
+they survive redeploys. The deploy's `API_KEY` keeps working as your admin key.
+
+Keys are made from your laptop, in the repo folder, against the Neon database. Each new key is
+written once to a new file in `$HOME\.gca\keys\` (never printed on screen); only its hash is
+stored. Send each person their own key file's contents over a private channel (never a public
+place or a shared folder), then delete the file. Keep the default folder: a `--out` folder that
+others can read (a network share, `C:\temp`) would let them read the key too.
+
+1. Load the Neon connection string for this window only (not shown, not saved):
+
+```powershell
+$s = Read-Host "Neon direct connection string" -AsSecureString
+$env:STATE_DB_URL = [System.Net.NetworkCredential]::new("", $s).Password
+```
+
+2. Make keys (names: letters, digits and `. _ @ -`; roles: viewer, analyst, reviewer, admin):
+
+```powershell
+python user_keys.py create reviewer.one reviewer
+python user_keys.py create analyst.one analyst
+python user_keys.py list
+```
+
+   Each `create` prints the key's id and the file it wrote, e.g.
+   `C:\Users\you\.gca\keys\reviewer.one-1a2b3c4d5e6f.key`.
+
+3. Check one works (it reads the reviewer's key file; the key is never shown):
+
+```powershell
+$f = Get-ChildItem "$HOME\.gca\keys\reviewer.one-*.key" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$h = @{ "X-API-Key" = (Get-Content $f.FullName -Raw).Trim() }
+(Invoke-WebRequest -Uri https://governed-clinical-agent.onrender.com/v1/approvals -Headers $h -UseBasicParsing).StatusCode
+```
+
+   It should print `200`. A viewer key gets `403` there.
+
+4. Clear the window's copy of the connection string:
+
+```powershell
+Remove-Item Env:STATE_DB_URL
+```
+
+Review with your own reviewer key, not the deploy's `API_KEY`: that key is not tied to a
+person, so with it any typed name can propose or decide (recorded as `self-asserted`).
+
+To take a key away: `python user_keys.py revoke <key_id>` (refused on the next request). To
+replace one: `python user_keys.py rotate <key_id>`. Then tell the agent "step 15 done".
+

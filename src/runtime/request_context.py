@@ -67,6 +67,15 @@ def current() -> dict[str, str]:
     return dict(_CURRENT.get() or {})
 
 
+def set_principal(principal: str) -> None:
+    """Name the caller once the API has resolved a per-user key (item 22). The
+    middleware's dict is shared by every copy of the context this request's
+    worker threads run in, so every later audit event carries the new name."""
+    ctx = _CURRENT.get()
+    if ctx is not None:
+        ctx["principal"] = principal
+
+
 def fingerprint(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()[:8]
 
