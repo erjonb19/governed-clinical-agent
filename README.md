@@ -716,6 +716,10 @@ python build_fhir_gold.py                        # ~367k resources
 Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
 `docs/PROGRESS.md`). Only finished items are listed.
 
+- [x] **Identifiers out of the audit log** (backlog item 23, regex-only): dates, ages over 89,
+  record, phone and SSN numbers, emails and zip codes in an audit line's reason and named free-text
+  fields (a critic's issues, a reviewer's comment, an error, a prompt) are replaced by a label before
+  it is written; SQL is left as SQL, and names are not found, so hosted traces still get only the question's hash.
 - [x] **Strict types on the guard** (backlog item 72): `sql_guard.py` and `phi_guard.py` pass
   `mypy --strict` in CI, with annotations and casts only; the same 983 test and eval queries get
   identical guard decisions before and after.
