@@ -15,7 +15,7 @@ import hashlib
 from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
 
-import phi_redact  # item 23: free-text identifiers out of every audit line
+import phi_redact  # item 23: identifiers out of the free text of every audit line
 
 
 # Item 63: a failed audit write is never silent. Every best-effort audit write
