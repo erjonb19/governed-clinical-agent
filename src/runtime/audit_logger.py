@@ -15,6 +15,8 @@ import hashlib
 from src.runtime import request_context
 from src.utils.redaction import redact_data, redact_text
 
+import phi_redact  # item 23: identifiers out of the free text of every audit line
+
 
 # Item 63: a failed audit write is never silent. Every best-effort audit write
 # (the answer event, the critic's review, a refused key) reports here: one
@@ -104,14 +106,46 @@ class AuditEvent:
         # Convert enums to strings
         data['event_type'] = self.event_type.value
         data['decision'] = self.decision.value
-        data['reason'] = redact_text(data.get('reason', ''))
+        # Secrets (redaction.py), then personal identifiers in free text
+        # (phi_redact, backlog item 23): a reason or a context note can carry
+        # model text that quotes the visitor's question. The same goes for the
+        # free-text keys of parameters and execution_result (a prompt, an
+        # output preview, an error that quotes a literal); SQL stays SQL, and
+        # result rows never reach an audit line (item 59).
+        data['reason'] = _phi_text(redact_text(data.get('reason', '')))
         if self.parameters is not None:
-            data['parameters'] = redact_data(self.parameters)
+            data['parameters'] = _phi_free_text(redact_data(self.parameters))
         if self.execution_result is not None:
-            data['execution_result'] = redact_data(self.execution_result)
+            data['execution_result'] = _phi_free_text(redact_data(self.execution_result))
         if self.context is not None:
-            data['context'] = redact_data(self.context)
+            data['context'] = _phi_free_text(redact_data(self.context))
         return data
+
+
+# Fields (in context, parameters and execution_result) that hold free text a
+# person, a model or an error message wrote. Everything else is a system value
+# (trace ids are UUIDs, commits are hex, counts are numbers, SQL is checked by
+# the guard) that the redactor would mangle and that holds nothing personal.
+FREE_TEXT_KEYS = frozenset({
+    "comment", "reason", "error", "issues", "validation_errors", "matched_token",
+    "prompt", "output_preview", "question",
+})
+
+
+def _phi_text(text: Any) -> Any:
+    return phi_redact.redact(text)[0] if isinstance(text, str) and text else text
+
+
+def _phi_free_text(context: Any) -> Any:
+    if not isinstance(context, dict):
+        return context
+    out = {}
+    for k, v in context.items():
+        if k in FREE_TEXT_KEYS:
+            out[k] = [_phi_text(x) for x in v] if isinstance(v, list) else _phi_text(v)
+        else:
+            out[k] = v
+    return out
 
 
 class AuditLogger:
