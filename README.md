@@ -830,7 +830,8 @@ Built, working and checked, one backlog item at a time (`docs/BACKLOG.md`,
   per-user key the key's user is the proposer and reviewer (identity `key`); with the
   owner's `API_KEY`, typed names are marked `self-asserted`.
 - [x] **Per-user keys and roles** (item 22, keys and roles part): `python user_keys.py
-  create|list|rotate|revoke`; keys from a CSPRNG, only a hash stored, constant-time compare,
+  create|list|rotate|revoke`; keys from a CSPRNG, written once to a file only the admin can read (never printed), only a
+  hash stored, constant-time compare,
   revoked at once. Roles viewer < analyst < reviewer < admin, one table of least roles per
   route (an unlisted route needs admin); traces and `/metrics` are admin-only. Every audit
   event names `user:<name>:<key_id>`. Keys live in the state database (`STATE_DB_URL`, so

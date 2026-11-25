@@ -258,16 +258,36 @@ def test_the_audit_log_names_the_user(env):
 
 def test_the_cli_creates_lists_and_revokes(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(user_keys, "KEYS_DB", str(tmp_path / "cli.sqlite"))
+    monkeypatch.setattr(user_keys, "KEY_DIR", str(tmp_path / "keys"))
     monkeypatch.delenv("STATE_DB_URL", raising=False)
     assert user_keys.main(["user_keys.py", "create", "cli.user", "viewer"]) == 0
     out = capsys.readouterr().out
     key_id = out.split("key_id: ")[1].split()[0]
-    assert "gca_" in out
+    # the key is never printed: it is in a new file only the admin can read
+    assert "gca_" not in out
+    key_file = tmp_path / "keys" / f"cli.user-{key_id}.key"
+    key = key_file.read_text().strip()
+    assert key.startswith(f"gca_{key_id}_") and str(key_file) in out
+    if os.name == "posix":
+        assert key_file.stat().st_mode & 0o777 == 0o600
+        assert (tmp_path / "keys").stat().st_mode & 0o777 == 0o700
+    assert user_keys.KeyStore().lookup(key).user == "cli.user"
     assert user_keys.main(["user_keys.py", "list"]) == 0
     assert "cli.user" in capsys.readouterr().out
-    assert user_keys.main(["user_keys.py", "revoke", key_id]) == 0
+    # rotate writes a new file; --out picks the folder
+    assert user_keys.main(["user_keys.py", "--out", str(tmp_path / "o"), "rotate", key_id]) == 0
+    out = capsys.readouterr().out
+    assert "gca_" not in out and len(list((tmp_path / "o").iterdir())) == 1
+    assert user_keys.KeyStore().lookup(key) is None  # the old key is revoked
     assert user_keys.main(["user_keys.py", "create", "x", "superuser"]) == 2
     assert user_keys.main(["user_keys.py", "create", "bad name!", "viewer"]) == 2
+
+
+def test_a_key_file_is_never_overwritten(tmp_path):
+    p = user_keys.deliver("u", "abc", "gca_first", str(tmp_path))
+    with pytest.raises(FileExistsError):
+        user_keys.deliver("u", "abc", "gca_second", str(tmp_path))
+    assert open(p).read().strip() == "gca_first"
 
 
 # ---- review of #179 -------------------------------------------------------

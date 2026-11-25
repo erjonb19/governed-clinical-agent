@@ -459,9 +459,10 @@ what the role may not do, the key's user is recorded as the proposer or reviewer
 typed, and every audit event names the user. Keys live in the Neon database from step 14, so
 they survive redeploys. The deploy's `API_KEY` keeps working as your admin key.
 
-Keys are made from your laptop, in the repo folder, against the Neon database. The full key is
-printed **once**; only its hash is stored. Give each person their own key, never in a public
-place.
+Keys are made from your laptop, in the repo folder, against the Neon database. Each new key is
+written once to a new file in `%USERPROFILE%\.gca\keys\` (never printed on screen); only its
+hash is stored. Give each person their own key file's contents, never in a public place, then
+delete the file.
 
 1. Load the Neon connection string for this window only (not shown, not saved):
 
@@ -478,11 +479,14 @@ python user_keys.py create analyst.one analyst
 python user_keys.py list
 ```
 
-3. Check one works (paste the printed key when asked):
+   Each `create` prints the key's id and the file it wrote, e.g.
+   `C:\Users\you\.gca\keys\reviewer.one-1a2b3c4d5e6f.key`.
+
+3. Check one works (it reads the reviewer's key file; the key is never shown):
 
 ```powershell
-$k = Read-Host "a reviewer key" -AsSecureString
-$h = @{ "X-API-Key" = [System.Net.NetworkCredential]::new("", $k).Password }
+$f = Get-ChildItem "$HOME\.gca\keys\reviewer.one-*.key" | Select-Object -First 1
+$h = @{ "X-API-Key" = (Get-Content $f.FullName -Raw).Trim() }
 (Invoke-WebRequest -Uri https://governed-clinical-agent.onrender.com/v1/approvals -Headers $h -UseBasicParsing).StatusCode
 ```
 

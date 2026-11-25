@@ -17,15 +17,17 @@ Keys follow docs/SECURITY_STANDARDS.md 5.3:
 * only the SHA-256 of the secret part is stored (a random 256-bit secret needs
   no slow hash; a password would), compared in constant time;
 * revocation is immediate: every request reads the key's row, there is no cache;
-* the full key is shown once, when it is made, and never stored or logged.
+* the full key is written once, when it is made, to a new file only the admin can read
+  (`deliver`: 0600, never overwritten) and never printed, stored here or logged.
 
 The table is `api_keys` in the state database (state_db: Postgres with
 STATE_DB_URL, which survives a redeploy; else the SQLite file KEYS_DB). Keys are
 managed from the command line only, never over HTTP:
 
-    python user_keys.py create <user> <role>
+    python user_keys.py create <user> <role>     # the key goes to ~/.gca/keys/<user>-<id>.key
     python user_keys.py list
     python user_keys.py rotate <key_id>      # new key, same user and role; old one revoked
+    (--out DIR before the command writes the key file to DIR instead; KEY_DIR sets the default)
     python user_keys.py revoke <key_id>
 
 The deploy's API_KEY keeps working as the owner's key (role admin). With it,
@@ -187,20 +189,47 @@ class KeyStore:
         return Identity(user=row["user_name"], role=row["role"], key_id=key_id, source="key")
 
 
+KEY_DIR = os.environ.get("KEY_DIR", os.path.join(os.path.expanduser("~"), ".gca", "keys"))
+
+
+def deliver(user: str, key_id: str, key: str, out_dir: Optional[str] = None) -> str:
+    """Write a new key to a NEW file only its owner can read (0600 in a 0700
+    folder; refuses to overwrite) and return the path. The key is never printed:
+    a terminal's scrollback or a captured log would keep it (CodeQL, #179)."""
+    folder = out_dir or KEY_DIR
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    path = os.path.join(folder, f"{user}-{key_id}.key")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    return path
+
+
 def main(argv: list[str]) -> int:
     store = KeyStore()
-    cmd, args = (argv[1] if len(argv) > 1 else ""), argv[2:]
+    args = list(argv[1:])
+    out_dir = None
+    if "--out" in args:
+        i = args.index("--out")
+        if i + 1 >= len(args):
+            print("error: --out needs a folder", file=sys.stderr)
+            return 2
+        out_dir = args[i + 1]
+        del args[i : i + 2]
+    cmd, args = (args[0] if args else ""), args[1:]
     try:
         if cmd == "create" and len(args) == 2:
             key_id, key = store.create(args[0], args[1])
+            path = deliver(args[0], key_id, key, out_dir)
             print(f"key_id: {key_id}")
-            print(f"key:    {key}")
-            print("Shown once: give it to the user now; only its hash is kept.")
+            print(f"the key is in {path} (readable by you only); give it to {args[0]} and")
+            print("then delete the file. Only its hash is kept here.")
         elif cmd == "rotate" and len(args) == 1:
             key_id, key = store.rotate(args[0])
+            user = next(r["user_name"] for r in store.list() if r["key_id"] == key_id)
+            path = deliver(user, key_id, key, out_dir)
             print(f"old key {args[0]} revoked; new key_id: {key_id}")
-            print(f"key:    {key}")
-            print("Shown once.")
+            print(f"the new key is in {path} (readable by you only); delete it once handed over.")
         elif cmd == "revoke" and len(args) == 1:
             print("revoked" if store.revoke(args[0]) else f"no active key {args[0]}")
         elif cmd == "list" and not args:
@@ -210,12 +239,12 @@ def main(argv: list[str]) -> int:
         else:
             print(__doc__.split("\n\n")[0], file=sys.stderr)
             print(
-                "usage: user_keys.py create <user> <role> | list | rotate <key_id> | "
-                "revoke <key_id>",
+                "usage: user_keys.py [--out DIR] create <user> <role> | list | "
+                "[--out DIR] rotate <key_id> | revoke <key_id>",
                 file=sys.stderr,
             )
             return 2
-    except ValueError as e:
+    except (ValueError, FileExistsError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return 0
